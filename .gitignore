@@ -1,0 +1,235 @@
+# ============================================================================
+# Python
+# ============================================================================
+
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+/lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+share/python-wheels/
+*.manifest
+.spec
+
+# PyInstaller, pipenv, poetry, pdm
+pip-log.txt
+pip-delete-directory.txt
+Pipfile.lock
+poetry.lock
+.pdm.toml
+__pypackages__/
+
+# Python version / env
+.python-version
+.venv/
+.venv
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+.uv/
+
+# Django/Flask
+local_settings.py
+db.sqlite3
+db.sqlite3-journal
+instance/
+.webassets-cache
+
+# Scrapy
+.scrapy
+
+# PyBuilder
+.pybuilder/
+target/
+
+# Jupyter/IPython
+.ipynb_checkpoints
+profile_default/
+ipython_config.py
+
+# Celery
+celerybeat-schedule
+celerybeat.pid
+
+# SageMath
+*.sage.py
+
+# ============================================================================
+# Testing & Coverage
+# ============================================================================
+
+htmlcov/
+.tox/
+.nox/
+.coverage
+.coverage.*
+.cache
+nosetests.xml
+coverage.xml
+*.cover
+*.py,cover
+.hypothesis/
+.pytest_cache/
+cover/
+
+# Type checkers
+.mypy_cache/
+.dmypy.json
+dmypy.json
+.pyre/
+.pytype/
+cython_debug/
+
+# ============================================================================
+# Environments & Secrets
+# ============================================================================
+
+.env
+.env.local
+.env.*.local
+.env.cdk.local
+.aws/
+
+# ============================================================================
+# IDEs & Editors
+# ============================================================================
+
+# PyCharm
+.idea/
+*.iml
+*.iws
+*.ipr
+
+# VS Code
+.vscode/
+*.code-workspace
+
+# Sublime Text
+.sublime-project
+.sublime-workspace
+
+# Vim
+*.swp
+*.swo
+
+# Emacs
+\#*\#
+/.emacs.desktop
+/.emacs.desktop.lock
+*.elc
+auto-save-list
+tramp
+.\#*
+
+# Spyder / Rope
+.spyderproject
+.spyproject
+.ropeproject
+
+# ============================================================================
+# OS-specific
+# ============================================================================
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+Icon
+._*
+.DocumentRevisions-V100
+.fseventsd
+.Spotlight-V100
+.TemporaryItems
+.Trashes
+.VolumeIcon.icns
+.com.apple.timemachine.donotpresent
+.AppleDB
+.AppleDesktop
+Network Trash Folder
+Temporary Items
+.apdisk
+
+# Windows
+Thumbs.db
+Thumbs.db:encryptable
+ehthumbs.db
+ehthumbs_vista.db
+*.stackdump
+[Dd]esktop.ini
+$RECYCLE.BIN/
+*.cab
+*.msi
+*.msix
+*.msm
+*.msp
+*.lnk
+
+# Linux
+.fuse_hidden*
+.directory
+.Trash-*
+.nfs*
+
+# ============================================================================
+# Logs & Temporary Files
+# ============================================================================
+
+logs/
+*.log.*
+*.tmp
+*.temp
+*.bak
+
+# ============================================================================
+# AWS & Cloud
+# ============================================================================
+
+# AWS CDK
+cdk.out/
+cdk.out.*/
+*.out
+cdk.context.json
+.cdk.staging/
+.cdkwatch/
+.sam-build/
+
+# ============================================================================
+# Application / Project-specific
+# ============================================================================
+
+# Streamlit
+.streamlit/
+
+# Documentation
+/site
+
+# Test artifacts
+extraction_result.json
+*.json.bak
+
+# Working directories (keep structure, ignore contents)
+data/
+references/
+results/
+.claude/
+agent-os/
+docker_eval/
+*.whl
