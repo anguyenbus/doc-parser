@@ -29,6 +29,63 @@ logger = logging.getLogger(__name__)
 # Sentinel value: when caller passes dpi=144 (the default), read from env var.
 _DEFAULT_DPI = 144
 
+# Megapixel ceiling for any rasterized page. pypdfium2 allocates the bitmap
+# itself (PIL's MAX_IMAGE_PIXELS bomb check does NOT cover a buffer wrapped by
+# .to_pil()), so we must clamp the render `scale` BEFORE rendering. Overridable
+# via PARSER_MAX_RENDER_MP. Default 40 MP leaves Letter/A4/A1 untouched while
+# downscaling pathological or large-format pages (A0 @ 144 DPI ~= 320 MP).
+_DEFAULT_MAX_RENDER_MP = 40.0
+
+
+def _max_render_pixels() -> int:
+    """Return the max rendered-bitmap pixel budget (reads PARSER_MAX_RENDER_MP, in MP)."""
+    mp = float(os.environ.get("PARSER_MAX_RENDER_MP", str(_DEFAULT_MAX_RENDER_MP)))
+    return int(mp * 1_000_000)
+
+
+def _clamp_scale_to_budget(
+    width_pts: float, height_pts: float, scale: float, max_pixels: int
+) -> tuple[float, bool]:
+    """Reduce ``scale`` so ``width_pts * height_pts * scale**2 <= max_pixels``.
+
+    Returns ``(effective_scale, was_clamped)``. Pure function — performs NO
+    allocation, so it is safe to call with adversarially large page dimensions.
+    Degenerate inputs (non-positive area or budget) pass the scale through
+    unchanged rather than dividing by zero.
+    """
+    area_pts = width_pts * height_pts
+    if area_pts <= 0 or max_pixels <= 0:
+        return scale, False
+    projected = area_pts * scale * scale
+    if projected <= max_pixels:
+        return scale, False
+    return scale * (max_pixels / projected) ** 0.5, True
+
+
+def _clamp_render_scale(page: Any, scale: float, pdf_path: Path, page_no: int) -> float:
+    """Clamp ``scale`` to the megapixel budget using the page's point dimensions.
+
+    Reads the page size and reduces ``scale`` BEFORE pdfium allocates the bitmap.
+    Logs a warning when a clamp occurs so operators can see downscaled pages.
+    """
+    max_pixels = _max_render_pixels()
+    width_pts = float(page.get_width())
+    height_pts = float(page.get_height())
+    effective_scale, clamped = _clamp_scale_to_budget(width_pts, height_pts, scale, max_pixels)
+    if clamped:
+        logger.warning(
+            "Downscaled render of %s page %d: %.0fx%.0f pts at scale %.4f exceeds "
+            "%d px budget; rendering at scale %.4f",
+            pdf_path.name,
+            page_no,
+            width_pts,
+            height_pts,
+            scale,
+            max_pixels,
+            effective_scale,
+        )
+    return effective_scale
+
 
 def text_layer_tokens(pdf_path: Path) -> dict[int, int]:
     """Return {page_index: whitespace-token count} of the PDF's embedded text
@@ -77,6 +134,7 @@ def render_page(pdf_path: Path, page_no: int, dpi: int = _DEFAULT_DPI) -> bytes:
     pdf = pdfium.PdfDocument(str(pdf_path))
     try:
         page = pdf[page_no]
+        scale = _clamp_render_scale(page, scale, pdf_path, page_no)
         pil = page.render(scale=scale).to_pil()
     finally:
         pdf.close()
@@ -127,6 +185,10 @@ def render_region(
     try:
         page = pdf[page_no]
         page_height_pts = page.get_height()
+        # Clamp BEFORE rendering; the clamped scale is reused below for the
+        # PDF→image coordinate conversion so the crop stays correct (just lower
+        # resolution on a downscaled page).
+        scale = _clamp_render_scale(page, scale, pdf_path, page_no)
         pil = page.render(scale=scale).to_pil()
     finally:
         pdf.close()
