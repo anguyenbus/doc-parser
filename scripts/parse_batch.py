@@ -3,15 +3,27 @@ parse_batch.py
 
 Batch document parsing script using asyncio + ThreadPoolExecutor.
 
+Runs the markdown-first pipeline (``markdown_pipeline.parse_to_markdown``): it
+ALWAYS writes one ``.md`` per document. When ``--emit-test-json`` is passed it
+ALSO writes a schema-valid wrapped prediction ``.json`` (via
+``wrap_md_as_prediction``) so the doc-bench wheel can grade the markdown — that
+flag is set by ``run_eval.py`` on the eval path and is otherwise off.
+
+Telemetry/logging and ``route_stats.csv`` are driven from the pipeline's
+``page_routes`` (page count, VLM-routed pages, route mix), NOT from element-ID
+prefixes or warning codes.
+
 Usage:
     uv run python scripts/parse_batch.py \
         --input <local-dir or s3://bucket/prefix> \
         --output <local-dir or s3://bucket/prefix> \
+        [--emit-test-json] \
         [--concurrency 4] \
         [--max-files 100] \
         [--timeout-per-file 120.0] \
         [--retry-on-throttle]
 """
+
 from __future__ import annotations
 
 import argparse
@@ -35,15 +47,18 @@ logging.basicConfig(
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
-from parser_service import parse  # noqa: E402
 from parser_service.io_layer import (  # noqa: E402
     InputRef,
     list_input_files,
     write_json,
     write_text,
 )
-from parser_service.markdown import render_markdown  # noqa: E402
+from parser_service.markdown_pipeline import (  # noqa: E402
+    parse_to_markdown,
+    wrap_md_as_prediction,
+)
 from parser_service.route_stats import (  # noqa: E402
+    error_record,
     route_record,
     summarize,
     write_route_csv,
@@ -57,7 +72,7 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 AVG_INPUT_TOKENS_PER_CALL = 1700
 AVG_OUTPUT_TOKENS_PER_CALL = 500
-BEDROCK_INPUT_PRICE_PER_TOKEN = 3e-6   # USD per input token (Claude Sonnet approx)
+BEDROCK_INPUT_PRICE_PER_TOKEN = 3e-6  # USD per input token (Claude Sonnet approx)
 BEDROCK_OUTPUT_PRICE_PER_TOKEN = 15e-6  # USD per output token (Claude Sonnet approx)
 
 _AVG_COST_PER_CALL = (
@@ -72,7 +87,11 @@ _AVG_COST_PER_CALL = (
 
 
 def _parse_file_sync(ref: InputRef, retry_on_throttle: bool) -> dict[str, Any]:
-    """Parse one file synchronously (runs in thread pool)."""
+    """Parse one file to markdown synchronously (runs in thread pool).
+
+    Returns the ``parse_to_markdown`` result
+    (``{"markdown", "page_routes", "warnings"}``).
+    """
     from pathlib import Path as P
 
     path = P(ref.uri)
@@ -82,24 +101,28 @@ def _parse_file_sync(ref: InputRef, retry_on_throttle: bool) -> dict[str, Any]:
         delay = 1.0
         for attempt in range(max_retries + 1):
             try:
-                return parse(path)
+                return parse_to_markdown(path)
             except Exception as exc:
                 exc_name = type(exc).__name__
                 if "ThrottlingException" in exc_name and attempt < max_retries:
                     logger.warning(
                         "ThrottlingException on %s (attempt %d/%d); retrying in %.1fs",
-                        ref.filename, attempt + 1, max_retries, delay,
+                        ref.filename,
+                        attempt + 1,
+                        max_retries,
+                        delay,
                     )
                     time.sleep(delay)
                     delay = min(delay * 2, 30.0)
                 else:
                     raise
-    return parse(path)
+    return parse_to_markdown(path)
 
 
 async def _process_file(
     ref: InputRef,
     output_uri: str,
+    emit_test_json: bool,
     semaphore: asyncio.Semaphore,
     executor: concurrent.futures.Executor,
     timeout_per_file: float | None,
@@ -109,13 +132,12 @@ async def _process_file(
     route_records: list[dict[str, Any]],
 ) -> None:
     """Process one file with semaphore-controlled concurrency."""
+    doc_id = Path(ref.filename).stem
     async with semaphore:
         start = time.monotonic()
         try:
             loop = asyncio.get_event_loop()
-            coro = loop.run_in_executor(
-                executor, _parse_file_sync, ref, retry_on_throttle
-            )
+            coro = loop.run_in_executor(executor, _parse_file_sync, ref, retry_on_throttle)
             if timeout_per_file is not None:
                 result = await asyncio.wait_for(coro, timeout=timeout_per_file)
             else:
@@ -124,32 +146,41 @@ async def _process_file(
             duration = time.monotonic() - start
             vlm_calls = get_vlm_call_count()
 
+            page_routes = result.get("page_routes", [])
+            warnings = result.get("warnings", [])
+            markdown = result.get("markdown", "")
+
+            vlm_pages = sum(
+                1 for r in page_routes if r.get("route") in ("vlm", "vlm-fallback-docling")
+            )
+
             log_line = {
                 "event": "file_parsed",
                 "filename": ref.filename,
-                "kind": result.get("source", {}).get("mime_type", "unknown"),
-                "page_count": len(result.get("pages", [])),
-                "element_count": len(result.get("elements", [])),
-                "warning_count": len(result.get("warnings", [])),
+                "page_count": len(page_routes),
+                "vlm_routed_pages": vlm_pages,
+                "warning_count": len(warnings),
+                "markdown_chars": len(markdown),
                 "parse_duration_s": round(duration, 3),
                 "vlm_call_count": vlm_calls,
             }
             logger.info(json.dumps(log_line))
 
-            # Write output: gradable JSON + RAG-ready Markdown.
-            write_json(ref, output_uri, result)
-            write_text(ref, output_uri, render_markdown(result), ext=".md")
+            # Always write the RAG-ready Markdown.
+            write_text(ref, output_uri, markdown, ext=".md")
 
-            # Routing telemetry (VLM vs Docling-kept, and why).
-            route_records.append(route_record(result, doc_id=Path(ref.filename).stem))
+            # Only on the eval path: also write the wrapped, schema-valid JSON the
+            # doc-bench wheel grades. wrap_md_as_prediction builds the full source.
+            if emit_test_json:
+                prediction = wrap_md_as_prediction(markdown, Path(ref.uri))
+                write_json(ref, output_uri, prediction)
 
-            # Track failures
-            doc_warns = [
-                w for w in result.get("warnings", []) if w.get("scope") == "document"
-            ]
-            page_warns = [
-                w for w in result.get("warnings", []) if w.get("scope") == "page"
-            ]
+            # Routing telemetry derived directly from page_routes.
+            route_records.append(route_record(page_routes, doc_id=doc_id))
+
+            # Track failures (warnings carry scope = document | page).
+            doc_warns = [w for w in warnings if w.get("scope") == "document"]
+            page_warns = [w for w in warnings if w.get("scope") == "page"]
             if doc_warns:
                 failures.setdefault("document_failures", []).append(
                     {"filename": ref.filename, "warnings": doc_warns}
@@ -173,10 +204,7 @@ async def _process_file(
                 }
             )
             results.append({"filename": ref.filename, "success": False, "vlm_calls": 0})
-            route_records.append({
-                "doc_id": Path(ref.filename).stem, "route": "error",
-                "elems": 0, "vlm_el": 0, "warn_codes": "page_unparseable", "reason": "timeout",
-            })
+            route_records.append(error_record(doc_id, "timeout"))
 
         except Exception as exc:
             duration = time.monotonic() - start
@@ -194,10 +222,7 @@ async def _process_file(
                 }
             )
             results.append({"filename": ref.filename, "success": False, "vlm_calls": 0})
-            route_records.append({
-                "doc_id": Path(ref.filename).stem, "route": "error",
-                "elems": 0, "vlm_el": 0, "warn_codes": "unhandled_exception", "reason": str(exc)[:200],
-            })
+            route_records.append(error_record(doc_id, str(exc)))
 
 
 # ---------------------------------------------------------------------------
@@ -212,6 +237,7 @@ async def run_batch(
     max_files: int | None,
     timeout_per_file: float | None,
     retry_on_throttle: bool,
+    emit_test_json: bool,
 ) -> None:
     """Run the batch parsing pipeline."""
     refs = list(list_input_files(input_uri))
@@ -236,8 +262,16 @@ async def run_batch(
     with concurrent.futures.ThreadPoolExecutor(max_workers=concurrency) as executor:
         tasks = [
             _process_file(
-                ref, output_uri, semaphore, executor,
-                timeout_per_file, retry_on_throttle, results, failures, route_records,
+                ref,
+                output_uri,
+                emit_test_json,
+                semaphore,
+                executor,
+                timeout_per_file,
+                retry_on_throttle,
+                results,
+                failures,
+                route_records,
             )
             for ref in refs
         ]
@@ -257,8 +291,10 @@ async def run_batch(
         "failed": failed,
         "total_vlm_calls": total_vlm_calls,
         "estimated_cost_usd": round(estimated_cost, 6),
-        "routed_to_vlm": route_summary["used_vlm"],
-        "docling_kept": route_summary["docling_kept"],
+        "total_pages": route_summary["total_pages"],
+        "vlm_routed_pages": route_summary["vlm_pages"],
+        "docs_using_vlm": route_summary["used_vlm"],
+        "docs_docling_kept": route_summary["docling_kept"],
     }
     logger.info(json.dumps(summary))
 
@@ -299,6 +335,7 @@ async def run_batch(
     else:
         # Write failures.json to S3.
         from parser_service.io_layer import S3IO  # noqa: PLC0415
+
         dummy_ref = InputRef(uri="", filename="failures.json", kind="s3")
         S3IO().write_json(dummy_ref, output_uri, failures_data)
 
@@ -312,6 +349,15 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Batch document parsing with Bedrock VLM.")
     parser.add_argument("--input", required=True, help="Local dir or s3://bucket/prefix")
     parser.add_argument("--output", required=True, help="Local dir or s3://bucket/prefix")
+    parser.add_argument(
+        "--emit-test-json",
+        action="store_true",
+        help=(
+            "Also write the wrapped, schema-valid prediction .json (via "
+            "wrap_md_as_prediction) alongside the .md, for doc-bench grading. "
+            "Off by default; set by run_eval.py on the eval path."
+        ),
+    )
     parser.add_argument(
         "--concurrency",
         type=int,
@@ -340,6 +386,7 @@ def main() -> None:
             max_files=args.max_files,
             timeout_per_file=args.timeout_per_file,
             retry_on_throttle=args.retry_on_throttle,
+            emit_test_json=args.emit_test_json,
         )
     )
 

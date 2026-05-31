@@ -1,15 +1,26 @@
 """
 route_report.py
 
-Scan a directory of parser_service JSON outputs and emit a routing breakdown:
-which documents were handled by the VLM vs kept on Docling, and why.
+Scan a directory of parser output JSON files and emit a routing breakdown:
+how each document's pages were handled (Docling-kept vs VLM), and why.
+
+The markdown-first pipeline records routing in each result's ``page_routes``
+list. This script reads that list from any output ``*.json`` that carries it and
+rolls it up per document via ``route_stats.route_record``.
 
 Usage:
     uv run python scripts/route_report.py --input <dir-of-json> [--output route_stats.csv]
 
 If --output is omitted, writes <input>/route_stats.csv. The table and totals are
 also printed to stdout.
+
+NOTE: ``parse_batch.py --emit-test-json`` writes the wrapped 1-paragraph
+prediction JSON (no ``page_routes``); those are skipped here. The authoritative
+``route_stats.csv`` is written directly by ``parse_batch.py`` from the live
+``page_routes``. This script is for ad-hoc scans of outputs that carry
+``page_routes``.
 """
+
 from __future__ import annotations
 
 import argparse
@@ -53,12 +64,15 @@ def main() -> None:
         except (json.JSONDecodeError, OSError) as exc:
             print(f"WARNING: skipping {fp.name}: {exc}", file=sys.stderr)
             continue
-        if not isinstance(output, dict) or "elements" not in output:
+        if not isinstance(output, dict) or "page_routes" not in output:
             continue
-        records.append(route_record(output, doc_id=fp.stem))
+        records.append(route_record(output["page_routes"], doc_id=fp.stem))
 
     if not records:
-        print(f"No parser output JSON files found in {in_dir}", file=sys.stderr)
+        print(
+            f"No parser output JSON with a 'page_routes' field found in {in_dir}",
+            file=sys.stderr,
+        )
         sys.exit(1)
 
     write_route_csv(records, out_csv)

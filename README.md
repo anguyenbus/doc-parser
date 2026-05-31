@@ -1,135 +1,129 @@
 # doc-parser
 
-Document parsing service: a **Docling + AWS Bedrock Claude (Sonnet 3.5) hybrid**
-pipeline. Docling parses every page on the host; a two-layer quality gate
-escalates only low-confidence pages to the VLM. Output is one prediction JSON
-per document, conforming to the doc-bench `parser_output` contract.
+Turn any document — **PDF, image, DOCX, XLSX, or HTML — into one clean Markdown
+file a RAG pipeline can consume.** doc-parser is a **Docling-first, VLM-fallback**
+hybrid: Docling parses every page; a per-page quality gate sends only the pages
+Docling struggles with (scanned, garbled, under-extracted) to a vision model
+(**AWS Bedrock Claude**). Most pages stay on Docling (fast, cheap); the VLM is the
+safety net.
 
-## Architecture
+- **Input:** `.pdf`, `.png/.jpg/.jpeg/.tif/.tiff`, `.docx`, `.xlsx/.xlsm`, `.html/.htm`
+- **Output:** a `.md` file per document (the product). A schema JSON also exists,
+  but it's only a test wrapper for benchmarking — not the shipped artifact.
 
-```
-PDF / image ──► Docling parse ──► quality gate ──┬─ pass ─► keep Docling elements
-                                                 └─ fail ─► render page ─► VLM (Claude) ─► elements
-                                                            (tables: crop region ─► VLM table mode)
-```
+A guided notebook for data scientists is at
+[`notebooks/walkthrough.ipynb`](notebooks/walkthrough.ipynb).
 
-- **Docling** does the bulk of parsing (layout, text, tables) on CPU.
-- **Quality gate** ([quality_gate.py](src/parser_service/quality_gate.py)) decides per page:
-  - *Layer 1* — Docling's own confidence (POOR/FAIR → promote).
-  - *Layer 2* — text heuristics (garbled-token ratio, **content-token ratio**
-    that counts clean numbers, repeated-char runs, word length, printable ratio).
-- **VLM** ([vlm_client.py](src/parser_service/vlm_client.py)) — Bedrock Claude,
-  used for promoted pages, scanned-page fallback, and per-table extraction.
-
-The VLM client is **Bedrock-only**. Export before running:
+## Quickstart
 
 ```bash
+cd doc-parser
+uv sync                          # install deps (Docling, pypdfium2, boto3, …)
+
+# Only needed if the VLM may run (PDFs that escalate, images, scans).
+# HTML / DOCX / XLSX are Docling-only and need no AWS.
 export AWS_REGION=ap-southeast-2
 export BEDROCK_VLM_MODEL=anthropic.claude-3-5-sonnet-20241022-v2:0
 ```
 
-## Running the parser
-
+### One document → Markdown
 ```bash
-# one document
-uv run python scripts/parse_one.py --input doc.pdf --output predictions/
+# print markdown to stdout
+uv run python scripts/parse_one.py --input report.pdf --format md
 
-# a directory, concurrently (writes route_stats.csv + failures.json)
-uv run python scripts/parse_batch.py --input ./inputs --output ./predictions --concurrency 4
+# write report.md (or into a directory)
+uv run python scripts/parse_one.py --input page.html --format md --output out/
+```
+`--format`: `md` (the markdown product), `json` (legacy element JSON — current
+default, kept during the markdown-first transition), `both`.
+
+### A folder (or S3 prefix) → one `.md` each
+```bash
+uv run python scripts/parse_batch.py --input ./inbox --output ./out --concurrency 4
+uv run python scripts/parse_batch.py --input s3://bucket/in --output s3://bucket/out
+```
+Writes `out/<name>.md` per document, plus `route_stats.csv` (which pages went
+Docling vs VLM) and `failures.json`. Knobs: `PARSER_CONCURRENCY`,
+`PARSER_RENDER_DPI` (default 144), `PARSER_MAX_PAGES`, `--retry-on-throttle`,
+`--timeout-per-file`. (`--emit-test-json` additionally writes the benchmark JSON
+wrapper — eval only.)
+
+### Programmatic
+```python
+from pathlib import Path
+from parser_service.markdown_pipeline import parse_to_markdown
+
+result = parse_to_markdown(Path("report.pdf"))
+result["markdown"]      # the RAG-ready Markdown string
+result["page_routes"]   # [{page_index, route: docling-kept|vlm|vlm-fallback-docling, reason}]
+result["warnings"]      # never raises — failures surface here
 ```
 
-Supported inputs: PDF, PNG, JPG/JPEG, TIFF, WebP.
+Two guarantees: a document **never crashes the run** (failures land in
+`warnings`/`failures.json`), and **Bedrock is contacted only when a page
+escalates** — so HTML/Office and clean digital PDFs run fully offline.
+
+## Architecture
+
+```
+doc ─► Docling parse ─► per page ─► quality gate ─┬─ confident ─► Docling page markdown
+                                                  └─ not / scanned ─► render page ─► VLM ─► markdown
+                                                                       (VLM empty? → keep Docling md)
+                                          ─► concatenate pages in order ─► document.md
+```
+
+- **Docling** does the bulk of parsing on CPU; each page is serialized with the
+  parser-owned `markdown.render_markdown` (chosen over Docling's native
+  `export_to_markdown` — it matches the benchmark gold more closely; see
+  [the route decision](agent-os/specs/2026-05-30-markdown-first-pipeline/planning/spike-route-decision.md)).
+- **Quality gate** ([quality_gate.py](src/parser_service/quality_gate.py)), per page:
+  *Layer 1* Docling confidence (POOR/FAIR → escalate); *coverage* (extracted ≪
+  text-layer tokens → escalate, catches silent under-extraction); *Layer 2* text
+  heuristics (garbled / repeated-char). Numeric-aware so chart/financial pages
+  aren't mistaken for garble.
+- **VLM** ([vlm_client.py](src/parser_service/vlm_client.py)) — Bedrock Claude,
+  for escalated pages, scanned-page fallback, and per-table extraction; an empty
+  VLM result falls back to Docling for that page.
+- **Format routing:** PDF → per-page gate; images → gated one-page path; DOCX/
+  XLSX/HTML → whole-doc Docling export, gate skipped (one logical page).
+
+JSON is produced only by `wrap_md_as_prediction` (a 1-element envelope around the
+markdown) and only on the eval path — it's how the markdown is scored, not what
+ships.
 
 ## Evaluation
 
-Quality is measured with the **doc-bench** package (a pip-installable wheel that
-bundles frozen dataset samples, Docling baselines, fixtures, and the grader).
-The wheel reproduces the old Docker grader's scores **and** computes METEOR.
-
-### Install the grader (once)
+Quality is measured with the **doc-bench** wheel (bundles frozen dataset samples,
+Docling baselines, fixtures, schema, and the grader).
 
 ```bash
 uv tool install --force ./doc_bench-0.1.0-py3-none-any.whl   # puts doc-bench* on PATH
-doc-bench-setup                                              # NLTK data → METEOR works
+doc-bench-setup                                              # NLTK data → METEOR
+uv run python scripts/run_eval.py --dataset dp_bench         # dump → parse → grade → compare
 ```
+[run_eval.py](scripts/run_eval.py) parses each doc to markdown, wraps it as a
+prediction (`--emit-test-json`), grades via the `doc-bench` CLI, and writes a
+`*_vs_baseline.{json,md}` report (per-doc deltas + paired stats). Trust **NID**
+(text ↑), **BLEU** (↑), **ARD** (reading order ↓), **METEOR** (↑). TEDS/MHS ~0 by
+gold design.
 
-### Fast offline gate (smoke test)
+On the representative samples, doc-parser **matches the Docling baseline** (the
+hybrid's job on clean corpora is to *not regress* Docling while rescuing degraded
+pages). The detailed route/gold analysis and ship-gate record live in
+[the spec planning docs](agent-os/specs/2026-05-30-markdown-first-pipeline/planning/).
 
-```bash
-doc-bench-smoke-test                          # bundled fixtures (~22 docs); exit 0 = pass
-doc-bench-smoke-test --predictions ./preds    # validate OUR predictions (schema + rejection rate)
-```
-Catches breakage/schema issues in seconds. Not a quality benchmark.
-
-### Full evaluation (one command)
-
-```bash
-uv run python scripts/run_eval.py                    # both datasets: dump → parse → grade → compare
-uv run python scripts/run_eval.py --dataset dp_bench # one dataset
-uv run python scripts/run_eval.py --skip-parse       # reuse existing predictions
-```
-[run_eval.py](scripts/run_eval.py) orchestrates the four steps and shells out to
-the installed `doc-bench` CLI (the grading source of truth); it writes a
-`*_vs_baseline.{json,md}` report (per-doc deltas, aggregate, paired stats) per
-dataset.
-
-> Trust **NID** (text similarity ↑), **BLEU** (↑), **ARD** (reading order ↓),
-> **METEOR** (↑, now functional via the wheel). TEDS/MHS are ~0 by gold design.
-
-### Results vs. the Docling baseline (2026-05-30)
-
-| Dataset | | NID ↑ | BLEU ↑ | ARD ↓ | METEOR ↑ |
-|---|---|---|---|---|---|
-| **DP-Bench** (12) | doc-parser | 0.9598 | 0.8842 | 0.5874 | 0.9454 |
-| | baseline | 0.9593 | 0.8768 | 0.5883 | 0.9475 |
-| **OmniDocBench** (10) | doc-parser | 0.8181 | 0.4635 | 0.3175 | 0.6756 |
-| | baseline | 0.8230 | 0.4617 | 0.3171 | 0.6501 |
-
-doc-parser **matches the Docling baseline on both** (no statistically significant
-differences). On these clean digital corpora Docling already performs well, so
-the hybrid's job is to *not regress* it while reserving the VLM for genuinely
-degraded pages.
-
-### Timing (10–12 docs, `--concurrency 4`, CPU-only)
-
-Cold start (model load) ~30–60 s; ~10–15 s/page amortized; **~2–3 min total**.
-Docling-only pages are cheap (~1–3 s); VLM-escalated pages dominate the tail
-(~5–15 s each for the Bedrock round-trip).
-
-## VLM vs. Docling: investigation & fixes
-
-On DP-Bench the hybrid initially trailed Docling (BLEU 0.809 vs 0.877). A
-three-way (gold / Docling / VLM) investigation traced the gap to **three causes,
-only one a genuine VLM weakness** — all addressed:
-
-1. **Converter dropped list text.** The VLM emitted a `list` container, but the
-   grader's markdown converter only renders `list_item`. → `parser_service` now
-   expands a VLM `list` into per-item `list_item` elements (`_emit_vlm_elements`).
-2. **Number-dense pages falsely escalated.** The gate's `dict_hit_rate` counted
-   only alphabetic tokens, so chart/financial pages looked like garble and went
-   to the VLM (which scored *worse* than Docling's verbatim OCR). → it's now
-   **numeric-aware** (clean numbers/dates/% count as content).
-3. **VLM under-transcribes chart axis labels** (genuine, residual). Mitigated by
-   (2): such pages now stay on Docling.
-
-Plus prompt hardening (verbatim/completeness rules) and an image `media_type`
-sniffing fix. Net DP-Bench BLEU: **0.809 → 0.838 → 0.856 → 0.884** (original →
-prompt → list fix → gate fix), closing the gap to baseline.
+> **Benchmark caveat (open, on the doc-bench side):** the current DP-Bench/
+> OmniDocBench samples are **single-page**, so they don't exercise multi-page
+> concatenation (covered by the test suite instead); and the gold's table
+> rendering is still evolving — see
+> [`DOC_BENCH_GOLD_ISSUE.md`](DOC_BENCH_GOLD_ISSUE.md).
 
 ## Development
 
 ```bash
-uv run pytest tests/ -q          # test suite
-uv run ruff check src/           # lint
+uv run pytest -q          # test suite (mocked VLM; no Bedrock)
+uv run ruff check src/    # lint
 ```
 
-> 3 tests in `tests/test_image.py` (image-path warning assertions) are
-> pre-existing failures unrelated to the parsing pipeline.
-
-## Notes
-
-- `eval_config.yaml` points both datasets at the data shipped in the doc-bench
-  repo under `references/doc-bench/baseline/`. The `doc-bench` grader reads this
-  fixed filename from the CWD (no `--config` flag; `dump-dataset` still takes one).
-- Docker (`references/doc-bench`) remains available for sealed CI runs; the wheel
-  is the recommended path for local iteration (identical scores, plus METEOR).
+Tests mock the VLM and need no AWS. Benchmark runs (`run_eval.py`) need Bedrock +
+the doc-bench wheel.

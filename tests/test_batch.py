@@ -3,20 +3,19 @@ test_batch.py
 
 Unit tests for the I/O abstraction layer (io_layer.py).
 """
+
 from __future__ import annotations
 
 import json
 from pathlib import Path
 from typing import Any
 
-import pytest
-
 from parser_service.io_layer import InputRef, LocalIO
-
 
 # ---------------------------------------------------------------------------
 # Test 1: LocalIO.list_input_files — yields only supported files
 # ---------------------------------------------------------------------------
+
 
 def test_local_io_list_input_files_filters_by_extension(tmp_path: Path) -> None:
     """list_input_files yields only supported extensions, not .txt files."""
@@ -42,6 +41,7 @@ def test_local_io_list_input_files_filters_by_extension(tmp_path: Path) -> None:
 # Test 2: LocalIO.read_bytes — returns exact file bytes
 # ---------------------------------------------------------------------------
 
+
 def test_local_io_read_bytes_returns_file_bytes(tmp_path: Path) -> None:
     """read_bytes returns the exact bytes of the file."""
     content = b"PDF content bytes \x00\x01\x02"
@@ -58,6 +58,7 @@ def test_local_io_read_bytes_returns_file_bytes(tmp_path: Path) -> None:
 # ---------------------------------------------------------------------------
 # Test 3: LocalIO.write_json — writes correct JSON file
 # ---------------------------------------------------------------------------
+
 
 def test_local_io_write_json_creates_json_file(tmp_path: Path) -> None:
     """write_json writes a .json file at output_dir/<stem>.json."""
@@ -84,6 +85,7 @@ def test_local_io_write_json_creates_json_file(tmp_path: Path) -> None:
 # Additional: InputRef dataclass has correct fields
 # ---------------------------------------------------------------------------
 
+
 def test_input_ref_fields() -> None:
     """InputRef dataclass stores uri, filename, and kind correctly."""
     ref = InputRef(uri="/path/to/file.pdf", filename="file.pdf", kind="local")
@@ -95,6 +97,7 @@ def test_input_ref_fields() -> None:
 # ---------------------------------------------------------------------------
 # Additional: module-level list_input_files works with local URI
 # ---------------------------------------------------------------------------
+
 
 def test_module_level_list_input_files(tmp_path: Path) -> None:
     """Module-level list_input_files function works for local URIs."""

@@ -5,11 +5,11 @@ Unit tests for DOCX, XLSX, and HTML parsing paths.
 
 These paths use Docling only; VLM is never called.
 """
+
 from __future__ import annotations
 
 from pathlib import Path
 from typing import Any
-from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -31,6 +31,7 @@ def _call_tracker() -> tuple[list[Any], Any]:
 # Test 1: parse(doc.docx) — one page, no warnings, VLM never called
 # ---------------------------------------------------------------------------
 
+
 def test_parse_docx(monkeypatch: pytest.MonkeyPatch) -> None:
     """parse(doc.docx) produces one page entry, no warnings, no VLM calls."""
     from parser_service.parser_service import parse
@@ -48,15 +49,14 @@ def test_parse_docx(monkeypatch: pytest.MonkeyPatch) -> None:
     assert calls == [], f"Unexpected VLM calls: {calls}"
 
     # No unexpected warnings (docling_failed allowed only if Docling has issues)
-    unexpected_codes = {
-        w["code"] for w in result["warnings"]
-    } - {"docling_failed"}
+    unexpected_codes = {w["code"] for w in result["warnings"]} - {"docling_failed"}
     assert unexpected_codes == set(), f"Unexpected warnings: {unexpected_codes}"
 
 
 # ---------------------------------------------------------------------------
 # Test 2: parse(sheet.xlsx) — one page, no warnings, VLM never called
 # ---------------------------------------------------------------------------
+
 
 def test_parse_xlsx(monkeypatch: pytest.MonkeyPatch) -> None:
     """parse(sheet.xlsx) produces one page entry, no warnings, no VLM calls."""
@@ -72,15 +72,14 @@ def test_parse_xlsx(monkeypatch: pytest.MonkeyPatch) -> None:
     assert result["pages"][0]["page_index"] == 0
     assert calls == [], f"Unexpected VLM calls: {calls}"
 
-    unexpected_codes = {
-        w["code"] for w in result["warnings"]
-    } - {"docling_failed"}
+    unexpected_codes = {w["code"] for w in result["warnings"]} - {"docling_failed"}
     assert unexpected_codes == set(), f"Unexpected warnings: {unexpected_codes}"
 
 
 # ---------------------------------------------------------------------------
 # Test 3: parse(page.html) — one page, no warnings, VLM never called
 # ---------------------------------------------------------------------------
+
 
 def test_parse_html(monkeypatch: pytest.MonkeyPatch) -> None:
     """parse(page.html) produces one page entry, no warnings, no VLM calls."""
@@ -96,7 +95,5 @@ def test_parse_html(monkeypatch: pytest.MonkeyPatch) -> None:
     assert result["pages"][0]["page_index"] == 0
     assert calls == [], f"Unexpected VLM calls: {calls}"
 
-    unexpected_codes = {
-        w["code"] for w in result["warnings"]
-    } - {"docling_failed"}
+    unexpected_codes = {w["code"] for w in result["warnings"]} - {"docling_failed"}
     assert unexpected_codes == set(), f"Unexpected warnings: {unexpected_codes}"

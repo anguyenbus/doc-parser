@@ -16,6 +16,7 @@ Inspect the output PNGs to confirm:
   - Crop regions correspond to the expected page areas
   - No off-by-one flipping (top of image = top of page)
 """
+
 from __future__ import annotations
 
 import argparse
@@ -61,7 +62,7 @@ def main() -> None:
     # A standard Letter page is 612 x 792 pts.
     # We render 3 regions: top-left quadrant, center strip, bottom-right quadrant.
     regions = [
-        ("topleft", {"x0": 0, "y0": 396, "x1": 306, "y1": 792}),   # top-left quarter
+        ("topleft", {"x0": 0, "y0": 396, "x1": 306, "y1": 792}),  # top-left quarter
         ("center_strip", {"x0": 100, "y0": 300, "x1": 512, "y1": 500}),  # center band
         ("bottomright", {"x0": 306, "y0": 0, "x1": 612, "y1": 396}),  # bottom-right quarter
     ]

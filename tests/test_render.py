@@ -3,6 +3,7 @@ test_render.py
 
 Unit tests for render.py — PDF page rendering and coordinate conversion.
 """
+
 from __future__ import annotations
 
 from pathlib import Path
@@ -19,6 +20,7 @@ DIGITAL_PDF = FIXTURES / "digital_simple.pdf"
 # Test 1: render_page returns valid PNG bytes
 # ---------------------------------------------------------------------------
 
+
 def test_render_page_returns_png_bytes() -> None:
     """render_page returns bytes starting with the PNG magic header."""
     result = render_page(DIGITAL_PDF, page_no=0)
@@ -30,6 +32,7 @@ def test_render_page_returns_png_bytes() -> None:
 # ---------------------------------------------------------------------------
 # Test 2: render_region returns PNG bytes for a 1-inch square crop
 # ---------------------------------------------------------------------------
+
 
 def test_render_region_returns_png_bytes() -> None:
     """render_region on a 72x72 pt (1-inch) crop returns non-empty PNG bytes."""
@@ -45,6 +48,7 @@ def test_render_region_returns_png_bytes() -> None:
 # ---------------------------------------------------------------------------
 # Test 3: render_region with degenerate bbox raises ValueError
 # ---------------------------------------------------------------------------
+
 
 def test_render_region_zero_width_raises_value_error() -> None:
     """render_region raises ValueError when the crop has zero width after conversion."""
@@ -66,6 +70,7 @@ def test_render_region_zero_height_raises_value_error() -> None:
 # Additional: render_page on page 1 also works
 # ---------------------------------------------------------------------------
 
+
 def test_render_page_second_page() -> None:
     """render_page works for the second page (page_no=1)."""
     result = render_page(DIGITAL_PDF, page_no=1)
@@ -76,6 +81,7 @@ def test_render_page_second_page() -> None:
 # ---------------------------------------------------------------------------
 # Additional: render_region with valid crop produces non-zero dimension image
 # ---------------------------------------------------------------------------
+
 
 def test_render_region_center_strip() -> None:
     """render_region on a center strip of the page returns valid PNG."""

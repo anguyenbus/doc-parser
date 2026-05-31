@@ -12,6 +12,7 @@ Public API:
   get_vlm_call_count() -> int
   reset_vlm_call_count() -> None
 """
+
 from __future__ import annotations
 
 import base64

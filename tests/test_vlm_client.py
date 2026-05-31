@@ -6,13 +6,14 @@ Unit tests for vlm_client.py — VLM client with mocked boto3.
 boto3 is imported inside call_vlm() at call time to avoid mandatory AWS
 dependencies at import. Tests patch it via sys.modules.
 """
+
 from __future__ import annotations
 
 import json
 import sys
 from io import BytesIO
 from typing import Any
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -23,7 +24,6 @@ from parser_service.vlm_client import (
     get_vlm_call_count,
     reset_vlm_call_count,
 )
-
 
 SAMPLE_IMAGE = b"\x89PNG\r\n\x1a\n" + b"\x00" * 100  # minimal fake PNG bytes
 
@@ -49,6 +49,7 @@ def _make_boto3_mock(response_body: str) -> MagicMock:
 # ---------------------------------------------------------------------------
 # Test 1: call_vlm with mocked boto3 returning valid JSON
 # ---------------------------------------------------------------------------
+
 
 def test_call_vlm_valid_json(monkeypatch: pytest.MonkeyPatch) -> None:
     """call_vlm returns dict with expected keys when boto3 returns valid JSON."""
@@ -79,6 +80,7 @@ def test_call_vlm_valid_json(monkeypatch: pytest.MonkeyPatch) -> None:
 # Test 2: call_vlm with markdown-fenced JSON response
 # ---------------------------------------------------------------------------
 
+
 def test_call_vlm_markdown_fenced_json(monkeypatch: pytest.MonkeyPatch) -> None:
     """_safe_parse strips markdown fences and returns correct dict."""
     table_data = {"rows": 1, "cols": 2, "header_rows": 1, "cells": []}
@@ -103,6 +105,7 @@ def test_call_vlm_markdown_fenced_json(monkeypatch: pytest.MonkeyPatch) -> None:
 # Test 3: call_vlm with boto3 raising an exception — must never raise
 # ---------------------------------------------------------------------------
 
+
 def test_call_vlm_never_raises_on_network_error(monkeypatch: pytest.MonkeyPatch) -> None:
     """call_vlm returns {'error': ...} when boto3 raises, and never re-raises."""
     monkeypatch.setenv("BEDROCK_VLM_MODEL", "test-model-id")
@@ -123,6 +126,7 @@ def test_call_vlm_never_raises_on_network_error(monkeypatch: pytest.MonkeyPatch)
 # ---------------------------------------------------------------------------
 # Test 4: _build_bedrock_request is a pure function
 # ---------------------------------------------------------------------------
+
 
 def test_build_bedrock_request_is_pure(monkeypatch: pytest.MonkeyPatch) -> None:
     """_build_bedrock_request returns a correctly structured dict, does not call boto3."""
@@ -153,6 +157,7 @@ def test_build_bedrock_request_is_pure(monkeypatch: pytest.MonkeyPatch) -> None:
 # Additional: _safe_parse with bare ``` fence
 # ---------------------------------------------------------------------------
 
+
 def test_safe_parse_bare_fence() -> None:
     """_safe_parse handles bare ``` fence (not ```json)."""
     data = {"key": "value"}
@@ -181,9 +186,10 @@ def test_safe_parse_invalid_json() -> None:
 # VLM call counter tests
 # ---------------------------------------------------------------------------
 
+
 def test_vlm_call_counter_increments(monkeypatch: pytest.MonkeyPatch) -> None:
     """_vlm_call_count increments on each successful call."""
-    page_data = {"elements": []}
+    page_data: dict[str, Any] = {"elements": []}
     response_body = json.dumps({"content": [{"type": "text", "text": json.dumps(page_data)}]})
 
     monkeypatch.setenv("BEDROCK_VLM_MODEL", "test-model-id")

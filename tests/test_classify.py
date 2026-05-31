@@ -5,6 +5,7 @@ Unit tests for _classify() — format classification from extension and MIME.
 
 These are pure-function tests with no I/O; fixtures are fake paths.
 """
+
 from __future__ import annotations
 
 from pathlib import Path
@@ -13,10 +14,10 @@ import pytest
 
 from parser_service.parser_service import _classify
 
-
 # ---------------------------------------------------------------------------
 # Test 1: All supported extensions map to the correct classification
 # ---------------------------------------------------------------------------
+
 
 @pytest.mark.parametrize(
     "extension, expected",
@@ -45,6 +46,7 @@ def test_classify_by_extension(extension: str, expected: str) -> None:
 # Test 2: .webp extension → "image"
 # ---------------------------------------------------------------------------
 
+
 def test_classify_webp() -> None:
     """.webp extension classifies as 'image'."""
     assert _classify(Path("photo.webp"), "") == "image"
@@ -53,6 +55,7 @@ def test_classify_webp() -> None:
 # ---------------------------------------------------------------------------
 # Test 3: No extension but application/pdf MIME → "pdf"
 # ---------------------------------------------------------------------------
+
 
 def test_classify_by_mime_pdf_no_extension() -> None:
     """File with no extension but application/pdf MIME → 'pdf'."""
@@ -64,6 +67,7 @@ def test_classify_by_mime_pdf_no_extension() -> None:
 # Test 4: Completely unknown extension + unknown MIME → "unknown"
 # ---------------------------------------------------------------------------
 
+
 def test_classify_unknown_extension_and_mime() -> None:
     """Unknown extension and unknown MIME returns 'unknown'."""
     result = _classify(Path("file.xyz123"), "application/octet-stream")
@@ -73,6 +77,7 @@ def test_classify_unknown_extension_and_mime() -> None:
 # ---------------------------------------------------------------------------
 # Test 5: "unknown" classification must not raise
 # ---------------------------------------------------------------------------
+
 
 def test_classify_unknown_does_not_raise() -> None:
     """_classify never raises — always returns a string."""
@@ -84,6 +89,7 @@ def test_classify_unknown_does_not_raise() -> None:
 # ---------------------------------------------------------------------------
 # Additional: MIME-based classification for known types
 # ---------------------------------------------------------------------------
+
 
 @pytest.mark.parametrize(
     "mime, expected",

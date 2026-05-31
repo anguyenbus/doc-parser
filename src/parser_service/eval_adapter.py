@@ -6,6 +6,7 @@ Thin eval-harness entry point. No business logic.
 Invoked by eval-harness via:
     --parser src.parser_service.eval_adapter
 """
+
 from __future__ import annotations
 
 import logging

@@ -23,13 +23,14 @@ Routing rules:
 
 Failure modes go into warnings[] — parse() never raises.
 """
+
 from __future__ import annotations
 
 import hashlib
 import importlib.metadata
 import logging
 import mimetypes
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Literal
 
@@ -37,7 +38,6 @@ from pydantic import BaseModel, field_validator
 
 from parser_service.vlm_client import (
     call_vlm,
-    get_vlm_call_count,
     reset_vlm_call_count,
 )
 
@@ -254,7 +254,7 @@ def _empty_output(path: Path, mime: str) -> dict[str, Any]:
     return {
         "schema_version": SCHEMA_VERSION,
         "parser_version": PARSER_VERSION,
-        "parsed_at": datetime.now(tz=timezone.utc).isoformat(),
+        "parsed_at": datetime.now(tz=UTC).isoformat(),
         "source": {
             "doc_id": path.stem,
             "filename": path.name,
@@ -300,15 +300,13 @@ def _append_warning(
 # ---------------------------------------------------------------------------
 
 
-def _parse_pdf(
-    path: Path, out: dict[str, Any], char_offset: int
-) -> tuple[dict[str, Any], int]:
+def _parse_pdf(path: Path, out: dict[str, Any], char_offset: int) -> tuple[dict[str, Any], int]:
     """Digital + scanned PDF routing path.
 
     Runs Docling, maps elements, crops and VLM-processes each TableItem,
     then runs the scanned-page fallback loop on pages with zero elements.
     """
-    from docling.document_converter import DocumentConverter  # type: ignore[import-untyped]
+    from docling.document_converter import DocumentConverter
 
     from parser_service.quality_gate import evaluate_page
     from parser_service.render import render_page, render_region, text_layer_tokens
@@ -351,7 +349,8 @@ def _parse_pdf(
     # traverse_pictures=True: text items nested inside PictureItem containers
     # (common for image-based pages) are returned.
     # FURNITURE layer: includes page headers/footers Docling separates from body.
-    from docling_core.types.doc.document import ContentLayer as _CL  # type: ignore[import-untyped]
+    from docling_core.types.doc.document import ContentLayer as _CL
+
     _layers = {_CL.BODY, _CL.FURNITURE}
     for item, _level in doc.iterate_items(traverse_pictures=True, included_content_layers=_layers):
         elem, char_offset = _docling_item_to_element(item, char_offset, out)
@@ -379,8 +378,7 @@ def _parse_pdf(
                         _append_warning(
                             out,
                             "vlm_table_fallback",
-                            f"VLM failed for table on page {page_idx}; "
-                            f"using Docling extraction",
+                            f"VLM failed for table on page {page_idx}; using Docling extraction",
                             scope="element",
                             element_id=elem["element_id"],
                         )
@@ -417,7 +415,9 @@ def _parse_pdf(
             continue  # handled by scanned-page loop
         page_elems = [e for e in out["elements"] if e.get("page_index") == page_idx]
         decision = evaluate_page(
-            page_idx, result, page_elems,
+            page_idx,
+            result,
+            page_elems,
             page_text_layer_tokens=raw_tokens.get(page_idx),
         )
         if decision.action == "promote_to_vlm":
@@ -436,12 +436,9 @@ def _parse_pdf(
     promoted_docling: dict[int, list[dict[str, Any]]] = {}
     if pages_to_promote:
         for idx in pages_to_promote:
-            promoted_docling[idx] = [
-                e for e in out["elements"] if e.get("page_index") == idx
-            ]
+            promoted_docling[idx] = [e for e in out["elements"] if e.get("page_index") == idx]
         out["elements"] = [
-            e for e in out["elements"]
-            if e.get("page_index") not in pages_to_promote
+            e for e in out["elements"] if e.get("page_index") not in pages_to_promote
         ]
         pages_with_text -= pages_to_promote
 
@@ -468,13 +465,20 @@ def _parse_pdf(
         # returns nothing — better a Docling parse than an empty page.
         fallback = promoted_docling.get(page_idx)
 
-        def _keep_docling(code: str, msg: str) -> None:
+        def _keep_docling(
+            code: str,
+            msg: str,
+            fallback: list[dict[str, Any]] | None = fallback,
+            page_idx: int = page_idx,
+        ) -> None:
             if fallback:
                 out["elements"].extend(fallback)
                 _append_warning(
-                    out, "vlm_fallback_docling",
+                    out,
+                    "vlm_fallback_docling",
                     f"VLM {msg} on page {page_idx}; kept Docling output",
-                    scope="page", page_index=page_idx,
+                    scope="page",
+                    page_index=page_idx,
                 )
             else:
                 _append_warning(out, code, msg, scope="page", page_index=page_idx)
@@ -588,9 +592,7 @@ def _emit_vlm_elements(
 # ---------------------------------------------------------------------------
 
 
-def _parse_image(
-    path: Path, out: dict[str, Any], char_offset: int
-) -> tuple[dict[str, Any], int]:
+def _parse_image(path: Path, out: dict[str, Any], char_offset: int) -> tuple[dict[str, Any], int]:
     """Image (PNG/JPEG/TIFF) routing path.
 
     1. Docling OCR extracts elements.
@@ -602,7 +604,8 @@ def _parse_image(
     out["pages"].append({"page_index": 0, "width": 0, "height": 0, "rotation": 0})
 
     try:
-        from docling.document_converter import DocumentConverter  # type: ignore[import-untyped]
+        from docling.document_converter import DocumentConverter
+
         converter = DocumentConverter()
         conversion_result = converter.convert(str(path))
         doc = conversion_result.document
@@ -611,7 +614,8 @@ def _parse_image(
         return out, char_offset
 
     before = len(out["elements"])
-    from docling_core.types.doc.document import ContentLayer as _CL  # type: ignore[import-untyped]
+    from docling_core.types.doc.document import ContentLayer as _CL
+
     _layers = {_CL.BODY, _CL.FURNITURE}
     for item, _ in doc.iterate_items(traverse_pictures=True, included_content_layers=_layers):
         elem, char_offset = _docling_item_to_element(item, char_offset, out)
@@ -645,7 +649,13 @@ def _parse_image(
 
     elements_raw = vlm_result.get("elements")
     if not isinstance(elements_raw, list):
-        _append_warning(out, "vlm_invalid_shape", "VLM image response 'elements' is not a list", scope="page", page_index=0)
+        _append_warning(
+            out,
+            "vlm_invalid_shape",
+            "VLM image response 'elements' is not a list",
+            scope="page",
+            page_index=0,
+        )
         return out, char_offset
 
     for i, raw_elem in enumerate(elements_raw):
@@ -665,7 +675,7 @@ def _parse_office_or_html(
     path: Path, out: dict[str, Any], kind: str, char_offset: int
 ) -> tuple[dict[str, Any], int]:
     """DOCX/XLSX/HTML routing path. Docling only, one logical page, no VLM."""
-    from docling.document_converter import DocumentConverter  # type: ignore[import-untyped]
+    from docling.document_converter import DocumentConverter
 
     # Emit exactly one logical page for these formats.
     out["pages"].append({"page_index": 0, "width": 0, "height": 0, "rotation": 0})
@@ -680,7 +690,8 @@ def _parse_office_or_html(
 
     doc = result.document
 
-    from docling_core.types.doc.document import ContentLayer as _CL  # type: ignore[import-untyped]
+    from docling_core.types.doc.document import ContentLayer as _CL
+
     _layers = {_CL.BODY, _CL.FURNITURE}
     for item, _level in doc.iterate_items(traverse_pictures=True, included_content_layers=_layers):
         elem, char_offset = _docling_item_to_element(item, char_offset, out)

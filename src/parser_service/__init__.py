@@ -3,6 +3,7 @@ parser_service package.
 
 Exposes parse() at the package level for eval-harness and script entry points.
 """
+
 from __future__ import annotations
 
 import logging

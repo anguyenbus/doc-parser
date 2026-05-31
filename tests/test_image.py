@@ -3,6 +3,7 @@ test_image.py
 
 Unit tests for the image (PNG/JPEG/TIFF) parsing path.
 """
+
 from __future__ import annotations
 
 from pathlib import Path
@@ -17,6 +18,7 @@ FIXTURES = Path(__file__).parent / "fixtures"
 # Test 3 (Phase 3f): parse(screenshot.png) with mock_vlm_page
 #   — all elements have vlm_p0_ IDs
 # ---------------------------------------------------------------------------
+
 
 def test_image_all_elements_have_vlm_p0_ids(mock_vlm_page: None) -> None:
     """parse(screenshot.png) with mocked VLM — all element IDs start with vlm_p0_."""
@@ -42,6 +44,7 @@ def test_image_all_elements_have_vlm_p0_ids(mock_vlm_page: None) -> None:
 #   — image_unparseable warning emitted
 # ---------------------------------------------------------------------------
 
+
 def test_image_vlm_error_produces_image_unparseable_warning(mock_vlm_error: None) -> None:
     """parse(screenshot.png) with mocked VLM error → image_unparseable warning."""
     from parser_service.parser_service import parse
@@ -62,6 +65,7 @@ def test_image_vlm_error_produces_image_unparseable_warning(mock_vlm_error: None
 # Additional: unsupported type produces unsupported_type warning, no exception
 # ---------------------------------------------------------------------------
 
+
 def test_unsupported_type_warning(tmp_path: Path) -> None:
     """parse() on an unsupported file type returns unsupported_type warning."""
     from parser_service.parser_service import parse
@@ -79,6 +83,7 @@ def test_unsupported_type_warning(tmp_path: Path) -> None:
 # ---------------------------------------------------------------------------
 # Additional: vlm_invalid_shape warning when elements is not a list
 # ---------------------------------------------------------------------------
+
 
 def test_image_vlm_invalid_shape_warning(monkeypatch: pytest.MonkeyPatch) -> None:
     """parse(screenshot.png) with VLM returning non-list elements → vlm_invalid_shape."""

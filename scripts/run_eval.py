@@ -4,6 +4,11 @@
 Pipeline per dataset:  dump (doc-bench) -> parse (parser_service) -> grade
 (doc-bench) -> compare (scripts/compare_to_baseline.py).
 
+The parse step runs the markdown-first pipeline: ``parse_batch.py`` produces a
+``.md`` per document and, because this orchestrator passes ``--emit-test-json``,
+also writes the wrapped schema-valid prediction ``.json`` that doc-bench grades
+(md -> wrapped JSON -> grade).
+
 All grading is done by the installed `doc-bench` CLI (the source of truth); this
 script only orchestrates and shells out to it, so it stays robust across wheel
 versions. Install the grader once with:
@@ -27,6 +32,7 @@ import shutil
 import subprocess
 import sys
 from pathlib import Path
+from typing import Any
 
 ROOT = Path(__file__).resolve().parent.parent
 BASELINE = ROOT / "references/doc-bench/baseline"
@@ -47,7 +53,7 @@ BEDROCK_DEFAULTS = {
 }
 
 
-def run(cmd: list[str], **kw) -> subprocess.CompletedProcess:
+def run(cmd: list[str | Path], **kw: Any) -> subprocess.CompletedProcess[Any]:
     print(f"\n$ {' '.join(str(c) for c in cmd)}", flush=True)
     return subprocess.run([str(c) for c in cmd], check=True, **kw)
 
@@ -59,7 +65,7 @@ def latest_results_csv(results_dir: Path, dataset: str) -> Path:
     return matches[-1]
 
 
-def evaluate(dataset: str, args: argparse.Namespace) -> dict:
+def evaluate(dataset: str, args: argparse.Namespace) -> dict[str, Any]:
     work = Path(args.workdir) / dataset
     exported = work / "exported"
     predictions = Path(args.predictions) if args.predictions else work / "predictions"
@@ -75,25 +81,52 @@ def evaluate(dataset: str, args: argparse.Namespace) -> dict:
         if exported.exists():
             shutil.rmtree(exported)
         exported.mkdir(parents=True)
-        run([shutil.which("doc-bench-dump-dataset"), "--dataset", dataset,
-             "--output", exported, "--config", CONFIG])
+        dumper = shutil.which("doc-bench-dump-dataset")
+        if not dumper:
+            sys.exit("ERROR: `doc-bench-dump-dataset` not on PATH.")
+        run(
+            [
+                dumper,
+                "--dataset",
+                dataset,
+                "--output",
+                exported,
+                "--config",
+                CONFIG,
+            ]
+        )
 
         env = {**os.environ, **{k: v for k, v in BEDROCK_DEFAULTS.items() if k not in os.environ}}
         env.setdefault("PARSER_LOG_LEVEL", "WARNING")
         if predictions.exists():
             shutil.rmtree(predictions)
         predictions.mkdir(parents=True)
-        run([sys.executable, str(ROOT / "scripts/parse_batch.py"),
-             "--input", exported, "--output", predictions,
-             "--concurrency", str(args.concurrency)], env=env)
+        # --emit-test-json: parse_batch writes the .md PLUS the wrapped, schema-valid
+        # prediction .json doc-bench grades (md -> wrapped JSON -> grade).
+        run(
+            [
+                sys.executable,
+                str(ROOT / "scripts/parse_batch.py"),
+                "--input",
+                exported,
+                "--output",
+                predictions,
+                "--emit-test-json",
+                "--concurrency",
+                str(args.concurrency),
+            ],
+            env=env,
+        )
     else:
         print(f"[{dataset}] reusing predictions at {predictions}")
         if not predictions.exists():
             sys.exit(f"ERROR: predictions dir not found: {predictions}")
 
     # 3) grade with the wheel (reads ./eval_config.yaml from CWD → run from ROOT)
-    run([doc_bench, "--dataset", dataset, "--predictions", predictions,
-         "--output-dir", results], cwd=ROOT)
+    run(
+        [doc_bench, "--dataset", dataset, "--predictions", predictions, "--output-dir", results],
+        cwd=ROOT,
+    )
 
     csv = latest_results_csv(results, dataset)
     summary = json.loads(csv.with_suffix(".json").read_text())
@@ -101,8 +134,14 @@ def evaluate(dataset: str, args: argparse.Namespace) -> dict:
 
     # 4) compare to baseline (writes *_vs_baseline.{json,md})
     route = predictions / "route_stats.csv"
-    cmp_cmd = [sys.executable, str(ROOT / "scripts/compare_to_baseline.py"),
-               "--results", csv, "--baseline", DATASETS[dataset]]
+    cmp_cmd: list[str | Path] = [
+        sys.executable,
+        str(ROOT / "scripts/compare_to_baseline.py"),
+        "--results",
+        csv,
+        "--baseline",
+        DATASETS[dataset],
+    ]
     if route.exists():
         cmp_cmd += ["--route-stats", route]
     run(cmp_cmd)
@@ -110,20 +149,30 @@ def evaluate(dataset: str, args: argparse.Namespace) -> dict:
     return {
         "dataset": dataset,
         "evaluated": summary.get("evaluated_samples", summary.get("total_processed")),
-        "nid": avg.get("nid"), "bleu": avg.get("bleu"),
-        "ard": avg.get("ard"), "meteor": avg.get("meteor"),
+        "nid": avg.get("nid"),
+        "bleu": avg.get("bleu"),
+        "ard": avg.get("ard"),
+        "meteor": avg.get("meteor"),
         "csv": str(csv),
     }
 
 
 def main() -> None:
-    ap = argparse.ArgumentParser(description=__doc__,
-                                 formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
     ap.add_argument("--dataset", choices=[*DATASETS, "all"], default="all")
-    ap.add_argument("--predictions", type=Path, default=None,
-                    help="Use an existing predictions dir (skips dump+parse). Single dataset only.")
-    ap.add_argument("--skip-parse", action="store_true",
-                    help="Reuse predictions already under --workdir/<dataset>/predictions.")
+    ap.add_argument(
+        "--predictions",
+        type=Path,
+        default=None,
+        help="Use an existing predictions dir (skips dump+parse). Single dataset only.",
+    )
+    ap.add_argument(
+        "--skip-parse",
+        action="store_true",
+        help="Reuse predictions already under --workdir/<dataset>/predictions.",
+    )
     ap.add_argument("--concurrency", type=int, default=4)
     ap.add_argument("--workdir", type=Path, default=ROOT / "docker_eval/run")
     args = ap.parse_args()
@@ -138,10 +187,14 @@ def main() -> None:
     print(f"{'dataset':16}{'n':>4}{'NID':>9}{'BLEU':>9}{'ARD':>9}{'METEOR':>9}")
     print("-" * 64)
     for r in rows:
-        def f(x):
+
+        def f(x: object) -> str:
             return f"{x:.4f}" if isinstance(x, (int, float)) else "  -  "
-        print(f"{r['dataset']:16}{str(r['evaluated']):>4}"
-              f"{f(r['nid']):>9}{f(r['bleu']):>9}{f(r['ard']):>9}{f(r['meteor']):>9}")
+
+        print(
+            f"{r['dataset']:16}{str(r['evaluated']):>4}"
+            f"{f(r['nid']):>9}{f(r['bleu']):>9}{f(r['ard']):>9}{f(r['meteor']):>9}"
+        )
     print("=" * 64)
     print("Per-dataset *_vs_baseline.md written next to each results CSV.")
 

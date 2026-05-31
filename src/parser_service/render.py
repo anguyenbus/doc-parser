@@ -15,6 +15,7 @@ Coordinate system:
 
 # Coordinate conversion verified visually on 2026-05-28 with digital_simple.pdf
 """
+
 from __future__ import annotations
 
 import io
@@ -66,9 +67,11 @@ def render_page(pdf_path: Path, page_no: int, dpi: int = _DEFAULT_DPI) -> bytes:
     Returns:
         PNG bytes of the full page.
     """
-    import pypdfium2 as pdfium  # type: ignore[import-untyped]
+    import pypdfium2 as pdfium
 
-    effective_dpi = int(os.environ.get("PARSER_RENDER_DPI", str(dpi))) if dpi == _DEFAULT_DPI else dpi
+    effective_dpi = (
+        int(os.environ.get("PARSER_RENDER_DPI", str(dpi))) if dpi == _DEFAULT_DPI else dpi
+    )
     scale = effective_dpi / 72.0
 
     pdf = pdfium.PdfDocument(str(pdf_path))
@@ -113,15 +116,16 @@ def render_region(
         img_top    = (page_height_pts - y1) * s   # PDF y1 (top of box) → img top
         img_bottom = (page_height_pts - y0) * s   # PDF y0 (bottom of box) → img bottom
     """
-    import pypdfium2 as pdfium  # type: ignore[import-untyped]
+    import pypdfium2 as pdfium
 
-    effective_dpi = int(os.environ.get("PARSER_RENDER_DPI", str(dpi))) if dpi == _DEFAULT_DPI else dpi
+    effective_dpi = (
+        int(os.environ.get("PARSER_RENDER_DPI", str(dpi))) if dpi == _DEFAULT_DPI else dpi
+    )
     scale = effective_dpi / 72.0
 
     pdf = pdfium.PdfDocument(str(pdf_path))
     try:
         page = pdf[page_no]
-        page_width_pts = page.get_width()
         page_height_pts = page.get_height()
         pil = page.render(scale=scale).to_pil()
     finally:

@@ -23,6 +23,7 @@ import json
 import math
 import statistics as st
 from pathlib import Path
+from typing import Any, cast
 
 from scipy import stats
 
@@ -33,12 +34,13 @@ from scipy import stats
 METRICS = {"nid": "higher", "bleu": "higher", "ard": "lower", "meteor": "higher"}
 
 
-def load_baseline(path: Path) -> list[dict]:
-    return json.loads(path.read_text())["results"]
+def load_baseline(path: Path) -> list[dict[str, Any]]:
+    results: list[dict[str, Any]] = json.loads(path.read_text())["results"]
+    return results
 
 
-def load_ours(path: Path) -> list[dict]:
-    return list(csv.DictReader(path.open()))
+def load_ours(path: Path) -> list[dict[str, Any]]:
+    return cast(list[dict[str, Any]], list(csv.DictReader(path.open())))
 
 
 def load_routes(path: Path | None) -> dict[str, str]:
@@ -47,26 +49,22 @@ def load_routes(path: Path | None) -> dict[str, str]:
     return {r["doc_id"]: r["route"] for r in csv.DictReader(path.open())}
 
 
-def paired_stats(ours: list[float], base: list[float], higher_better: bool) -> dict:
-    diffs = [o - b for o, b in zip(ours, base)]
+def paired_stats(ours: list[float], base: list[float], higher_better: bool) -> dict[str, Any]:
+    diffs = [o - b for o, b in zip(ours, base, strict=True)]
     mean_d = st.mean(diffs)
     sd = st.stdev(diffs) if len(diffs) > 1 else 0.0
     n = len(diffs)
     se = sd / math.sqrt(n) if n else 0.0
     tcrit = stats.t.ppf(0.975, n - 1) if n > 1 else float("nan")
 
-    t_stat, p_t = stats.ttest_rel(ours, base)
+    _t_stat, p_t = stats.ttest_rel(ours, base)
     try:
-        w_stat, p_w = stats.wilcoxon(ours, base)
+        _w_stat, p_w = stats.wilcoxon(ours, base)
     except ValueError:
         # all diffs zero -> Wilcoxon undefined
-        w_stat, p_w = float("nan"), 1.0
+        p_w = 1.0
 
-    wins = sum(
-        1
-        for d in diffs
-        if abs(d) > 1e-9 and ((d > 0) == higher_better)
-    )
+    wins = sum(1 for d in diffs if abs(d) > 1e-9 and ((d > 0) == higher_better))
     return {
         "n": n,
         "mean_delta": round(mean_d, 4),
@@ -98,9 +96,9 @@ def main() -> None:
             "(dump/grade must cover the same image set)"
         )
 
-    per_page = []
-    series = {m: {"ours": [], "base": []} for m in METRICS}
-    for o, b in zip(ours, base):
+    per_page: list[dict[str, Any]] = []
+    series: dict[str, dict[str, list[float]]] = {m: {"ours": [], "base": []} for m in METRICS}
+    for o, b in zip(ours, base, strict=True):
         # OmniDocBench baselines key the source as "image"; DP-Bench as "pdf".
         img = b.get("image") or b.get("pdf") or b.get("doc_id", "")
         doc_id = img.rsplit(".", 1)[0]
@@ -127,6 +125,10 @@ def main() -> None:
             series[m]["ours"], series[m]["base"], higher_better=(direction == "higher")
         )
 
+    notes = [
+        "METEOR included (doc-bench wheel computes it after `doc-bench-setup`).",
+        f"Bonferroni alpha = 0.05/{len(METRICS)} = {0.05 / len(METRICS):.4f} across the {len(METRICS)} metrics.",
+    ]
     report = {
         "results_csv": str(args.results),
         "baseline": str(args.baseline),
@@ -134,10 +136,7 @@ def main() -> None:
         "aggregate": aggregate,
         "statistics": stats_out,
         "per_page": per_page,
-        "notes": [
-            "METEOR included (doc-bench wheel computes it after `doc-bench-setup`).",
-            f"Bonferroni alpha = 0.05/{len(METRICS)} = {0.05/len(METRICS):.4f} across the {len(METRICS)} metrics.",
-        ],
+        "notes": notes,
     }
 
     out_json = args.results.with_name(args.results.stem + "_vs_baseline.json")
@@ -159,7 +158,7 @@ def main() -> None:
         )
     lines += [
         "",
-        "## Statistical significance (paired, n=%d)" % len(ours),
+        f"## Statistical significance (paired, n={len(ours)})",
         "",
         "| Metric | mean Δ | 95% CI | paired t p | Wilcoxon p | sig (raw) | sig (Bonferroni) |",
         "|---|---|---|---|---|---|---|",
@@ -184,7 +183,7 @@ def main() -> None:
             f"| {i} | {r['doc']} | {r['route']} | "
             f"{r['nid']['delta']:+.3f} | {r['bleu']['delta']:+.3f} | {r['ard']['delta']:+.3f} |"
         )
-    lines += ["", "## Notes", ""] + [f"- {n}" for n in report["notes"]] + [""]
+    lines += ["", "## Notes", ""] + [f"- {n}" for n in notes] + [""]
     out_md.write_text("\n".join(lines))
 
     print("\n".join(lines))

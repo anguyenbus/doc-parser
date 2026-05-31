@@ -1,90 +1,123 @@
 """
 route_stats.py
 
-Derive per-document routing telemetry from parser_service output.
+Derive per-document routing telemetry from the markdown-first pipeline's
+``page_routes`` (``markdown_pipeline.parse_to_markdown`` output).
 
-Every parser output records how each document was handled:
-  - VLM-produced elements get `element_id` values prefixed with `vlm_`.
-  - A `vlm_promoted` warning is added when the image quality gate escalates a
-    page to the VLM (the warning message carries the gate layer + reason).
-  - VLM failures surface as `image_unparseable` / `vlm_invalid_shape` /
-    `page_unparseable`; a failed table-crop VLM call leaves `vlm_table_fallback`.
+Each ``parse_to_markdown`` result carries a ``page_routes`` list — one entry per
+logical page — of the form ``{page_index, route, reason, ...}``. The ``route``
+vocabulary is EXACTLY what ``markdown_pipeline`` emits:
 
-This module turns that into a tidy record per document plus a CSV writer, so a
-batch run (or an ad-hoc scan of an output directory) yields a routing breakdown:
+  - "docling-kept"         the gate kept Docling's page markdown (no VLM)
+  - "vlm"                  VLM markdown replaced this page's slice
+  - "vlm-fallback-docling" the page was promoted to the VLM but the VLM produced
+                           garbage, so Docling's slice was kept
 
-    doc_id  route  elems  vlm_el  warn_codes  reason
+This module turns those per-page routes into a tidy per-document record plus a
+CSV writer, so a batch run (or an ad-hoc scan of an output directory) yields a
+routing breakdown:
 
-`route` is one of:
-  - "vlm"          VLM produced or replaced this document's content
-  - "vlm-failed"   VLM was reached for this document but errored
-  - "docling-kept" Docling output was kept; the VLM was not used
+    doc_id  route  pages  vlm_pages  routes  reason
+
+``route`` (the per-DOCUMENT roll-up column) is one of:
+  - "vlm"          at least one page used the VLM (``vlm`` route present)
+  - "vlm-failed"   the VLM was reached but every promoted page fell back
+  - "docling-kept" no VLM page; Docling output was kept throughout
+  - "error"        the document failed before producing any page routes
+
+CRITICAL (route-vocabulary invariant): the per-page route counts MUST sum to the
+page count (the number of ``page_routes`` entries). A vocabulary mismatch — e.g.
+counting an old ``vlm_p…`` element-ID prefix that no longer exists — would
+silently report zeros without failing, surfacing only as misleading numbers in
+the benchmark. ``route_record`` asserts the sum invariant so a mismatch fails
+loudly.
 """
+
 from __future__ import annotations
 
 import csv
 from pathlib import Path
 from typing import Any
 
-# Warning codes that mean "the VLM was attempted but failed for this doc/page".
-_VLM_FAILED_CODES = {"image_unparseable", "vlm_invalid_shape", "page_unparseable"}
-# Warning codes whose message is worth surfacing as the per-doc `reason`.
-_REASON_CODES = (
-    "vlm_promoted",
-    "image_unparseable",
-    "vlm_invalid_shape",
-    "page_unparseable",
-    "vlm_table_fallback",
-    "docling_failed",
-)
+# The exact per-page ``route`` vocabulary emitted by ``markdown_pipeline``.
+ROUTE_DOCLING_KEPT = "docling-kept"
+ROUTE_VLM = "vlm"
+ROUTE_VLM_FALLBACK = "vlm-fallback-docling"
 
-# CSV column order.
-FIELDNAMES = ["doc_id", "route", "elems", "vlm_el", "warn_codes", "reason"]
+# CSV column order. ``doc_id`` and ``route`` are the columns ``compare_to_baseline.py``
+# consumes (it reads only those two), and are kept first to preserve that contract.
+FIELDNAMES = ["doc_id", "route", "pages", "vlm_pages", "routes", "reason"]
 
 
-def route_record(output: dict[str, Any], doc_id: str | None = None) -> dict[str, Any]:
-    """Build a one-row routing record from a single parser output dict.
+def route_record(page_routes: list[dict[str, Any]], doc_id: str) -> dict[str, Any]:
+    """Build a one-row routing record from a ``page_routes`` list.
 
     Args:
-        output: A parser_service.parse() result (schema-conformant dict).
-        doc_id: Optional override; defaults to source.doc_id, then filename.
+        page_routes: The ``page_routes`` list from ``parse_to_markdown`` — a list
+            of ``{page_index, route, reason, ...}`` dicts.
+        doc_id: The document identifier (e.g. the input filename stem).
 
     Returns:
-        Dict with keys matching FIELDNAMES.
+        Dict with keys matching ``FIELDNAMES``.
+
+    Raises:
+        AssertionError: if the per-page route counts do not sum to the number of
+            ``page_routes`` entries (catches a route-vocabulary mismatch loudly).
     """
-    source = output.get("source", {})
-    if doc_id is None:
-        doc_id = source.get("doc_id") or source.get("filename") or "?"
+    page_count = len(page_routes)
 
-    elements = output.get("elements", [])
-    warnings = output.get("warnings", [])
+    docling_kept = sum(1 for r in page_routes if r.get("route") == ROUTE_DOCLING_KEPT)
+    vlm = sum(1 for r in page_routes if r.get("route") == ROUTE_VLM)
+    vlm_fallback = sum(1 for r in page_routes if r.get("route") == ROUTE_VLM_FALLBACK)
 
-    vlm_el = sum(1 for e in elements if str(e.get("element_id", "")).startswith("vlm_"))
-    codes = sorted({w.get("code") for w in warnings if w.get("code")})
-    code_set = set(codes)
-    promoted = "vlm_promoted" in code_set
-    used_vlm = promoted or vlm_el > 0
+    # INVARIANT: every page's route is one of the known vocabulary values, so the
+    # three counts must sum to the page count. If this fires, the route vocabulary
+    # emitted by markdown_pipeline drifted from what we count here.
+    counted = docling_kept + vlm + vlm_fallback
+    assert counted == page_count, (
+        f"route-count invariant violated for {doc_id!r}: counted {counted} "
+        f"(docling-kept={docling_kept}, vlm={vlm}, vlm-fallback-docling={vlm_fallback}) "
+        f"!= {page_count} page_routes; the route vocabulary drifted "
+        f"(saw routes: {sorted(str(r.get('route')) for r in page_routes)})"
+    )
 
-    if used_vlm:
+    # Pages that reached the VLM (whether or not the VLM output was kept).
+    vlm_pages = vlm + vlm_fallback
+
+    if vlm > 0:
         route = "vlm"
-    elif code_set & _VLM_FAILED_CODES:
+    elif vlm_fallback > 0:
+        # The VLM was reached on every promoted page but produced nothing usable.
         route = "vlm-failed"
     else:
         route = "docling-kept"
 
+    # Surface the first non-empty page reason (gate Decision.reason) for context.
     reason = ""
-    for w in warnings:
-        if w.get("code") in _REASON_CODES:
-            reason = w.get("message", "")
+    for r in page_routes:
+        if r.get("reason"):
+            reason = str(r["reason"])
             break
 
     return {
         "doc_id": doc_id,
         "route": route,
-        "elems": len(elements),
-        "vlm_el": vlm_el,
-        "warn_codes": ",".join(codes) or "-",
+        "pages": page_count,
+        "vlm_pages": vlm_pages,
+        "routes": ",".join(f"{r.get('route')}" for r in page_routes) or "-",
         "reason": reason,
+    }
+
+
+def error_record(doc_id: str, reason: str) -> dict[str, Any]:
+    """Build a record for a document that failed before producing page routes."""
+    return {
+        "doc_id": doc_id,
+        "route": "error",
+        "pages": 0,
+        "vlm_pages": 0,
+        "routes": "-",
+        "reason": reason[:200],
     }
 
 
@@ -94,11 +127,17 @@ def summarize(records: list[dict[str, Any]]) -> dict[str, int]:
     used_vlm = sum(1 for r in records if r["route"] == "vlm")
     vlm_failed = sum(1 for r in records if r["route"] == "vlm-failed")
     docling_kept = sum(1 for r in records if r["route"] == "docling-kept")
+    errors = sum(1 for r in records if r["route"] == "error")
+    total_pages = sum(int(r.get("pages", 0)) for r in records)
+    vlm_pages = sum(int(r.get("vlm_pages", 0)) for r in records)
     return {
         "total": total,
         "used_vlm": used_vlm,
         "vlm_failed": vlm_failed,
         "docling_kept": docling_kept,
+        "errors": errors,
+        "total_pages": total_pages,
+        "vlm_pages": vlm_pages,
     }
 
 
@@ -115,18 +154,18 @@ def write_route_csv(records: list[dict[str, Any]], path: Path) -> None:
 
 def format_table(records: list[dict[str, Any]]) -> str:
     """Render records as an aligned text table with a totals footer."""
-    lines = [
-        f"{'doc_id':36} {'route':12} {'elems':>5} {'vlm_el':>6} {'warn_codes':22} reason"
-    ]
+    lines = [f"{'doc_id':36} {'route':12} {'pages':>5} {'vlm_pg':>6} {'routes':22} reason"]
     for r in records:
         lines.append(
-            f"{str(r['doc_id'])[:36]:36} {r['route']:12} {r['elems']:>5} "
-            f"{r['vlm_el']:>6} {str(r['warn_codes'])[:22]:22} {str(r['reason'])[:60]}"
+            f"{str(r['doc_id'])[:36]:36} {r['route']:12} {r['pages']:>5} "
+            f"{r['vlm_pages']:>6} {str(r['routes'])[:22]:22} {str(r['reason'])[:60]}"
         )
     s = summarize(records)
     lines.append("")
     lines.append(
-        f"Total: {s['total']} | used VLM: {s['used_vlm']} | "
-        f"vlm-failed: {s['vlm_failed']} | docling-kept: {s['docling_kept']}"
+        f"Total: {s['total']} docs / {s['total_pages']} pages | "
+        f"used VLM: {s['used_vlm']} | vlm-failed: {s['vlm_failed']} | "
+        f"docling-kept: {s['docling_kept']} | errors: {s['errors']} | "
+        f"vlm pages: {s['vlm_pages']}"
     )
     return "\n".join(lines)

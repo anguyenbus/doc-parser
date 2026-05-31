@@ -13,12 +13,14 @@ keep, or should be re-processed by the VLM.
 
 Tables are never gated here — callers must always send table crops to VLM.
 """
+
 from __future__ import annotations
 
 import logging
 import re
 import unicodedata
 from dataclasses import dataclass, field
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -26,26 +28,27 @@ logger = logging.getLogger(__name__)
 # Thresholds (conservative; Layer 1 already filters the clear failures)
 # ---------------------------------------------------------------------------
 
-_GARBLED_TOKEN_RATIO_MAX = 0.20   # fraction of tokens that look garbled
-_MEAN_WORD_LENGTH_MIN    = 2.0    # below this → likely noise
-_DICT_HIT_RATE_MIN       = 0.50   # fraction of tokens that are content (alpha or clean numbers)
-_MAX_REPEATED_CHAR_RUN   = 6      # e.g. "aaaaaaa" → noise
-_ASCII_PRINTABLE_MIN     = 0.90   # fraction of printable ASCII chars
+_GARBLED_TOKEN_RATIO_MAX = 0.20  # fraction of tokens that look garbled
+_MEAN_WORD_LENGTH_MIN = 2.0  # below this → likely noise
+_DICT_HIT_RATE_MIN = 0.50  # fraction of tokens that are content (alpha or clean numbers)
+_MAX_REPEATED_CHAR_RUN = 6  # e.g. "aaaaaaa" → noise
+_ASCII_PRINTABLE_MIN = 0.90  # fraction of printable ASCII chars
 
 # Coverage: catch silent under-extraction (Docling grades the fragment it DID
 # read as high-confidence, blind to what it missed — e.g. tables of contents).
-_COVERAGE_MIN_TEXT_LAYER_TOKENS = 30    # only check pages with a substantial text layer
-_COVERAGE_RATIO_MIN             = 0.30  # extracted must be ≥30% of the text-layer tokens
+_COVERAGE_MIN_TEXT_LAYER_TOKENS = 30  # only check pages with a substantial text layer
+_COVERAGE_RATIO_MIN = 0.30  # extracted must be ≥30% of the text-layer tokens
 
 # Regex: a token looks garbled when it mixes letters and digits in a short span
 # e.g. "1ooo", "M0del", "Rece1ved"
 _GARBLED_RE = re.compile(r"(?<=[A-Za-z])\d|(?<=\d)[A-Za-z]")
-_REPEATED_RE = re.compile(r"(.)\1{%d,}" % _MAX_REPEATED_CHAR_RUN)
+_REPEATED_RE = re.compile(rf"(.)\1{{{_MAX_REPEATED_CHAR_RUN},}}")
 
 
 # ---------------------------------------------------------------------------
 # Public types
 # ---------------------------------------------------------------------------
+
 
 @dataclass
 class QualitySignals:
@@ -63,14 +66,15 @@ class QualitySignals:
 
 @dataclass
 class Decision:
-    action: str          # "keep" | "promote_to_vlm"
-    reason: str | None   # human-readable explanation
-    layer: int | None    # 1, 2, or None for "keep"
+    action: str  # "keep" | "promote_to_vlm"
+    reason: str | None  # human-readable explanation
+    layer: int | None  # 1, 2, or None for "keep"
 
 
 # ---------------------------------------------------------------------------
 # Layer 1 — Docling confidence grades
 # ---------------------------------------------------------------------------
+
 
 def _layer1_decision(conversion_result: object, page_no: int) -> Decision | None:
     """
@@ -119,6 +123,7 @@ def _layer1_decision(conversion_result: object, page_no: int) -> Decision | None
 # Layer 2 — Heuristic text quality
 # ---------------------------------------------------------------------------
 
+
 def _is_content_token(token: str) -> bool:
     """True if a token is legitimate content: an alphabetic word OR a cleanly
     formatted number (thousands separators, dates, %, currency, ranges).
@@ -154,10 +159,10 @@ def _measure_text_quality(text: str) -> QualitySignals:
     content = sum(1 for t in tokens if _is_content_token(t))
     word_lengths = [len(t) for t in tokens]
 
-    garbled_ratio  = garbled / total
-    dict_hit_rate  = content / total
-    mean_word_len  = sum(word_lengths) / len(word_lengths)
-    repeated_run   = bool(_REPEATED_RE.search(text))
+    garbled_ratio = garbled / total
+    dict_hit_rate = content / total
+    mean_word_len = sum(word_lengths) / len(word_lengths)
+    repeated_run = bool(_REPEATED_RE.search(text))
     printable_ratio = sum(
         1 for ch in text if unicodedata.category(ch) != "Cc" and ch.isprintable()
     ) / max(len(text), 1)
@@ -184,7 +189,7 @@ def _measure_text_quality(text: str) -> QualitySignals:
     )
 
 
-def _layer2_decision(page_elements: list[dict]) -> Decision | None:
+def _layer2_decision(page_elements: list[dict[str, Any]]) -> Decision | None:
     """
     Returns a promote Decision if heuristics fail on the combined page text,
     or None if text quality looks acceptable.
@@ -207,8 +212,9 @@ def _layer2_decision(page_elements: list[dict]) -> Decision | None:
 # Public entry point
 # ---------------------------------------------------------------------------
 
+
 def _coverage_decision(
-    page_elements: list[dict], text_layer_tokens: int | None
+    page_elements: list[dict[str, Any]], text_layer_tokens: int | None
 ) -> Decision | None:
     """
     Promote when Docling extracted far less text than the PDF's embedded text
@@ -231,7 +237,7 @@ def _coverage_decision(
 def evaluate_page(
     page_no: int,
     conversion_result: object,
-    page_elements: list[dict],
+    page_elements: list[dict[str, Any]],
     page_text_layer_tokens: int | None = None,
 ) -> Decision:
     """
@@ -250,9 +256,7 @@ def evaluate_page(
     if conversion_result is not None:
         decision = _layer1_decision(conversion_result, page_no)
         if decision is not None:
-            logger.debug(
-                "Page %d → promote (Layer 1): %s", page_no, decision.reason
-            )
+            logger.debug("Page %d → promote (Layer 1): %s", page_no, decision.reason)
             return decision
 
     # Coverage — did we extract a plausible amount for this page?

@@ -13,6 +13,7 @@ Design choices (RAG-oriented, may differ from the benchmark's gold converter):
   - figures contribute their transcribed text / caption;
   - page furniture (page numbers, running headers/footers) is dropped as noise.
 """
+
 from __future__ import annotations
 
 from typing import Any
@@ -59,7 +60,8 @@ def render_markdown(parser_output: dict[str, Any]) -> str:
         if etype in _FURNITURE:
             continue
         text = (el.get("text") or "").strip()
-        content = el.get("content") if isinstance(el.get("content"), dict) else {}
+        raw_content = el.get("content")
+        content: dict[str, Any] = raw_content if isinstance(raw_content, dict) else {}
 
         if etype == "table" and content.get("kind") == "table":
             md = _table_to_markdown(content)

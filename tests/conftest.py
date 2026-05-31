@@ -3,11 +3,11 @@ conftest.py
 
 Shared pytest fixtures for the parser_service test suite.
 """
+
 from __future__ import annotations
 
 from pathlib import Path
 from typing import Any
-from unittest.mock import patch
 
 import pytest
 
@@ -54,9 +54,7 @@ def mock_vlm_table(monkeypatch: pytest.MonkeyPatch) -> None:
     def _mock_call_vlm(image_bytes: bytes, mode: str) -> dict[str, Any]:
         return table_response
 
-    monkeypatch.setattr(
-        "parser_service.parser_service.call_vlm", _mock_call_vlm
-    )
+    monkeypatch.setattr("parser_service.parser_service.call_vlm", _mock_call_vlm)
 
 
 @pytest.fixture
@@ -72,17 +70,14 @@ def mock_vlm_page(monkeypatch: pytest.MonkeyPatch) -> None:
     def _mock_call_vlm(image_bytes: bytes, mode: str) -> dict[str, Any]:
         return page_response
 
-    monkeypatch.setattr(
-        "parser_service.parser_service.call_vlm", _mock_call_vlm
-    )
+    monkeypatch.setattr("parser_service.parser_service.call_vlm", _mock_call_vlm)
 
 
 @pytest.fixture
 def mock_vlm_error(monkeypatch: pytest.MonkeyPatch) -> None:
     """Patch call_vlm to return an error dict."""
+
     def _mock_call_vlm(image_bytes: bytes, mode: str) -> dict[str, Any]:
         return {"error": "mocked_failure"}
 
-    monkeypatch.setattr(
-        "parser_service.parser_service.call_vlm", _mock_call_vlm
-    )
+    monkeypatch.setattr("parser_service.parser_service.call_vlm", _mock_call_vlm)

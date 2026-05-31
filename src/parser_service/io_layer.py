@@ -5,20 +5,31 @@ InputRef: dataclass describing a file location.
 LocalIO / S3IO: implementations of list_input_files, read_bytes, write_json.
 Runtime selection: S3IO if URI starts with s3://, else LocalIO.
 """
+
 from __future__ import annotations
 
 import json
 import logging
 import urllib.parse
+from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Iterator, Literal
+from typing import Any, Literal
 
 logger = logging.getLogger(__name__)
 
 SUPPORTED_EXTENSIONS = {
-    ".pdf", ".png", ".jpg", ".jpeg", ".tif", ".tiff",
-    ".docx", ".xlsx", ".xlsm", ".html", ".htm",
+    ".pdf",
+    ".png",
+    ".jpg",
+    ".jpeg",
+    ".tif",
+    ".tiff",
+    ".docx",
+    ".xlsx",
+    ".xlsm",
+    ".html",
+    ".htm",
 }
 
 
@@ -54,6 +65,7 @@ class S3IO:
 
     def list_input_files(self, uri: str) -> Iterator[InputRef]:
         import boto3
+
         bucket, prefix = self._parse_uri(uri)
         s3 = boto3.client("s3")
         paginator = s3.get_paginator("list_objects_v2")
@@ -65,18 +77,23 @@ class S3IO:
 
     def read_bytes(self, ref: InputRef) -> bytes:
         import boto3
+
         bucket, key = self._parse_uri(ref.uri)
         return boto3.client("s3").get_object(Bucket=bucket, Key=key)["Body"].read()  # type: ignore[no-any-return]
 
     def write_json(self, ref: InputRef, output_uri: str, data: dict[str, Any]) -> None:
         import boto3
+
         bucket, prefix = self._parse_uri(output_uri)
         key = f"{prefix.rstrip('/')}/{Path(ref.filename).stem}.json"
         body = json.dumps(data, ensure_ascii=False, indent=2).encode("utf-8")
-        boto3.client("s3").put_object(Bucket=bucket, Key=key, Body=body, ContentType="application/json")
+        boto3.client("s3").put_object(
+            Bucket=bucket, Key=key, Body=body, ContentType="application/json"
+        )
 
     def write_text(self, ref: InputRef, output_uri: str, text: str, ext: str) -> None:
         import boto3
+
         bucket, prefix = self._parse_uri(output_uri)
         key = f"{prefix.rstrip('/')}/{Path(ref.filename).stem}{ext}"
         ctype = "text/markdown" if ext == ".md" else "text/plain"

@@ -8,20 +8,31 @@
 default_language_version:
   python: python3.13
 
+# All linters run in the PROJECT environment via `uv run`, so the hooks use the
+# exact ruff/mypy versions pinned in pyproject.toml — no isolated-venv version
+# drift (a pinned ruff-pre-commit rev reformats differently than the project's
+# ruff). Config lives in pyproject.toml ([tool.ruff], [tool.mypy]).
 repos:
-  - repo: https://github.com/astral-sh/ruff-pre-commit
-    rev: v0.8.0
+  - repo: local
     hooks:
       - id: ruff
-        args: [--fix]
+        name: ruff (uv, lint --fix)
+        entry: uv run ruff check --fix
+        language: system
+        types_or: [python, pyi]
+        require_serial: true
       - id: ruff-format
-
-  - repo: https://github.com/pre-commit/mirrors-mypy
-    rev: v1.13.0
-    hooks:
+        name: ruff-format (uv)
+        entry: uv run ruff format
+        language: system
+        types_or: [python, pyi]
+        require_serial: true
       - id: mypy
-        additional_dependencies: [pydantic>=2.7, boto3-stubs]
-        args: [--ignore-missing-imports]
+        name: mypy (uv, strict)
+        entry: uv run mypy src scripts tests
+        language: system
+        types: [python]
+        pass_filenames: false
 
   - repo: https://github.com/pre-commit/pre-commit-hooks
     rev: v5.0.0

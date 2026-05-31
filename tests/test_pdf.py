@@ -5,6 +5,7 @@ Unit tests for PDF parsing paths — digital, scanned, and mixed PDFs.
 Also includes element mapping tests (_docling_item_to_element and
 _docling_table_to_content).
 """
+
 from __future__ import annotations
 
 import re
@@ -51,6 +52,7 @@ def _make_mock_item(
 # Test 1: TextItem → paragraph with correct char_span
 # ---------------------------------------------------------------------------
 
+
 def test_docling_item_to_element_text_item() -> None:
     """_docling_item_to_element maps TextItem to paragraph with correct char_span."""
     from parser_service.parser_service import _docling_item_to_element
@@ -72,6 +74,7 @@ def test_docling_item_to_element_text_item() -> None:
 # Test 2: SectionHeaderItem with level=2 → heading with level
 # ---------------------------------------------------------------------------
 
+
 def test_docling_item_to_element_section_header() -> None:
     """_docling_item_to_element maps SectionHeaderItem to heading with level."""
     from parser_service.parser_service import _docling_item_to_element
@@ -91,6 +94,7 @@ def test_docling_item_to_element_section_header() -> None:
 # Test 3: Unknown item type → (None, char_offset) unchanged
 # ---------------------------------------------------------------------------
 
+
 def test_docling_item_to_element_unknown_type() -> None:
     """Unknown Docling item types return (None, unchanged_char_offset)."""
     from parser_service.parser_service import _docling_item_to_element
@@ -108,6 +112,7 @@ def test_docling_item_to_element_unknown_type() -> None:
 # ---------------------------------------------------------------------------
 # Test 4: _docling_table_to_content with a merged cell (row_span=2)
 # ---------------------------------------------------------------------------
+
 
 def test_docling_table_to_content_merged_cell() -> None:
     """_docling_table_to_content emits merged cell once with correct row_span."""
@@ -162,6 +167,7 @@ def test_docling_table_to_content_merged_cell() -> None:
 # Test 1: Digital PDF produces zero vlm_p{N}_{i} element IDs
 # ---------------------------------------------------------------------------
 
+
 def test_digital_pdf_no_vlm_element_ids(mock_vlm_table: None) -> None:
     """parse(digital_simple.pdf) with mocked VLM produces zero vlm_p*_* IDs."""
     from parser_service.parser_service import parse
@@ -169,11 +175,7 @@ def test_digital_pdf_no_vlm_element_ids(mock_vlm_table: None) -> None:
     result = parse(FIXTURES / "digital_simple.pdf")
 
     vlm_id_pattern = re.compile(r"^vlm_p\d+_\d+$")
-    vlm_ids = [
-        e["element_id"]
-        for e in result["elements"]
-        if vlm_id_pattern.match(e["element_id"])
-    ]
+    vlm_ids = [e["element_id"] for e in result["elements"] if vlm_id_pattern.match(e["element_id"])]
     # Digital PDFs must produce ZERO scanned-page fallback IDs
     assert vlm_ids == [], f"Unexpected VLM element IDs on digital PDF: {vlm_ids}"
 
@@ -181,6 +183,7 @@ def test_digital_pdf_no_vlm_element_ids(mock_vlm_table: None) -> None:
 # ---------------------------------------------------------------------------
 # Test 2: char_span values are monotonically non-decreasing with no gaps
 # ---------------------------------------------------------------------------
+
 
 def test_digital_pdf_char_span_monotonic(mock_vlm_table: None) -> None:
     """All char_span values on a digital PDF are monotonically non-decreasing."""
@@ -196,14 +199,15 @@ def test_digital_pdf_char_span_monotonic(mock_vlm_table: None) -> None:
         current_end = elements[i]["char_span"][1]
         next_start = elements[i + 1]["char_span"][0]
         assert current_end == next_start, (
-            f"char_span gap between element {i} and {i+1}: "
-            f"{elements[i]['char_span']} → {elements[i+1]['char_span']}"
+            f"char_span gap between element {i} and {i + 1}: "
+            f"{elements[i]['char_span']} → {elements[i + 1]['char_span']}"
         )
 
 
 # ---------------------------------------------------------------------------
 # Test 3: VLM failure on table → vlm_table_fallback warning, table element kept
 # ---------------------------------------------------------------------------
+
 
 def test_digital_pdf_vlm_table_fallback(mock_vlm_error: None) -> None:
     """When VLM fails on a table, vlm_table_fallback warning is emitted."""
@@ -229,6 +233,7 @@ def test_digital_pdf_vlm_table_fallback(mock_vlm_error: None) -> None:
 # ---------------------------------------------------------------------------
 # Test 1: scanned.pdf — all elements have vlm_p{N}_{i} IDs
 # ---------------------------------------------------------------------------
+
 
 def test_scanned_pdf_all_vlm_element_ids(mock_vlm_page: None) -> None:
     """parse(scanned.pdf) with mocked VLM — all element IDs match vlm_p*_* pattern."""
@@ -257,6 +262,7 @@ def test_scanned_pdf_all_vlm_element_ids(mock_vlm_page: None) -> None:
 # ---------------------------------------------------------------------------
 # Test 2: mixed.pdf — digital pages have no vlm_p IDs, scanned pages do
 # ---------------------------------------------------------------------------
+
 
 def test_mixed_pdf_correct_element_ids_per_page(mock_vlm_page: None) -> None:
     """parse(mixed.pdf) produces correct element ID pattern per page type."""
