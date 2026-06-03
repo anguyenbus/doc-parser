@@ -30,6 +30,7 @@ import hashlib
 import importlib.metadata
 import logging
 import mimetypes
+import os
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Literal
@@ -53,6 +54,56 @@ try:
     PARSER_VERSION: str = importlib.metadata.version("parser-service")
 except importlib.metadata.PackageNotFoundError:
     PARSER_VERSION = "0.0.0+dev"
+
+# Raw-input size cap. A file larger than this is rejected (stat-based, before any
+# whole-file read or Docling/render) with an ``input_too_large`` warning.
+# Overridable via PARSER_MAX_INPUT_MB. NOTE: this bounds the RAW input size only;
+# it does NOT bound post-decompression expansion of zip-based Office formats
+# (DOCX/XLSX) inside Docling, nor Docling's model working set (~1.6 GB/worker,
+# the dominant memory term — see tech-stack.md). It is a sanity bound, not the
+# pod memory budget.
+_DEFAULT_MAX_INPUT_MB = 200.0
+
+
+def _max_input_bytes() -> int:
+    """Return the raw-input byte cap (reads PARSER_MAX_INPUT_MB, in MB)."""
+    mb = float(os.environ.get("PARSER_MAX_INPUT_MB", str(_DEFAULT_MAX_INPUT_MB)))
+    return int(mb * 1_000_000)
+
+
+def _input_size_error(path: Path) -> str | None:
+    """Return an error message if ``path`` exceeds the input-size cap, else None.
+
+    Stat-based (no read), so an oversized file is rejected before any whole-file
+    read or Docling/render work. A non-positive cap disables the check. Returns
+    None when the size cannot be determined (let the normal parse path surface
+    that failure instead of masking it here).
+    """
+    cap = _max_input_bytes()
+    if cap <= 0:
+        return None
+    try:
+        size = path.stat().st_size
+    except OSError:
+        return None
+    if size > cap:
+        return (
+            f"Input file is {size / 1_000_000:.1f} MB, exceeds "
+            f"PARSER_MAX_INPUT_MB cap ({cap / 1_000_000:.0f} MB)"
+        )
+    return None
+
+
+def _sha256_file(path: Path, chunk_size: int = 1 << 20) -> str:
+    """Stream a file's SHA-256 in ``chunk_size`` blocks (default 1 MiB).
+
+    Avoids holding the whole file resident in memory just to hash it.
+    """
+    h = hashlib.sha256()
+    with path.open("rb") as f:
+        for chunk in iter(lambda: f.read(chunk_size), b""):
+            h.update(chunk)
+    return h.hexdigest()
 
 # Docling class name → schema element type
 _DOCLING_TYPE_MAP: dict[str, str] = {
@@ -128,7 +179,15 @@ def parse(file_path: Path) -> dict[str, Any]:
 
     mime = mimetypes.guess_type(str(file_path))[0] or ""
     kind = _classify(file_path, mime)
+
+    # Reject oversized input before any Docling/render work. _empty_output streams
+    # the hash (~1 MiB RAM), so building the skeleton for a rejected file is cheap;
+    # the guard's value is short-circuiting the ~1.6 GB Docling working set.
+    size_error = _input_size_error(file_path)
     out = _empty_output(file_path, mime)
+    if size_error is not None:
+        _append_warning(out, code="input_too_large", message=size_error, scope="document")
+        return out
 
     # Running char_span counter — initialized here, passed through all paths.
     char_offset = 0
@@ -249,8 +308,7 @@ def _classify(path: Path, mime: str) -> str:
 
 def _empty_output(path: Path, mime: str) -> dict[str, Any]:
     """Build the schema skeleton with sha256, parsed_at, and empty arrays."""
-    data = path.read_bytes()
-    sha256 = hashlib.sha256(data).hexdigest()
+    sha256 = _sha256_file(path)
     return {
         "schema_version": SCHEMA_VERSION,
         "parser_version": PARSER_VERSION,

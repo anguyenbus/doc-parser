@@ -60,6 +60,7 @@ from parser_service.parser_service import (
     _docling_item_to_element,
     _emit_vlm_elements,
     _empty_output,
+    _input_size_error,
 )
 from parser_service.quality_gate import _measure_text_quality, evaluate_page
 from parser_service.render import render_page, text_layer_tokens
@@ -112,17 +113,24 @@ def parse_to_markdown(file_path: Path) -> dict[str, Any]:
     mime = mimetypes.guess_type(str(file_path))[0] or ""
     kind = _classify(file_path, mime)
 
-    # Reuse the schema skeleton purely for its validated ``warnings`` list +
-    # warning helper; we only return markdown + page_routes + warnings.
-    skeleton = _empty_output(file_path, mime)
-    warnings: list[dict[str, Any]] = skeleton["warnings"]
+    # We return only markdown + page_routes + warnings — no source/sha256 — so we
+    # do NOT build the _empty_output skeleton here (that would read the whole file
+    # to compute a hash we discard). Just an empty, validated warnings list.
+    warnings: list[dict[str, Any]] = []
     page_routes: list[dict[str, Any]] = []
 
     container: dict[str, Any] = {"warnings": warnings, "elements": []}
 
     markdown = ""
     try:
-        if kind == "unknown":
+        size_error = _input_size_error(file_path)
+        if size_error is not None:
+            # Reject oversized input before any Docling/render work (stat-based;
+            # no file read on this path at all).
+            _append_warning(
+                container, code="input_too_large", message=size_error, scope="document"
+            )
+        elif kind == "unknown":
             _append_warning(
                 container,
                 code="unsupported_type",
