@@ -64,7 +64,7 @@ uv run python scripts/run_eval.py --skip-parse        # reuse existing predictio
 ```
 
 `run_eval.py` does **dump → parse → grade → compare** per dataset (work goes to
-`docker_eval/run/<dataset>/`), prints an aggregate summary, and writes a
+`eval_runs/<dataset>/` by default; override with `--workdir`), prints an aggregate summary, and writes a
 `*_vs_baseline.{json,md}` report next to each results CSV. Done — the manual
 steps below are only if you want to run a stage by hand.
 
@@ -75,7 +75,7 @@ steps below are only if you want to run a stage by hand.
 ### 1. Export source files
 ```bash
 doc-bench-dump-dataset --dataset dp_bench \
-  --output docker_eval/dpb/exported --config eval_config.yaml
+  --output eval_runs/dp_bench/exported --config eval_config.yaml
 # --dataset omnidocbench  (and --limit N for a subset)
 ```
 Each filename stem **is** the `doc_id` the grader joins on.
@@ -83,7 +83,7 @@ Each filename stem **is** the `doc_id` the grader joins on.
 ### 2. Parse on the host
 ```bash
 uv run python scripts/parse_batch.py \
-  --input docker_eval/dpb/exported --output docker_eval/dpb/predictions --concurrency 4
+  --input eval_runs/dp_bench/exported --output eval_runs/dp_bench/predictions --concurrency 4
 ```
 Writes `<doc_id>.json` per doc, plus `route_stats.csv` + `failures.json`.
 
@@ -91,8 +91,8 @@ Writes `<doc_id>.json` per doc, plus `route_stats.csv` + `failures.json`.
 ```bash
 # Run from the repo root: the grader reads ./eval_config.yaml (no --config flag).
 doc-bench --dataset dp_bench \
-  --predictions docker_eval/dpb/predictions \
-  --output-dir docker_eval/dpb/results
+  --predictions eval_runs/dp_bench/predictions \
+  --output-dir eval_runs/dp_bench/results
 ```
 Prints `Evaluated: N`, `Rejected: 0`, and metric averages. (No CWD `contracts/`
 needed — the wheel resolves its bundled schema. OmniDocBench data may be flat or
@@ -102,9 +102,9 @@ in-process `--parser {stub,fast,docling}` was removed from the wheel.)
 ### 4. Compare to baseline (with significance)
 ```bash
 uv run python scripts/compare_to_baseline.py \
-  --results docker_eval/dpb/results/dp_bench_predictions_results_<ts>.csv \
+  --results eval_runs/dp_bench/results/dp_bench_predictions_results_<ts>.csv \
   --baseline references/doc-bench/baseline/dp_bench/dpbench_results.json \
-  --route-stats docker_eval/dpb/predictions/route_stats.csv
+  --route-stats eval_runs/dp_bench/predictions/route_stats.csv
 # OmniDocBench baseline: references/doc-bench/baseline/omnidocbench/omnidocbench_results.json
 ```
 

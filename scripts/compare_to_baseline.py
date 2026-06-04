@@ -10,9 +10,9 @@ Writes `<results-stem>_vs_baseline.json` and `.md` next to the input CSV.
 
 Usage:
     uv run python scripts/compare_to_baseline.py \
-        --results docker_eval/b10_results/omnidocbench_predictions_results_<ts>.csv \
+        --results eval_runs/omnidocbench/results/omnidocbench_predictions_results_<ts>.csv \
         --baseline references/doc-bench/baseline/docling_baseline.json \
-        [--route-stats docker_eval/b10_predictions/route_stats.csv]
+        [--route-stats eval_runs/omnidocbench/predictions/route_stats.csv]
 """
 
 from __future__ import annotations

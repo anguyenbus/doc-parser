@@ -174,7 +174,7 @@ def main() -> None:
         help="Reuse predictions already under --workdir/<dataset>/predictions.",
     )
     ap.add_argument("--concurrency", type=int, default=4)
-    ap.add_argument("--workdir", type=Path, default=ROOT / "docker_eval/run")
+    ap.add_argument("--workdir", type=Path, default=ROOT / "eval_runs")
     args = ap.parse_args()
 
     targets = list(DATASETS) if args.dataset == "all" else [args.dataset]
