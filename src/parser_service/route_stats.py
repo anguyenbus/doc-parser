@@ -40,9 +40,18 @@ from pathlib import Path
 from typing import Any
 
 # The exact per-page ``route`` vocabulary emitted by ``markdown_pipeline``.
+# There are two escalation engines (selected by ``PARSER_ESCALATION_ENGINE``); a
+# single run uses exactly one of them, so a page is escalated via either the VLM
+# or Textract, never both.
 ROUTE_DOCLING_KEPT = "docling-kept"
 ROUTE_VLM = "vlm"
 ROUTE_VLM_FALLBACK = "vlm-fallback-docling"
+ROUTE_TEXTRACT = "textract"
+ROUTE_TEXTRACT_FALLBACK = "textract-fallback-docling"
+
+# Routes where an escalation engine produced the page vs fell back to Docling.
+_ENGINE_ROUTES = (ROUTE_VLM, ROUTE_TEXTRACT)
+_ENGINE_FALLBACK_ROUTES = (ROUTE_VLM_FALLBACK, ROUTE_TEXTRACT_FALLBACK)
 
 # CSV column order. ``doc_id`` and ``route`` are the columns ``compare_to_baseline.py``
 # consumes (it reads only those two), and are kept first to preserve that contract.
@@ -69,26 +78,38 @@ def route_record(page_routes: list[dict[str, Any]], doc_id: str) -> dict[str, An
     docling_kept = sum(1 for r in page_routes if r.get("route") == ROUTE_DOCLING_KEPT)
     vlm = sum(1 for r in page_routes if r.get("route") == ROUTE_VLM)
     vlm_fallback = sum(1 for r in page_routes if r.get("route") == ROUTE_VLM_FALLBACK)
+    textract = sum(1 for r in page_routes if r.get("route") == ROUTE_TEXTRACT)
+    textract_fallback = sum(
+        1 for r in page_routes if r.get("route") == ROUTE_TEXTRACT_FALLBACK
+    )
 
     # INVARIANT: every page's route is one of the known vocabulary values, so the
-    # three counts must sum to the page count. If this fires, the route vocabulary
-    # emitted by markdown_pipeline drifted from what we count here.
-    counted = docling_kept + vlm + vlm_fallback
+    # counts (both escalation engines + Docling) must sum to the page count. If this
+    # fires, the route vocabulary emitted by markdown_pipeline drifted from what we
+    # count here.
+    counted = docling_kept + vlm + vlm_fallback + textract + textract_fallback
     assert counted == page_count, (
         f"route-count invariant violated for {doc_id!r}: counted {counted} "
-        f"(docling-kept={docling_kept}, vlm={vlm}, vlm-fallback-docling={vlm_fallback}) "
+        f"(docling-kept={docling_kept}, vlm={vlm}, vlm-fallback-docling={vlm_fallback}, "
+        f"textract={textract}, textract-fallback-docling={textract_fallback}) "
         f"!= {page_count} page_routes; the route vocabulary drifted "
         f"(saw routes: {sorted(str(r.get('route')) for r in page_routes)})"
     )
 
-    # Pages that reached the VLM (whether or not the VLM output was kept).
-    vlm_pages = vlm + vlm_fallback
+    # Pages that reached an escalation engine (whether or not its output was kept).
+    # A run uses one engine, so this is the VLM count or the Textract count.
+    vlm_pages = vlm + vlm_fallback + textract + textract_fallback
 
     if vlm > 0:
         route = "vlm"
+    elif textract > 0:
+        route = "textract"
     elif vlm_fallback > 0:
         # The VLM was reached on every promoted page but produced nothing usable.
         route = "vlm-failed"
+    elif textract_fallback > 0:
+        # Textract was reached on every promoted page but produced nothing usable.
+        route = "textract-failed"
     else:
         route = "docling-kept"
 
@@ -126,6 +147,8 @@ def summarize(records: list[dict[str, Any]]) -> dict[str, int]:
     total = len(records)
     used_vlm = sum(1 for r in records if r["route"] == "vlm")
     vlm_failed = sum(1 for r in records if r["route"] == "vlm-failed")
+    used_textract = sum(1 for r in records if r["route"] == "textract")
+    textract_failed = sum(1 for r in records if r["route"] == "textract-failed")
     docling_kept = sum(1 for r in records if r["route"] == "docling-kept")
     errors = sum(1 for r in records if r["route"] == "error")
     total_pages = sum(int(r.get("pages", 0)) for r in records)
@@ -134,6 +157,8 @@ def summarize(records: list[dict[str, Any]]) -> dict[str, int]:
         "total": total,
         "used_vlm": used_vlm,
         "vlm_failed": vlm_failed,
+        "used_textract": used_textract,
+        "textract_failed": textract_failed,
         "docling_kept": docling_kept,
         "errors": errors,
         "total_pages": total_pages,
@@ -165,7 +190,8 @@ def format_table(records: list[dict[str, Any]]) -> str:
     lines.append(
         f"Total: {s['total']} docs / {s['total_pages']} pages | "
         f"used VLM: {s['used_vlm']} | vlm-failed: {s['vlm_failed']} | "
+        f"used Textract: {s['used_textract']} | textract-failed: {s['textract_failed']} | "
         f"docling-kept: {s['docling_kept']} | errors: {s['errors']} | "
-        f"vlm pages: {s['vlm_pages']}"
+        f"escalated pages: {s['vlm_pages']}"
     )
     return "\n".join(lines)

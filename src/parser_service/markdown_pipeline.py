@@ -47,6 +47,7 @@ from __future__ import annotations
 
 import logging
 import mimetypes
+import os
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -64,6 +65,11 @@ from parser_service.parser_service import (
 )
 from parser_service.quality_gate import _measure_text_quality, evaluate_page
 from parser_service.render import render_page, text_layer_tokens
+from parser_service.textract_client import (
+    analyze_page,
+    get_textract_call_count,  # noqa: F401  (re-exported for telemetry parity with parse())
+    reset_textract_call_count,
+)
 from parser_service.vlm_client import (
     call_vlm,
     get_vlm_call_count,  # noqa: F401  (re-exported for telemetry parity with parse())
@@ -76,6 +82,9 @@ logger = logging.getLogger(__name__)
 _ROUTE_DOCLING_KEPT = "docling-kept"  # gate kept Docling's page markdown
 _ROUTE_VLM = "vlm"  # VLM markdown replaced the page
 _ROUTE_VLM_FALLBACK = "vlm-fallback-docling"  # VLM promoted but garbage → Docling
+# Textract escalation engine (selected via PARSER_ESCALATION_ENGINE=textract):
+_ROUTE_TEXTRACT = "textract"  # Textract markdown replaced the page
+_ROUTE_TEXTRACT_FALLBACK = "textract-fallback-docling"  # Textract promoted but garbage → Docling
 
 
 def _document_converter() -> Any:
@@ -109,6 +118,7 @@ def parse_to_markdown(file_path: Path) -> dict[str, Any]:
     """
     file_path = Path(file_path).resolve()
     reset_vlm_call_count()
+    reset_textract_call_count()
 
     mime = mimetypes.guess_type(str(file_path))[0] or ""
     kind = _classify(file_path, mime)
@@ -360,20 +370,35 @@ def _vlm_page_markdown(
     layer: int | None,
     image_bytes: bytes | None = None,
 ) -> str:
-    """Render a page via the VLM, falling back to ``docling_fallback`` on garbage.
+    """Render a page via the selected escalation engine, falling back to
+    ``docling_fallback`` on garbage.
 
-    Records the route in ``page_routes`` (``vlm`` on success, ``vlm-fallback-docling``
-    when the VLM produced nothing usable). Runs ``_measure_text_quality`` on the
-    VLM markdown and records it as a SIGNAL ONLY in the route entry — the route is
-    NEVER gated on it (re-rejecting the VLM would just return the worse output).
+    The escalation engine is chosen by ``PARSER_ESCALATION_ENGINE`` (``vlm`` default
+    | ``textract``), read here — this is the single escalation seam (``_image_to_markdown``
+    inherits it for free). ``vlm`` calls ``vlm_client.call_vlm``; ``textract`` calls
+    ``textract_client.analyze_page``. Both return the SAME element-JSON shape, so the
+    ``_emit_vlm_elements`` → ``render_markdown`` conversion below is reused unchanged.
+
+    Records the route in ``page_routes`` (``vlm`` / ``textract`` on success, or the
+    matching ``*-fallback-docling`` when the engine produced nothing usable). The four
+    fallback triggers are identical for both engines: ``{"error": ...}``, non-list
+    ``elements``, empty ``elements``, or whitespace-only rendered markdown. Runs
+    ``_measure_text_quality`` on the engine markdown and records it as a SIGNAL ONLY in
+    the route entry — the route is NEVER gated on it (re-rejecting would just return
+    the worse output).
     """
+    engine = os.environ.get("PARSER_ESCALATION_ENGINE", "vlm")
+    is_textract = engine == "textract"
+    engine_label = "Textract" if is_textract else "VLM"
+    route_ok = _ROUTE_TEXTRACT if is_textract else _ROUTE_VLM
+    route_fallback = _ROUTE_TEXTRACT_FALLBACK if is_textract else _ROUTE_VLM_FALLBACK
 
     def _fallback(detail: str) -> str:
-        route = _ROUTE_VLM_FALLBACK if docling_fallback is not None else _ROUTE_VLM
+        route = route_fallback if docling_fallback is not None else route_ok
         _append_warning(
             container,
             "vlm_fallback_docling" if docling_fallback is not None else "page_unparseable",
-            f"VLM {detail} on page {page_idx}"
+            f"{engine_label} {detail} on page {page_idx}"
             + ("; kept Docling output" if docling_fallback is not None else ""),
             scope="page",
             page_index=page_idx,
@@ -389,17 +414,20 @@ def _vlm_page_markdown(
             logger.warning("render_page failed for page %d: %s", page_idx, exc)
             return _fallback(f"render failed ({exc})")
 
-    vlm_result = call_vlm(image_bytes, mode="page")
+    if is_textract:
+        engine_result = analyze_page(image_bytes)
+    else:
+        engine_result = call_vlm(image_bytes, mode="page")
 
-    if not isinstance(vlm_result, dict) or "error" in vlm_result:
+    if not isinstance(engine_result, dict) or "error" in engine_result:
         detail = (
-            vlm_result.get("error", "returned a non-dict")
-            if isinstance(vlm_result, dict)
+            engine_result.get("error", "returned a non-dict")
+            if isinstance(engine_result, dict)
             else "returned a non-dict"
         )
         return _fallback(f"error: {detail}")
 
-    elements_raw = vlm_result.get("elements")
+    elements_raw = engine_result.get("elements")
     if not isinstance(elements_raw, list):
         return _fallback("returned non-list 'elements'")
     if not elements_raw:
@@ -414,22 +442,22 @@ def _vlm_page_markdown(
             continue
         local_offset = _emit_vlm_elements(buf, raw_elem, page_idx, i, local_offset)
 
-    vlm_md = render_markdown({"elements": buf["elements"]}).strip()
-    if not vlm_md:
+    engine_md = render_markdown({"elements": buf["elements"]}).strip()
+    if not engine_md:
         return _fallback("rendered whitespace-only markdown")
 
     # Quality SIGNAL only — recorded, never used to change the route.
-    signals = _measure_text_quality(vlm_md)
+    signals = _measure_text_quality(engine_md)
     page_routes.append(
         {
             "page_index": page_idx,
-            "route": _ROUTE_VLM,
+            "route": route_ok,
             "reason": reason,
             "vlm_quality_passes": signals.passes,
             "vlm_quality_failing_signals": signals.failing_signals,
         }
     )
-    return vlm_md
+    return engine_md
 
 
 # ---------------------------------------------------------------------------
