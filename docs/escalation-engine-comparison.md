@@ -1,12 +1,13 @@
 # Escalation Engine Comparison: Bedrock Claude Sonnet VLM vs AWS Textract
 
-**Date:** 2026-06-15 · **Status:** Findings + recommendation. The default escalation engine
+**Date:** 2026-06-16 · **Status:** Findings + recommendation. The default escalation engine
 remains `vlm`; no production change has been made.
 
-> **This run uses the updated doc-bench wheel's bundled stratified fixtures: 5 dp_bench /
-> 5 omnidocbench / 1 ato_bench (11 docs total).** It supersedes an earlier draft that ran on
-> the repo's larger `references/` samples (12 dp / 10 omni); numbers and per-doc detail below
-> are **not** comparable to that draft.
+> **Primary run uses the updated doc-bench wheel's bundled stratified fixtures: 5 dp_bench /
+> 5 omnidocbench / 1 ato_bench (11 docs total)** (§1–§6). Because that set escalated almost
+> nothing, **§7 adds a 20-page OmniDocBench probe** that actually fires the gate (2/20) and
+> drives the escalated-page investigation. Both supersede an earlier draft on the repo's
+> larger `references/` samples (12 dp / 10 omni); numbers there are **not** comparable.
 
 ---
 
@@ -31,10 +32,18 @@ head-to-head on the same pages.
      (**+88%**); Docling-only baseline 0.119.
    - **dp_bench `…027` (a bad scan, the one promoted doc): Textract rescues it** — NED
      **0.887 vs 0.360**. This single doc lifts the dp_bench average to **0.965 vs 0.859**.
-   - **OmniDocBench: no signal.** 0/5 pages escalated, so vlm and textract are **identical**
-     (NED 0.697, TEDS 0.262). This set gives us **no** VLM-vs-Textract evidence on complex
-     layouts (the earlier larger-sample draft hinted the VLM could edge Textract on a promoted
-     complex page, but that page isn't in this set — treat as unverified here).
+   - **OmniDocBench (stratified 5): no signal** — 0/5 pages escalated, so vlm and textract are
+     **identical** (NED 0.697). For an actual signal, **§7's 20-page OmniDocBench probe** escalates
+     2/20: Textract wins one (PPT) decisively and "loses" the other (academic) — but that loss is
+     a **metric artifact**, see below.
+
+7. **On a complex page, NED understates Textract (the metric, not the engine).** On the one
+   academic page where Textract "lost" (NED 0.360 vs 0.591), Textract actually extracted **96%
+   of the gold's words** vs the VLM's 63% — the VLM silently dropped ~37% of the text. Textract
+   scored lower only because its multi-column **reading order** differs from the gold (edit
+   distance punishes transpositions; order-independent NED is **0.948 vs 0.618** in Textract's
+   favour). The VLM's failure modes — **hallucinated image captions** and **silent content loss**
+   — are worse for an extraction product than a fixable ordering quirk (§7).
 
 3. **Textract escalation is much faster than the VLM, per escalated page.** Textract adds
    **~6 s** (ATO) to **~8 s** (dp `…027`); the VLM adds **~37 s** (ATO) to **~14 s** (dp `…027`)
@@ -59,7 +68,7 @@ escalation engine** — higher quality on forms/scans and lower escalation laten
 run VLM escalation actually *hurt* dp_bench (0.859 < the 0.899 Docling baseline) while Textract
 helped (0.965). Caveat: escalation fired on only 2 docs here, so the evidence base is narrow.
 Before flipping the default we should (a) validate at larger scale and (b) prototype a
-`FORMS`-enabled variant for forms (§6, §8).
+`FORMS`-enabled variant for forms (§6, §9).
 
 ---
 
@@ -108,7 +117,7 @@ flowchart TD
 | Docling accelerator | `cpu` (confirmed in logs); ~1.6 GB RAM/worker |
 | Batch concurrency | **4** (`PARSER_CONCURRENCY=4`, parse_batch default) |
 | Region | `ap-southeast-2` (Textract + Bedrock; required — other regions denied by org SCP) |
-| VLM | Bedrock `anthropic.claude-3-5-sonnet-20241022-v2:0`, `temperature=0`, page-image input |
+| VLM | Bedrock `anthropic.claude-3-5-sonnet-20241022-v2:0`, `temperature=0`, page-image input — **an older model; see the model caveat in §8** |
 | Textract | `AnalyzeDocument`, sync, `FeatureTypes=["LAYOUT","TABLES"]` |
 | Grader | doc-bench wheel with **NED + TEDS** metrics (NID/BLEU/METEOR retired) |
 | Datasets | **bundled stratified fixtures from the wheel**: ato_bench (1 doc / 2 pp), dp_bench (5 docs), OmniDocBench (5 docs) |
@@ -259,14 +268,79 @@ it means **neither current engine extracts ATO form structure** — a gap worth 
 
 ---
 
-## 7. Limitations
+## 7. OmniDocBench 20-page probe — escalation fires; metric vs. capability
 
-- **Tiny escalation base.** Only **2 of 11 docs escalated** (ATO + dp `…027`). Every
-  engine-difference conclusion rests on those two documents; the other 9 were `docling-kept`
-  and identical. This is directional, not a large-N result.
-- **No OmniDocBench signal.** 0/5 omnidocbench pages escalated, so this run says **nothing**
-  about VLM-vs-Textract on complex layouts. Any such claim needs a set that actually promotes
-  those pages.
+The stratified set above escalated **0/5** OmniDocBench pages, giving no engine signal. To
+exercise the gate, we drew **20 random English pages** (seed `20260616`) from the full 593-page
+OmniDocBench (mix: 6 book, 5 academic, 5 PPT, 3 exam, 1 textbook) and ran both engines.
+
+| engine | NED | TEDS | mean lat (s) | escalated |
+|---|--:|--:|--:|--:|
+| vlm | 0.6990 | 0.0890 | 107.3 | **2 / 20** |
+| textract | **0.7272** | 0.0890 | 106.6 | **2 / 20** |
+
+**18 of 20 pages were `docling-kept`** → byte-identical between engines; the whole difference
+rides on 2 escalated pages (same pages under both engines — the gate runs on Docling output,
+before the engine is chosen). Latency stays Docling-CPU-bound (~107 s/page; academic pages hit
+180–217 s); both escalated pages were *faster* under Textract.
+
+| escalated page | data_source | gate reason | NED vlm → tex |
+|---|---|---|---|
+| `…Where_did_you_go.pdf_5` | PPT2PDF | `docling_low_grade=FAIR` | 0.156 → **0.952** |
+| `scihub_md.…2934.pdf_0` | academic_literature | `heuristic_failed: repeated_char_run` | **0.591** → 0.360 |
+
+### 7.1 PPT slide — VLM hallucination vs Textract OCR (Textract wins)
+
+Gold is two short strings: `Where did Amy go on vacation?` / `London Eye`. The **VLM invented a
+description of the slide's images** ("Two images showing the London Eye observation wheel on the
+River Thames … one on a cloudy day …"), collapsing NED to 0.156. Textract OCR'd only the on-page
+text and matched gold almost exactly (0.952). This is a clean **VLM failure mode** — verbose
+image captioning on a sparse, image-heavy slide — and exactly the page Textract handles better.
+
+### 7.2 Academic page — the metric is misleading (Textract extracts more, scores lower)
+
+Both engines produced fluent text on this dense two-column journal page, but the scores invert
+the truth (measured with the grader's own `ned_score`/`_normalize`):
+
+| measure | VLM | Textract | reading |
+|---|--:|--:|---|
+| Normalized length vs gold (6,284) | 3,944 (63%) | **6,240 (99%)** | VLM dropped ~37%; Textract is complete |
+| **Word containment** (% of gold's distinct words) | 63% | **96%** | Textract captured nearly all gold vocabulary |
+| **Order-independent NED** (words sorted) | 0.618 | **0.948** | on *content alone*, Textract is far closer |
+| **Sequential NED** (grader's score) | **0.591** | 0.360 | flips — penalizes Textract |
+
+**Diagnosis: reading order, not capability.** Sequential edit distance punishes
+**transpositions** — Textract's `LAYOUT` emitted the two columns in an order that differs from
+the gold's reading order, so large, correctly-extracted chunks count as "moved". The VLM reflows
+into gold order but **silently omits ~37%** of the text; the metric rewards the ordered fragment
+and is blind to the omission. Confirmed it is *not* formatting: de-hyphenating Textract's line
+breaks leaves NED unchanged (0.360 → 0.360), since the grader already collapses whitespace.
+
+**Implication.** Textract is the stronger *extractor* on both escalated pages (no hallucination,
+96% vs 63% content recall); its only "loss" is a mechanically fixable ordering quirk. The
+highest-upside Textract lever here is **reading-order reconciliation** — sorting `LAYOUT` blocks
+into column-aware reading order before markdown assembly would lift the academic page from ~0.36
+toward the ~0.95 its content warrants. (Full per-page table + raw outputs:
+`eval_runs/omni20/report.md` and `eval_runs/omni20/predictions_{vlm,textract}/`.)
+
+---
+
+## 8. Limitations
+
+- **Tiny escalation base.** Only **2 of 11 docs** escalated in the stratified run and **2 of 20**
+  in the §7 probe — **4 escalated pages total** across everything. Every engine-difference
+  conclusion rests on those pages; the rest were `docling-kept` and identical. Directional, not
+  large-N.
+- **NED understates Textract on multi-column pages.** Sequential edit distance penalizes
+  reading-order transpositions (§7.2), so a complete-but-reordered Textract extraction can score
+  *below* an incomplete-but-ordered VLM one. Treat NED as a lower bound for Textract on complex
+  layouts until reading-order reconciliation lands; report content-recall alongside it.
+- **VLM tested on an older model — results are a floor for the VLM.** All VLM numbers use
+  **Claude 3.5 Sonnet** (`claude-3-5-sonnet-20241022-v2:0`), which is materially weaker than the
+  current **Claude Sonnet 4.6**. The VLM's observed failure modes (hallucinated image captions in
+  §7.1, ~37% content omission in §7.2) are exactly the kind a stronger model tends to reduce, so
+  the VLM side likely **improves with Sonnet 4.6** — re-run the head-to-head on the newer model
+  before treating any VLM-vs-Textract quality gap as settled.
 - **One ATO document.** The ATO conclusion rests on a single (representative) form.
 - **Latency measured at concurrency 4 on CPU** — contention inflates per-doc Docling times;
   isolated numbers would be lower. Only the ATO doc was effectively isolated.
@@ -278,25 +352,29 @@ it means **neither current engine extracts ATO form structure** — a gap worth 
 
 ---
 
-## 8. Recommendations
+## 9. Recommendations
 
 1. **Adopt Textract as the default escalation engine for scan-heavy / ATO workloads**, pending
-   the scale check below. On this run it was higher-quality on the ATO form and the one promoted
-   scan, faster per escalated page, and — unlike the VLM — it did not drag dp_bench below the
-   Docling baseline.
-2. **Validate at scale on a set that actually escalates.** With only 2/11 docs promoted here,
-   the next run needs more scanned/degraded docs (a larger ATO corpus, the full DP-Bench) so the
-   engine comparison fires on enough pages to be conclusive — especially for complex layouts,
-   where this set gave no signal.
-3. **Prototype a `FORMS`-enabled Textract variant** (`LAYOUT+TABLES+FORMS`) and re-benchmark
+   the scale check below. Across all escalated pages it was higher-quality (ATO form, the dp
+   `…027` scan, the PPT slide), faster per escalated page, and the stronger *extractor* on the
+   academic page too (96% vs 63% content recall) — and unlike the VLM it did not drag dp_bench
+   below the Docling baseline, hallucinate captions, or silently drop a third of a page.
+2. **Build reading-order reconciliation for Textract `LAYOUT`** (column-aware top-to-bottom block
+   ordering before markdown assembly). This is the single fix that closes Textract's only
+   observed "loss" (§7.2) and would materially raise NED on multi-column pages.
+3. **Validate at scale on a set that actually escalates.** Only 4 pages escalated across both
+   runs; a larger scan/complex-heavy corpus is needed before flipping the production default.
+4. **Prototype a `FORMS`-enabled Textract variant** (`LAYOUT+TABLES+FORMS`) and re-benchmark
    ATO-bench — the highest-upside experiment for our actual workload (§6).
-4. **Invest in Docling throughput (GPU or right-sized CPU)** — it dominates latency regardless of
+5. **Invest in Docling throughput (GPU or right-sized CPU)** — it dominates latency regardless of
    engine. Engine choice optimizes the escalation tail; Docling optimizes the whole.
-5. **Fix cost telemetry:** add a Textract price model to parse_batch so cost dashboards reflect
+6. **Fix cost telemetry:** add a Textract price model to parse_batch so cost dashboards reflect
    Textract runs (currently logged as $0).
-6. **Keep both engines** behind the `PARSER_ESCALATION_ENGINE` switch — a per-workload or
-   per-page engine policy may ultimately beat picking one globally, but we lack the data to
-   prefer the VLM anywhere on this set.
+7. **Keep both engines** behind the `PARSER_ESCALATION_ENGINE` switch. On **Claude 3.5 Sonnet**
+   we found **no** page where the VLM extracted better than Textract — its apparent academic-page
+   win was a metric artifact — so there is currently no evidence for a VLM-preferring policy. But
+   the VLM ran on an older model (§8); **re-test on Claude Sonnet 4.6** before ruling the VLM out,
+   and keep the switch so a per-workload policy stays open.
 
 ---
 
@@ -313,6 +391,11 @@ it means **neither current engine extracts ATO form structure** — a gap worth 
   `uv tool install --force ./doc_bench-0.1.0-py3-none-any.whl` (+ into `.venv-docbench`).
 - All latency numbers derive from the `file_parsed` JSON log lines and Docling's
   "Finished converting … in N sec" lines under `eval_runs/bench2/<dataset>/parse_<engine>.log`.
+- **§7 20-page OmniDocBench probe:** sample + stage with
+  `scripts/sample_omni.py omni eval_runs/omni20/data 20 20260616`, run both engines with
+  `scripts/run_omni20.sh`, join per-page with `scripts/aggregate_benchmark.py` →
+  `eval_runs/omni20/report.md`. NED in §7.2 reproduced via the grader's own
+  `doc_bench.metrics.parsing.ned.ned_score`.
 
 ### Raw aggregate table
 
