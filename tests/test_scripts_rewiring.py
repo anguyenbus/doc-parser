@@ -229,7 +229,7 @@ def test_parse_batch_route_stats_csv_from_page_routes(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     """route_stats.csv is derived from page_routes and keeps the doc_id/route columns
-    that compare_to_baseline.py consumes."""
+    that aggregate_benchmark.py consumes."""
     batch = _load_script("parse_batch")
 
     def _fake_ptm(path: Any) -> dict[str, Any]:
@@ -262,7 +262,7 @@ def test_parse_batch_route_stats_csv_from_page_routes(
         rows = list(_csv.DictReader(f))
     assert len(rows) == 1
     row = rows[0]
-    # compare_to_baseline.py reads exactly these two columns.
+    # aggregate_benchmark.py reads exactly these two columns.
     assert row["doc_id"] == "doc"
     assert row["route"] == "vlm"  # any vlm page → doc roll-up "vlm"
     assert row["pages"] == "2"

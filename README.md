@@ -118,14 +118,14 @@ Docling baselines, fixtures, schema, and the grader).
 
 ```bash
 uv tool install --force ./doc_bench-0.1.0-py3-none-any.whl   # puts doc-bench* on PATH
-doc-bench-setup                                              # NLTK data → METEOR
-uv run python scripts/run_eval.py --dataset dp_bench         # dump → parse → grade → compare
+scripts/run_benchmark.sh                                     # parse + grade, both engines
 ```
-[run_eval.py](scripts/run_eval.py) parses each doc to markdown, wraps it as a
-prediction (`--emit-test-json`), grades via the `doc-bench` CLI, and writes a
-`*_vs_baseline.{json,md}` report (per-doc deltas + paired stats). Trust **NID**
-(text ↑), **BLEU** (↑), **ARD** (reading order ↓), **METEOR** (↑). TEDS/MHS ~0 by
-gold design.
+[run_benchmark.sh](scripts/run_benchmark.sh) parses each bundled doc to markdown,
+wraps it as a prediction (`--emit-test-json`), grades it against the wheel's
+**bundled gold** via the `doc-bench` CLI (no `--data-dir`), and aggregates per-doc
+**NED** (text similarity ↑) + **TEDS** (table structure ↑) with parse latency. See
+[EVAL_RUNBOOK.md](EVAL_RUNBOOK.md) and
+[docs/escalation-engine-comparison.md](docs/escalation-engine-comparison.md).
 
 On the representative samples, doc-parser **matches the Docling baseline** (the
 hybrid's job on clean corpora is to *not regress* Docling while rescuing degraded
@@ -145,5 +145,5 @@ uv run pytest -q          # test suite (mocked VLM; no Bedrock)
 uv run ruff check src/    # lint
 ```
 
-Tests mock the VLM and need no AWS. Benchmark runs (`run_eval.py`) need Bedrock +
+Tests mock the VLM and need no AWS. Benchmark runs (`run_benchmark.sh`) need Bedrock +
 the doc-bench wheel.

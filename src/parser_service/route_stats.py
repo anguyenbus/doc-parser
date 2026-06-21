@@ -53,7 +53,7 @@ ROUTE_TEXTRACT_FALLBACK = "textract-fallback-docling"
 _ENGINE_ROUTES = (ROUTE_VLM, ROUTE_TEXTRACT)
 _ENGINE_FALLBACK_ROUTES = (ROUTE_VLM_FALLBACK, ROUTE_TEXTRACT_FALLBACK)
 
-# CSV column order. ``doc_id`` and ``route`` are the columns ``compare_to_baseline.py``
+# CSV column order. ``doc_id`` and ``route`` are the columns ``aggregate_benchmark.py``
 # consumes (it reads only those two), and are kept first to preserve that contract.
 FIELDNAMES = ["doc_id", "route", "pages", "vlm_pages", "routes", "reason"]
 

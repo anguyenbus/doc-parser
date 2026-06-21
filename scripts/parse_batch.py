@@ -7,7 +7,7 @@ Runs the markdown-first pipeline (``markdown_pipeline.parse_to_markdown``): it
 ALWAYS writes one ``.md`` per document. When ``--emit-test-json`` is passed it
 ALSO writes a schema-valid wrapped prediction ``.json`` (via
 ``wrap_md_as_prediction``) so the doc-bench wheel can grade the markdown — that
-flag is set by ``run_eval.py`` on the eval path and is otherwise off.
+flag is set by ``run_benchmark.sh`` on the eval path and is otherwise off.
 
 Telemetry/logging and ``route_stats.csv`` are driven from the pipeline's
 ``page_routes`` (page count, VLM-routed pages, route mix), NOT from element-ID
@@ -355,7 +355,7 @@ def main() -> None:
         help=(
             "Also write the wrapped, schema-valid prediction .json (via "
             "wrap_md_as_prediction) alongside the .md, for doc-bench grading. "
-            "Off by default; set by run_eval.py on the eval path."
+            "Off by default; set by run_benchmark.sh on the eval path."
         ),
     )
     parser.add_argument(

@@ -7,8 +7,8 @@ and against your **own** documents via `--data-dir`. Metrics are **NED + TEDS**.
 > **As of the bundled-loader release (`doc_bench-0.1.0.tar.gz`, 2026-06-16):** the grader
 > reads its own bundled gold directly — **no `eval_config.yaml`, no `--data-dir`, no
 > staging/assembly** for the bundled set. `eval_config.yaml` has been **removed** from the repo;
-> the legacy `references/` flow (`run_eval.py`, `dump-dataset`, `compare_to_baseline.py`) is
-> retired. For results and analysis see [docs/escalation-engine-comparison.md](docs/escalation-engine-comparison.md).
+> the legacy `references/` flow (`run_eval.py`, `dump-dataset`, `compare_to_baseline.py`) has
+> been removed. For results and analysis see [docs/escalation-engine-comparison.md](docs/escalation-engine-comparison.md).
 
 ## Mental model
 
