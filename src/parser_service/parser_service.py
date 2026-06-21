@@ -35,7 +35,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Literal
 
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel
 
 from parser_service.vlm_client import (
     call_vlm,
@@ -132,20 +132,6 @@ class WarningModel(BaseModel):
     element_id: str | None = None
     code: str
     message: str
-
-
-class SourceModel(BaseModel):
-    doc_id: str
-    filename: str
-    mime_type: str
-    sha256: str
-
-    @field_validator("sha256")
-    @classmethod
-    def sha256_must_be_64_hex(cls, v: str) -> str:
-        if len(v) != 64 or not all(c in "0123456789abcdef" for c in v):
-            raise ValueError("sha256 must be exactly 64 lowercase hex characters")
-        return v
 
 
 class ParserOutputModel(BaseModel):

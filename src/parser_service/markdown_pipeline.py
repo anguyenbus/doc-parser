@@ -67,12 +67,10 @@ from parser_service.quality_gate import _measure_text_quality, evaluate_page
 from parser_service.render import render_page, text_layer_tokens
 from parser_service.textract_client import (
     analyze_page,
-    get_textract_call_count,  # noqa: F401  (re-exported for telemetry parity with parse())
     reset_textract_call_count,
 )
 from parser_service.vlm_client import (
     call_vlm,
-    get_vlm_call_count,  # noqa: F401  (re-exported for telemetry parity with parse())
     reset_vlm_call_count,
 )
 
