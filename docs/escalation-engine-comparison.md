@@ -126,10 +126,10 @@ flowchart TD
 - **NED** — normalized edit-distance similarity of extracted text vs gold (replaces the old NID).
 - **TEDS** — table-structure similarity; 0 when a document has no scored table in the gold.
 
-**Method.** The wheel's bundled stratified fixtures were staged into grader `--data-dir`
-layouts (`scripts/stage_wheel_fixtures.py`: `reference.json`+`pdfs/` for dp_bench,
-`OmniDocBench.json`+`images/` for omnidocbench; ATO grades against the bundled manifest gold).
-Each dataset was parsed twice — once per engine, changing only `PARSER_ESCALATION_ENGINE` —
+**Method.** The parser reads the wheel's bundled source files directly (the installed wheel
+ships exactly the manifest's 5/5/1 docs) and the grader scores them against the wheel's bundled
+gold — no `--data-dir`, no staging. Each dataset was parsed twice — once per engine, changing
+only `PARSER_ESCALATION_ENGINE` —
 then graded with the same wheel. The escalation engine is the **only** variable; Docling and the
 gate are held constant. Latency was taken from per-document `parse_duration_s` logs; the Docling
 portion from Docling's own "Finished converting … in N sec" log line; escalation overhead = total
@@ -384,13 +384,11 @@ see the appendix to regenerate.)
 > renamed `ned` → `ned_similarity`. The numbers above were produced on the prior wheel; the data
 > is identical (same bundled fixtures + metric), only the harness simplified.
 
-- Grader: install via `uv tool install --force ./doc_bench-0.1.0.tar.gz`
+- Grader: install via `uv tool install --force ./doc_bench-0.1.0-py3-none-any.whl`
   (+ into `.venv-docbench`).
-- Stage just the bundled source files (no gold, no `--data-dir`):
-  `.venv-docbench/bin/python scripts/stage_wheel_fixtures.py eval_runs/bench2`
-- Run all three datasets, both engines: `scripts/run_benchmark2.sh`
-  (parse with `PARSER_ESCALATION_ENGINE`, then `doc-bench --dataset X --predictions DIR` — bundled
-  gold, no `--data-dir`).
+- Run all three datasets, both engines: `scripts/run_benchmark.sh` — parses the wheel's bundled
+  source files directly (`$FIX/<dataset>`, no staging), then grades with
+  `doc-bench --dataset X --predictions DIR` (bundled gold, no `--data-dir`).
 - Aggregate per-file NED/TEDS + route + latency: `scripts/aggregate_benchmark.py eval_runs/bench2`
   → `eval_runs/bench2/benchmark_report.md`.
 - All latency numbers derive from the `file_parsed` JSON log lines and Docling's

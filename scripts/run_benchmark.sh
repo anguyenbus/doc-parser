@@ -4,8 +4,7 @@
 #
 # Requires doc-bench >= the bundled-loader release: the grader scores against
 # bundled gold directly — no --data-dir, and no eval_config.yaml (we removed it
-# from the repo; if one reappears in CWD it would override bundled gold). We only
-# stage the *source* files for the parser.
+# from the repo; if one reappears in CWD it would override bundled gold).
 set -uo pipefail
 cd /home/admin/projects/doc-parser
 
@@ -15,11 +14,13 @@ export PARSER_LOG_LEVEL=INFO
 
 W=eval_runs/bench2
 rm -rf "$W"; mkdir -p "$W"
-# Stage source files only (grader uses bundled gold; no gold assembly needed).
-.venv-docbench/bin/python scripts/stage_wheel_fixtures.py "$W"
+# Parse straight from the wheel's bundled source files — the installed wheel ships
+# exactly the manifest's docs, and parse_batch ignores the sibling .json gold, so
+# no staging is needed.
+FIX=$(.venv-docbench/bin/python -c "import doc_bench, pathlib; print(pathlib.Path(doc_bench.__file__).parent / 'fixtures')")
 
 for DS in dp_bench omnidocbench ato_bench; do
-  IN="$W/$DS/input"
+  IN="$FIX/$DS"
   for ENGINE in vlm textract; do
     PRED="$W/$DS/predictions_$ENGINE"
     rm -rf "$PRED"; mkdir -p "$PRED"

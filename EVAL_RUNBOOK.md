@@ -58,7 +58,7 @@ export BEDROCK_VLM_MODEL=anthropic.claude-3-5-sonnet-20241022-v2:0
 ## Step 1 — One-command benchmark (recommended)
 
 ```bash
-scripts/run_benchmark2.sh
+scripts/run_benchmark.sh
 ```
 
 Does, for all three bundled datasets × both engines (`vlm`, `textract`):
@@ -68,19 +68,20 @@ The manual steps below are only for running a stage by hand.
 
 ---
 
-## Manual steps (what run_benchmark2.sh does)
+## Manual steps (what run_benchmark.sh does)
 
-### 1. Stage source files (parser inputs only — no gold)
+### 1. Locate the bundled source files (no staging needed)
 ```bash
-.venv-docbench/bin/python scripts/stage_wheel_fixtures.py eval_runs/bench2
-# → eval_runs/bench2/<dataset>/input/<doc_id>.<ext>  (the manifest's 5/5/1 docs)
+FIX=$(.venv-docbench/bin/python -c "import doc_bench, pathlib; print(pathlib.Path(doc_bench.__file__).parent / 'fixtures')")
+# $FIX/<dataset> holds the source files (the installed wheel ships exactly the
+# manifest's 5/5/1 docs; the sibling .json gold is ignored by parse_batch).
 ```
-The grader uses **bundled gold**, so we only need the source files on disk for the parser.
+The grader uses **bundled gold**, so the parser reads sources straight from `$FIX/<dataset>`.
 
 ### 2. Parse on the host (pick the engine)
 ```bash
 PARSER_ESCALATION_ENGINE=textract uv run python scripts/parse_batch.py \
-  --input eval_runs/bench2/dp_bench/input \
+  --input "$FIX/dp_bench" \
   --output eval_runs/bench2/dp_bench/predictions_textract \
   --emit-test-json --concurrency 4
 # engine ∈ vlm (default) | textract ; writes <doc_id>.json + route_stats.csv + failures.json

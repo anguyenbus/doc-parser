@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-"""Aggregate run_benchmark2.sh outputs into a per-file + summary report (Markdown).
+"""Aggregate run_benchmark.sh outputs into a per-file + summary report (Markdown).
 
 Metrics are NED + TEDS (doc-bench >= the NED/TEDS wheel; NID/BLEU/METEOR are retired;
 the bundled-loader wheel renamed the CSV column ``ned`` -> ``ned_similarity``). Joins,
