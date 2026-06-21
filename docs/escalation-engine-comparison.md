@@ -320,8 +320,8 @@ breaks leaves NED unchanged (0.360 → 0.360), since the grader already collapse
 96% vs 63% content recall); its only "loss" is a mechanically fixable ordering quirk. The
 highest-upside Textract lever here is **reading-order reconciliation** — sorting `LAYOUT` blocks
 into column-aware reading order before markdown assembly would lift the academic page from ~0.36
-toward the ~0.95 its content warrants. (Full per-page table + raw outputs:
-`eval_runs/omni20/report.md` and `eval_runs/omni20/predictions_{vlm,textract}/`.)
+toward the ~0.95 its content warrants. (Probe was a one-off; raw outputs were not retained —
+see the appendix to regenerate.)
 
 ---
 
@@ -378,24 +378,28 @@ toward the ~0.95 its content warrants. (Full per-page table + raw outputs:
 
 ---
 
-## Appendix — reproducibility
+> **Tooling note (2026-06-16):** the doc-bench team shipped a bundled-loader release
+> (`doc_bench-0.1.0.tar.gz`) — dp/omni/ato now grade against bundled gold directly, so the flow
+> no longer assembles `reference.json`/`OmniDocBench.json` or passes `--data-dir`, and the CSV
+> renamed `ned` → `ned_similarity`. The numbers above were produced on the prior wheel; the data
+> is identical (same bundled fixtures + metric), only the harness simplified.
 
-- Stage the wheel's bundled 5/5/1 fixtures into grader `--data-dir`s:
-  `uv run python scripts/stage_wheel_fixtures.py ./doc_bench-0.1.0-py3-none-any.whl eval_runs/bench2`
+- Grader: install via `uv tool install --force ./doc_bench-0.1.0.tar.gz`
+  (+ into `.venv-docbench`).
+- Stage just the bundled source files (no gold, no `--data-dir`):
+  `.venv-docbench/bin/python scripts/stage_wheel_fixtures.py eval_runs/bench2`
 - Run all three datasets, both engines: `scripts/run_benchmark2.sh`
-  (parse with `PARSER_ESCALATION_ENGINE`, grade with the wheel; ATO grades against the bundled
-  manifest gold, dp/omni via `--data-dir`).
+  (parse with `PARSER_ESCALATION_ENGINE`, then `doc-bench --dataset X --predictions DIR` — bundled
+  gold, no `--data-dir`).
 - Aggregate per-file NED/TEDS + route + latency: `scripts/aggregate_benchmark.py eval_runs/bench2`
   → `eval_runs/bench2/benchmark_report.md`.
-- Grader: install the updated wheel via
-  `uv tool install --force ./doc_bench-0.1.0-py3-none-any.whl` (+ into `.venv-docbench`).
 - All latency numbers derive from the `file_parsed` JSON log lines and Docling's
   "Finished converting … in N sec" lines under `eval_runs/bench2/<dataset>/parse_<engine>.log`.
-- **§7 20-page OmniDocBench probe:** sample + stage with
-  `scripts/sample_omni.py omni eval_runs/omni20/data 20 20260616`, run both engines with
-  `scripts/run_omni20.sh`, join per-page with `scripts/aggregate_benchmark.py` →
-  `eval_runs/omni20/report.md`. NED in §7.2 reproduced via the grader's own
-  `doc_bench.metrics.parsing.ned.ned_score`.
+- **§7 20-page OmniDocBench probe (one-off; scripts/outputs not retained):** drew 20 random
+  English pages (`random.Random(20260616).sample`) from the full 593-page OmniDocBench, built a
+  custom `OmniDocBench.json`+`images/` dir, parsed both engines, and graded with
+  `doc-bench --dataset omnidocbench --data-dir <dir> --predictions <dir>`. NED in §7.2 cross-checked
+  via the grader's own `doc_bench.metrics.parsing.ned.ned_score`.
 
 ### Raw aggregate table
 

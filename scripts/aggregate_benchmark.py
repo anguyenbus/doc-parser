@@ -1,25 +1,34 @@
 #!/usr/bin/env python
-"""Aggregate run_benchmark.sh outputs into a per-file + summary report (Markdown).
+"""Aggregate run_benchmark2.sh outputs into a per-file + summary report (Markdown).
 
-Metrics are NED + TEDS (doc-bench >= the NED/TEDS wheel; NID/BLEU/METEOR are retired).
-Joins, per dataset and engine: grader per-file metrics (results CSV, keyed by
-``query_id``), the page route (``route_stats.csv``), and per-file parse latency (the
-``file_parsed`` JSON log lines). OmniDocBench's grader ids are positional
-(``omnidocbench_N``) and are mapped back to real filenames via the dump manifest so
-route/latency join. Prints Markdown to stdout.
+Metrics are NED + TEDS (doc-bench >= the NED/TEDS wheel; NID/BLEU/METEOR are retired;
+the bundled-loader wheel renamed the CSV column ``ned`` -> ``ned_similarity``). Joins,
+per dataset and engine: grader per-file metrics (results CSV, keyed by ``query_id`` —
+now the real ``doc_id``), the page route (``route_stats.csv``), and per-file parse
+latency (the ``file_parsed`` JSON log lines). All three key on the same doc_id stem,
+so the join is direct. Prints Markdown to stdout.
 """
 from __future__ import annotations
 
 import csv
 import glob
 import json
-import re
 import sys
 from pathlib import Path
 from statistics import mean
 
 ENGINES = ["vlm", "textract"]
 METRICS = ["ned", "teds"]
+# CSV column aliases per logical metric (the bundled-loader wheel renamed ned -> ned_similarity).
+COLUMNS = {"ned": ("ned_similarity", "ned"), "teds": ("teds",)}
+
+
+def _cell(row: dict, *names: str) -> float | None:
+    for n in names:
+        v = row.get(n)
+        if v not in (None, "", "nan"):
+            return float(v)
+    return None
 
 
 def load_results(results_dir: Path) -> dict[str, dict]:
@@ -28,21 +37,10 @@ def load_results(results_dir: Path) -> dict[str, dict]:
         return {}
     out: dict[str, dict] = {}
     with open(files[-1]) as f:
+        # query_id is the real doc_id (matches route_stats / latency stems directly).
         for row in csv.DictReader(f):
-            out[row["query_id"]] = {
-                m: (float(row[m]) if row.get(m) not in (None, "", "nan") else None)
-                for m in METRICS
-            }
+            out[row["query_id"]] = {m: _cell(row, *COLUMNS[m]) for m in METRICS}
     return out
-
-
-def load_idmap(exported_dir: Path) -> dict[str, str]:
-    """Map positional grader ids (``<dataset>_N``) -> real doc_id via the manifest."""
-    mani = exported_dir / "manifest.json"
-    if not mani.exists():
-        return {}
-    docs = json.load(open(mani)).get("documents", [])
-    return {f"{exported_dir.parent.name}_{i}": d.get("doc_id") for i, d in enumerate(docs)}
 
 
 def load_routes(pred_dir: Path) -> dict[str, str]:
@@ -74,10 +72,6 @@ def fmt(v, nd=4):
     return f"{v:.{nd}f}" if isinstance(v, (int, float)) else "—"
 
 
-def real_id(qid: str, idmap: dict[str, str]) -> str:
-    return idmap.get(qid, qid)
-
-
 def main() -> None:
     work = Path(sys.argv[1])
     datasets = sorted(d.name for d in work.iterdir() if d.is_dir())
@@ -94,7 +88,6 @@ def main() -> None:
 
     for ds in datasets:
         dsd = work / ds
-        idmap = load_idmap(dsd / "exported")
         data = {}
         for eng in ENGINES:
             data[eng] = {
@@ -111,7 +104,7 @@ def main() -> None:
               "| lat vlm (s) | lat tex (s) |")
         print("|---|---|---|--:|--:|--:|--:|--:|--:|")
         for qid in doc_ids:
-            rid = real_id(qid, idmap)
+            rid = qid  # query_id is the real doc_id; route_stats/latency use the same stem
             v, t = data["vlm"], data["textract"]
             vr, tr = v["res"].get(qid, {}), t["res"].get(qid, {})
             label = rid if len(rid) <= 28 else rid[:25] + "…"

@@ -1,126 +1,119 @@
-# Evaluating doc-parser with doc-bench (wheel) — Runbook
+# Evaluating doc-parser with doc-bench — Runbook
 
-How to measure doc-parser against the **OmniDocBench** (10 pages) and
-**DP-Bench** (12 PDFs) samples using the pip-installable **doc-bench wheel**.
-The wheel reproduces the old Docker grader's scores, ships the datasets +
-baselines + fixtures + schema, and computes METEOR. Docker remains an option for
-sealed CI runs (see "Docker fallback").
+How to measure doc-parser against the **doc-bench** bundled stratified set
+(**5 dp_bench / 5 omnidocbench / 1 ato_bench**) using the pip-installable wheel,
+and against your **own** documents via `--data-dir`. Metrics are **NED + TEDS**.
+
+> **As of the bundled-loader release (`doc_bench-0.1.0.tar.gz`, 2026-06-16):** the grader
+> reads its own bundled gold directly — **no `eval_config.yaml`, no `--data-dir`, no
+> staging/assembly** for the bundled set. `eval_config.yaml` has been **removed** from the repo;
+> the legacy `references/` flow (`run_eval.py`, `dump-dataset`, `compare_to_baseline.py`) is
+> retired. For results and analysis see [docs/escalation-engine-comparison.md](docs/escalation-engine-comparison.md).
 
 ## Mental model
 
-- **doc-bench (wheel) = the measuring instrument.** It bundles hash-pinned
-  dataset samples, precomputed **Docling baselines**, smoke-test fixtures, and
-  the grader. We never run our parser inside it.
-- **Host = the parser.** `parser_service` runs on the host (Docling + Bedrock)
-  and emits one prediction JSON per document.
-- **They meet via file-based grading.** `doc-bench` grades our `<doc_id>.json`
-  predictions against the frozen gold.
+- **doc-bench (wheel) = the measuring instrument.** It bundles the stratified dataset
+  (sources + gold + `manifest.json`) and the NED/TEDS grader. We never run our parser inside it.
+- **Host = the parser.** `parser_service` runs on the host (Docling + the escalation engine,
+  `vlm` or `textract`) and emits one prediction `<doc_id>.json` per document.
+- **They meet via file-based grading.** `doc-bench --dataset X --predictions DIR` grades our
+  predictions against the bundled gold, keyed by real `doc_id`.
 
+```mermaid
+flowchart LR
+    subgraph wheel["doc-bench wheel (instrument)"]
+        gold[(bundled gold<br/>5 dp / 5 omni / 1 ato)]
+        G[doc-bench grade<br/>NED + TEDS]
+    end
+    subgraph host["host (parser)"]
+        S[stage source files] --> P[parse_batch.py<br/>Docling + vlm|textract]
+    end
+    P -->|predictions/&lt;doc_id&gt;.json| G
+    gold --> G
+    G -->|results/*.csv| A[aggregate_benchmark.py]
+    A --> R([NED/TEDS + latency report])
 ```
-doc-bench-dump-dataset ─► exported/<doc_id>.{png,jpg,pdf}
-parser_service (host)  ─► predictions/<doc_id>.json
-doc-bench (grade)      ─► results/*.csv
-compare_to_baseline    ─► *_vs_baseline.{json,md}
-```
-
-Dataset data ships in this repo under `references/doc-bench/baseline/{omnidocbench,dp_bench}`
-and `eval_config.yaml` points at it (the grader reads this fixed filename from
-the CWD — no `--config` flag).
 
 ---
 
-## Step 0 — Install (once)
+## Step 0 — Install (once, and after each new wheel)
 
 ```bash
 cd /home/admin/projects/doc-parser
-uv tool install --force ./doc_bench-0.1.0-py3-none-any.whl   # doc-bench* onto PATH
-doc-bench-setup                                             # NLTK data (wordnet/punkt/omw-1.4) → METEOR
+uv tool install --force ./doc_bench-0.1.0.tar.gz                                   # doc-bench* onto PATH
+uv pip install --python .venv-docbench/bin/python --reinstall --no-deps ./doc_bench-0.1.0.tar.gz
 ```
 
-`uv tool install` is the right way to install a CLI tool — isolated env, on PATH,
-and unaffected by `uv run` syncing the project venv. Update with the same command
-(`--force`) when the team ships a new wheel.
+The CLI install (`uv tool`) is isolated and on PATH; the `.venv-docbench` copy is used by the
+harness scripts. Confirm + export Bedrock/Textract env (same region for both):
 
-Confirm:
 ```bash
-doc-bench-list-datasets        # lists dp_bench / omnidocbench / …
-doc-bench-smoke-test           # ~22 bundled fixtures → PASS, exit 0
-```
-
-Export Bedrock env for the parse step:
-```bash
+doc-bench-list-datasets        # dp_bench / omnidocbench / ato_bench / …
 export AWS_REGION=ap-southeast-2
 export BEDROCK_VLM_MODEL=anthropic.claude-3-5-sonnet-20241022-v2:0
 ```
 
 ---
 
-## Step 1 — One-command evaluation (recommended)
+## Step 1 — One-command benchmark (recommended)
 
 ```bash
-uv run python scripts/run_eval.py                     # both datasets
-uv run python scripts/run_eval.py --dataset dp_bench  # one dataset
-uv run python scripts/run_eval.py --skip-parse        # reuse existing predictions
+scripts/run_benchmark2.sh
 ```
 
-`run_eval.py` does **dump → parse → grade → compare** per dataset (work goes to
-`eval_runs/<dataset>/` by default; override with `--workdir`), prints an aggregate summary, and writes a
-`*_vs_baseline.{json,md}` report next to each results CSV. Done — the manual
-steps below are only if you want to run a stage by hand.
+Does, for all three bundled datasets × both engines (`vlm`, `textract`):
+**stage source files → parse → grade (bundled gold) → aggregate**, writing
+`eval_runs/bench2/benchmark_report.md` (per-doc NED/TEDS + route + latency, both engines).
+The manual steps below are only for running a stage by hand.
 
 ---
 
-## Manual steps (equivalent to what run_eval does)
+## Manual steps (what run_benchmark2.sh does)
 
-### 1. Export source files
+### 1. Stage source files (parser inputs only — no gold)
 ```bash
-doc-bench-dump-dataset --dataset dp_bench \
-  --output eval_runs/dp_bench/exported --config eval_config.yaml
-# --dataset omnidocbench  (and --limit N for a subset)
+.venv-docbench/bin/python scripts/stage_wheel_fixtures.py eval_runs/bench2
+# → eval_runs/bench2/<dataset>/input/<doc_id>.<ext>  (the manifest's 5/5/1 docs)
 ```
-Each filename stem **is** the `doc_id` the grader joins on.
+The grader uses **bundled gold**, so we only need the source files on disk for the parser.
 
-### 2. Parse on the host
+### 2. Parse on the host (pick the engine)
 ```bash
-uv run python scripts/parse_batch.py \
-  --input eval_runs/dp_bench/exported --output eval_runs/dp_bench/predictions --concurrency 4
+PARSER_ESCALATION_ENGINE=textract uv run python scripts/parse_batch.py \
+  --input eval_runs/bench2/dp_bench/input \
+  --output eval_runs/bench2/dp_bench/predictions_textract \
+  --emit-test-json --concurrency 4
+# engine ∈ vlm (default) | textract ; writes <doc_id>.json + route_stats.csv + failures.json
 ```
-Writes `<doc_id>.json` per doc, plus `route_stats.csv` + `failures.json`.
 
-### 3. Grade with the wheel
+### 3. Grade against bundled gold (no config, no --data-dir)
 ```bash
-# Run from the repo root: the grader reads ./eval_config.yaml (no --config flag).
 doc-bench --dataset dp_bench \
-  --predictions eval_runs/dp_bench/predictions \
-  --output-dir eval_runs/dp_bench/results
+  --predictions eval_runs/bench2/dp_bench/predictions_textract \
+  --output-dir   eval_runs/bench2/dp_bench/results_textract
 ```
-Prints `Evaluated: N`, `Rejected: 0`, and metric averages. (No CWD `contracts/`
-needed — the wheel resolves its bundled schema. OmniDocBench data may be flat or
-under `images/`; the wheel handles both. The grader is predictions-only — the
-in-process `--parser {stub,fast,docling}` was removed from the wheel.)
+Prints `Evaluated: N`, `Rejected: 0`, and `ned_similarity` / `teds` averages.
 
-### 4. Compare to baseline (with significance)
+> ⚠️ **CWD gotcha:** if an `eval_config.yaml` is present in the grader's CWD, it *overrides*
+> bundled gold with whatever paths it lists. We deleted ours; if one reappears, run the grader
+> from a directory without it (the harness runs it from `eval_runs/bench2/`).
+
+### 4. Aggregate (NED/TEDS + route + latency, both engines)
 ```bash
-uv run python scripts/compare_to_baseline.py \
-  --results eval_runs/dp_bench/results/dp_bench_predictions_results_<ts>.csv \
-  --baseline references/doc-bench/baseline/dp_bench/dpbench_results.json \
-  --route-stats eval_runs/dp_bench/predictions/route_stats.csv
-# OmniDocBench baseline: references/doc-bench/baseline/omnidocbench/omnidocbench_results.json
+uv run python scripts/aggregate_benchmark.py eval_runs/bench2   # → benchmark_report.md
 ```
 
 ---
 
 ## Custom datasets (`--data-dir`)
 
-Evaluate on **your own** documents — any set with ground truth, no code changes.
-`--data-dir` overrides `eval_config.yaml` and points the grader at your data.
-
-### 1. Lay out your data
+Evaluate on **your own** documents — any set with ground truth. `--data-dir` is the *only* case
+that needs a gold file you provide (and it always wins over any config).
 
 DP-Bench shape:
 ```
 my_data/
-  reference.json            # { "<file>.pdf": { "elements": [ ... ] } }
+  reference.json            # { "<file>.pdf": { "elements": [ {category, page, content:{text}}, ... ] } }
   pdfs/<file>.pdf
 ```
 OmniDocBench shape:
@@ -130,85 +123,40 @@ my_data/
   images/<file>.png|jpg
 ```
 
-`reference.json` ground-truth element (DP-Bench):
-```json
-{
-  "my_report.pdf": {
-    "elements": [
-      {"category": "Header",    "page": 1, "content": {"text": "Quarterly Report"},
-       "coordinates": [{"x": 0, "y": 0}, ...]},
-      {"category": "Paragraph", "page": 1, "content": {"text": "Revenue grew ..."}}
-    ]
-  }
-}
-```
-`category` ∈ Header / Paragraph / Table / List / Figure / … ; `content.text` is the
-gold text used for scoring. The `doc_id` is the filename stem (`my_report`).
-
-### 2. Parse with doc-parser
 ```bash
-uv run python scripts/parse_batch.py \
-  --input my_data/pdfs --output my_preds --concurrency 4   # → my_preds/<doc_id>.json
-```
-
-### 3. Grade against your ground truth
-```bash
-doc-bench --dataset dp_bench \
-  --data-dir my_data \
-  --predictions my_preds \
-  --output-dir my_results
+PARSER_ESCALATION_ENGINE=textract uv run python scripts/parse_batch.py \
+  --input my_data/pdfs --output my_preds --emit-test-json --concurrency 4
+doc-bench --dataset dp_bench --data-dir my_data --predictions my_preds --output-dir my_results
 # OmniDocBench: --dataset omnidocbench --data-dir my_data
 ```
-Prints `Evaluated: N`. To compare against a baseline of your own, pass a
-`*_results.json` in the same shape to `scripts/compare_to_baseline.py --baseline`.
-
-> **Verified:** a fabricated 2-doc DP-Bench set (`mydoc_a.pdf`, `mydoc_b.pdf`)
-> graded cleanly via `--data-dir` — Evaluated 2, 0 rejected — and reproduced the
-> per-doc scores of the originals it was seeded from.
-
-**Requirements:** every doc must have ground truth in `reference.json` /
-`OmniDocBench.json`, and predictions must be named `<doc_id>.json` (doc_id =
-source-file stem).
+`doc_id` is the source-file stem; predictions must be `<doc_id>.json`. (This is exactly how the
+§7 20-page OmniDocBench probe in the comparison doc was run.)
 
 ---
+
+## Escalation engine & latency
+
+- **Engine switch:** `PARSER_ESCALATION_ENGINE=vlm` (default, Bedrock Claude) or `textract`
+  (AWS `AnalyzeDocument`, `LAYOUT+TABLES`). Only gate-promoted pages differ between engines;
+  `docling-kept` pages are byte-identical.
+- **Latency:** run the parser with `PARSER_LOG_LEVEL=INFO`; each `file_parsed` JSON log line
+  carries `parse_duration_s` (and `vlm_routed_pages`). The aggregator joins these per doc.
+  Measured at `--concurrency 4`, so Docling times include CPU contention.
 
 ## How to read the scorecard
 
-Trust **NID** (text similarity ↑), **BLEU** (↑), **ARD** (reading order ↓), and
-**METEOR** (↑ — now functional via the wheel + `doc-bench-setup`). **TEDS/MHS**
-are ~0 (the gold has no markdown tables/headings) — expected, not a failure.
-
-> The gold is a verbatim element-text dump, which rewards literal OCR (Docling's
-> strength). Most pages stay on Docling, so the sample largely measures Docling;
-> the VLM only changes the escalated pages.
-
-### Reference numbers (doc-parser vs Docling baseline, 2026-05-30)
-
-| Dataset | | NID ↑ | BLEU ↑ | ARD ↓ | METEOR ↑ |
-|---|---|---|---|---|---|
-| **DP-Bench** (12) | doc-parser | 0.9598 | 0.8842 | 0.5874 | 0.9454 |
-| | baseline | 0.9593 | 0.8768 | 0.5883 | 0.9475 |
-| **OmniDocBench** (10) | doc-parser | 0.8181 | 0.4635 | 0.3175 | 0.6756 |
-| | baseline | 0.8230 | 0.4617 | 0.3171 | 0.6501 |
-
-doc-parser **matches the Docling baseline on both** (differences within noise).
-Validation: forcing Docling-only on all docs reproduces each baseline to ~3
-decimals.
-
----
-
-## Docker fallback (sealed CI)
-
-The Docker image still works for reproducible CI. Build from
-`references/doc-bench` (`sudo docker build -t doc-bench:latest .`) and grade via
-`docker run … doc-bench --dataset X --predictions /work/predictions …`. The wheel
-is preferred for local iteration (same scores, plus METEOR, no container).
+- **NED** (`ned_similarity`, ↑) = normalized edit-distance text similarity. **TEDS** (↑) =
+  table-structure similarity; **0 when the gold has no scored table** — expected, not a failure.
+- NID/BLEU/METEOR/ARD are **retired** — do not compare to older reports that quoted them.
+- The bundled `*_results.json` Docling baselines are **stale** (disagree with the current
+  grader); treat them as rough context only. See [docs/doc-bench-feedback.md](docs/doc-bench-feedback.md).
 
 ## Troubleshooting
 
 | Symptom | Cause / fix |
 |---|---|
-| `doc-bench: command not found` | `uv tool install --force ./doc_bench-*.whl` (ensure `~/.local/bin` on PATH). |
-| `Evaluated: 0` | Predictions don't match dataset `doc_id`s (must be `<stem>.json`), or `eval_config.yaml`/`--data-dir` points at the wrong data. Re-dump + re-parse. |
-| METEOR = 0 | Run `doc-bench-setup`. |
-| All pages `vlm-failed` | Bedrock unreachable — check instance role + the two env vars. |
+| `doc-bench: command not found` | `uv tool install --force ./doc_bench-0.1.0.tar.gz` (ensure `~/.local/bin` on PATH). |
+| Wrong dataset size / all `MISSING_PREDICTION` | A stale `eval_config.yaml` in CWD is overriding bundled gold (points at `references/`). Remove it or grade from a clean dir. |
+| `Evaluated: 0` | Predictions not named `<doc_id>.json`, or (for `--data-dir`) gold missing for those docs. |
+| CSV has no `ned` column | It's `ned_similarity` now (the aggregator reads both). |
+| All pages `vlm-failed` / textract errors | Bedrock/Textract unreachable — check the IAM instance role + `AWS_REGION=ap-southeast-2`. |

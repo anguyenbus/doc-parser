@@ -1,0 +1,259 @@
+{
+  "DocumentMetadata": {"Pages": 1},
+  "Blocks": [
+    {
+      "BlockType": "PAGE",
+      "Id": "page-1",
+      "Page": 1,
+      "Geometry": {"BoundingBox": {"Width": 1.0, "Height": 1.0, "Left": 0.0, "Top": 0.0}},
+      "Relationships": [
+        {
+          "Type": "CHILD",
+          "Ids": [
+            "lay-title",
+            "lay-header",
+            "lay-section",
+            "lay-text",
+            "lay-list",
+            "lay-table",
+            "lay-figure",
+            "lay-pagenum",
+            "lay-footer"
+          ]
+        }
+      ]
+    },
+
+    {
+      "BlockType": "LAYOUT_HEADER",
+      "Id": "lay-header",
+      "Page": 1,
+      "Confidence": 90.0,
+      "Geometry": {"BoundingBox": {"Width": 0.6, "Height": 0.02, "Left": 0.1, "Top": 0.02}},
+      "Relationships": [{"Type": "CHILD", "Ids": ["line-header"]}]
+    },
+    {
+      "BlockType": "LINE",
+      "Id": "line-header",
+      "Page": 1,
+      "Geometry": {"BoundingBox": {"Width": 0.6, "Height": 0.02, "Left": 0.1, "Top": 0.02}},
+      "Relationships": [{"Type": "CHILD", "Ids": ["w-header-1", "w-header-2"]}]
+    },
+    {"BlockType": "WORD", "Id": "w-header-1", "Text": "Confidential", "Page": 1},
+    {"BlockType": "WORD", "Id": "w-header-2", "Text": "Draft", "Page": 1},
+
+    {
+      "BlockType": "LAYOUT_TITLE",
+      "Id": "lay-title",
+      "Page": 1,
+      "Confidence": 99.0,
+      "Geometry": {"BoundingBox": {"Width": 0.8, "Height": 0.05, "Left": 0.1, "Top": 0.08}},
+      "Relationships": [{"Type": "CHILD", "Ids": ["line-title"]}]
+    },
+    {
+      "BlockType": "LINE",
+      "Id": "line-title",
+      "Page": 1,
+      "Geometry": {"BoundingBox": {"Width": 0.8, "Height": 0.05, "Left": 0.1, "Top": 0.08}},
+      "Relationships": [{"Type": "CHILD", "Ids": ["w-title-1", "w-title-2", "w-title-3"]}]
+    },
+    {"BlockType": "WORD", "Id": "w-title-1", "Text": "Quarterly", "Page": 1},
+    {"BlockType": "WORD", "Id": "w-title-2", "Text": "Financial", "Page": 1},
+    {"BlockType": "WORD", "Id": "w-title-3", "Text": "Report", "Page": 1},
+
+    {
+      "BlockType": "LAYOUT_SECTION_HEADER",
+      "Id": "lay-section",
+      "Page": 1,
+      "Confidence": 97.0,
+      "Geometry": {"BoundingBox": {"Width": 0.5, "Height": 0.03, "Left": 0.1, "Top": 0.16}},
+      "Relationships": [{"Type": "CHILD", "Ids": ["line-section"]}]
+    },
+    {
+      "BlockType": "LINE",
+      "Id": "line-section",
+      "Page": 1,
+      "Geometry": {"BoundingBox": {"Width": 0.5, "Height": 0.03, "Left": 0.1, "Top": 0.16}},
+      "Relationships": [{"Type": "CHILD", "Ids": ["w-section-1"]}]
+    },
+    {"BlockType": "WORD", "Id": "w-section-1", "Text": "Overview", "Page": 1},
+
+    {
+      "BlockType": "LAYOUT_TEXT",
+      "Id": "lay-text",
+      "Page": 1,
+      "Confidence": 98.0,
+      "Geometry": {"BoundingBox": {"Width": 0.8, "Height": 0.06, "Left": 0.1, "Top": 0.22}},
+      "Relationships": [{"Type": "CHILD", "Ids": ["line-text-1", "line-text-2"]}]
+    },
+    {
+      "BlockType": "LINE",
+      "Id": "line-text-1",
+      "Page": 1,
+      "Geometry": {"BoundingBox": {"Width": 0.8, "Height": 0.03, "Left": 0.1, "Top": 0.22}},
+      "Relationships": [{"Type": "CHILD", "Ids": ["w-text-1", "w-text-2", "w-text-3"]}]
+    },
+    {"BlockType": "WORD", "Id": "w-text-1", "Text": "Revenue", "Page": 1},
+    {"BlockType": "WORD", "Id": "w-text-2", "Text": "grew", "Page": 1},
+    {"BlockType": "WORD", "Id": "w-text-3", "Text": "steadily.", "Page": 1},
+    {
+      "BlockType": "LINE",
+      "Id": "line-text-2",
+      "Page": 1,
+      "Geometry": {"BoundingBox": {"Width": 0.8, "Height": 0.03, "Left": 0.1, "Top": 0.25}},
+      "Relationships": [{"Type": "CHILD", "Ids": ["w-text-4", "w-text-5"]}]
+    },
+    {"BlockType": "WORD", "Id": "w-text-4", "Text": "Costs", "Page": 1},
+    {"BlockType": "WORD", "Id": "w-text-5", "Text": "fell.", "Page": 1},
+
+    {
+      "BlockType": "LAYOUT_LIST",
+      "Id": "lay-list",
+      "Page": 1,
+      "Confidence": 95.0,
+      "Geometry": {"BoundingBox": {"Width": 0.8, "Height": 0.08, "Left": 0.1, "Top": 0.30}},
+      "Relationships": [{"Type": "CHILD", "Ids": ["line-list-1", "line-list-2"]}]
+    },
+    {
+      "BlockType": "LINE",
+      "Id": "line-list-1",
+      "Page": 1,
+      "Geometry": {"BoundingBox": {"Width": 0.8, "Height": 0.03, "Left": 0.1, "Top": 0.30}},
+      "Relationships": [{"Type": "CHILD", "Ids": ["w-list-1", "w-list-2"]}]
+    },
+    {"BlockType": "WORD", "Id": "w-list-1", "Text": "First", "Page": 1},
+    {"BlockType": "WORD", "Id": "w-list-2", "Text": "item", "Page": 1},
+    {
+      "BlockType": "LINE",
+      "Id": "line-list-2",
+      "Page": 1,
+      "Geometry": {"BoundingBox": {"Width": 0.8, "Height": 0.03, "Left": 0.1, "Top": 0.33}},
+      "Relationships": [{"Type": "CHILD", "Ids": ["w-list-3", "w-list-4"]}]
+    },
+    {"BlockType": "WORD", "Id": "w-list-3", "Text": "Second", "Page": 1},
+    {"BlockType": "WORD", "Id": "w-list-4", "Text": "item", "Page": 1},
+
+    {
+      "BlockType": "LAYOUT_TABLE",
+      "Id": "lay-table",
+      "Page": 1,
+      "Confidence": 93.0,
+      "Geometry": {"BoundingBox": {"Width": 0.8, "Height": 0.10, "Left": 0.1, "Top": 0.40}},
+      "Relationships": [{"Type": "CHILD", "Ids": ["table-1"]}]
+    },
+    {
+      "BlockType": "TABLE",
+      "Id": "table-1",
+      "Page": 1,
+      "Confidence": 93.0,
+      "Geometry": {"BoundingBox": {"Width": 0.8, "Height": 0.10, "Left": 0.1, "Top": 0.40}},
+      "Relationships": [
+        {"Type": "CHILD", "Ids": ["cell-r1c1", "cell-r1c2", "cell-r2c1", "cell-r2c2"]}
+      ]
+    },
+    {
+      "BlockType": "CELL",
+      "Id": "cell-r1c1",
+      "Page": 1,
+      "RowIndex": 1,
+      "ColumnIndex": 1,
+      "RowSpan": 1,
+      "ColumnSpan": 1,
+      "EntityTypes": ["COLUMN_HEADER"],
+      "Geometry": {"BoundingBox": {"Width": 0.4, "Height": 0.05, "Left": 0.1, "Top": 0.40}},
+      "Relationships": [{"Type": "CHILD", "Ids": ["w-cell-11"]}]
+    },
+    {"BlockType": "WORD", "Id": "w-cell-11", "Text": "Metric", "Page": 1},
+    {
+      "BlockType": "CELL",
+      "Id": "cell-r1c2",
+      "Page": 1,
+      "RowIndex": 1,
+      "ColumnIndex": 2,
+      "RowSpan": 1,
+      "ColumnSpan": 1,
+      "EntityTypes": ["COLUMN_HEADER"],
+      "Geometry": {"BoundingBox": {"Width": 0.4, "Height": 0.05, "Left": 0.5, "Top": 0.40}},
+      "Relationships": [{"Type": "CHILD", "Ids": ["w-cell-12"]}]
+    },
+    {"BlockType": "WORD", "Id": "w-cell-12", "Text": "Value", "Page": 1},
+    {
+      "BlockType": "CELL",
+      "Id": "cell-r2c1",
+      "Page": 1,
+      "RowIndex": 2,
+      "ColumnIndex": 1,
+      "RowSpan": 1,
+      "ColumnSpan": 1,
+      "Geometry": {"BoundingBox": {"Width": 0.4, "Height": 0.05, "Left": 0.1, "Top": 0.45}},
+      "Relationships": [{"Type": "CHILD", "Ids": ["w-cell-21", "sel-cell-21"]}]
+    },
+    {"BlockType": "WORD", "Id": "w-cell-21", "Text": "Approved", "Page": 1},
+    {"BlockType": "SELECTION_ELEMENT", "Id": "sel-cell-21", "SelectionStatus": "SELECTED", "Page": 1},
+    {
+      "BlockType": "CELL",
+      "Id": "cell-r2c2",
+      "Page": 1,
+      "RowIndex": 2,
+      "ColumnIndex": 2,
+      "RowSpan": 1,
+      "ColumnSpan": 1,
+      "Geometry": {"BoundingBox": {"Width": 0.4, "Height": 0.05, "Left": 0.5, "Top": 0.45}},
+      "Relationships": [{"Type": "CHILD", "Ids": ["w-cell-22"]}]
+    },
+    {"BlockType": "WORD", "Id": "w-cell-22", "Text": "42", "Page": 1},
+
+    {
+      "BlockType": "LAYOUT_FIGURE",
+      "Id": "lay-figure",
+      "Page": 1,
+      "Confidence": 88.0,
+      "Geometry": {"BoundingBox": {"Width": 0.8, "Height": 0.10, "Left": 0.1, "Top": 0.55}},
+      "Relationships": [{"Type": "CHILD", "Ids": ["line-figure"]}]
+    },
+    {
+      "BlockType": "LINE",
+      "Id": "line-figure",
+      "Page": 1,
+      "Geometry": {"BoundingBox": {"Width": 0.8, "Height": 0.03, "Left": 0.1, "Top": 0.55}},
+      "Relationships": [{"Type": "CHILD", "Ids": ["w-figure-1", "w-figure-2"]}]
+    },
+    {"BlockType": "WORD", "Id": "w-figure-1", "Text": "Figure", "Page": 1},
+    {"BlockType": "WORD", "Id": "w-figure-2", "Text": "1", "Page": 1},
+
+    {
+      "BlockType": "LAYOUT_PAGE_NUMBER",
+      "Id": "lay-pagenum",
+      "Page": 1,
+      "Confidence": 99.0,
+      "Geometry": {"BoundingBox": {"Width": 0.1, "Height": 0.02, "Left": 0.45, "Top": 0.95}},
+      "Relationships": [{"Type": "CHILD", "Ids": ["line-pagenum"]}]
+    },
+    {
+      "BlockType": "LINE",
+      "Id": "line-pagenum",
+      "Page": 1,
+      "Geometry": {"BoundingBox": {"Width": 0.1, "Height": 0.02, "Left": 0.45, "Top": 0.95}},
+      "Relationships": [{"Type": "CHILD", "Ids": ["w-pagenum-1"]}]
+    },
+    {"BlockType": "WORD", "Id": "w-pagenum-1", "Text": "1", "Page": 1},
+
+    {
+      "BlockType": "LAYOUT_FOOTER",
+      "Id": "lay-footer",
+      "Page": 1,
+      "Confidence": 92.0,
+      "Geometry": {"BoundingBox": {"Width": 0.6, "Height": 0.02, "Left": 0.1, "Top": 0.97}},
+      "Relationships": [{"Type": "CHILD", "Ids": ["line-footer"]}]
+    },
+    {
+      "BlockType": "LINE",
+      "Id": "line-footer",
+      "Page": 1,
+      "Geometry": {"BoundingBox": {"Width": 0.6, "Height": 0.02, "Left": 0.1, "Top": 0.97}},
+      "Relationships": [{"Type": "CHILD", "Ids": ["w-footer-1", "w-footer-2"]}]
+    },
+    {"BlockType": "WORD", "Id": "w-footer-1", "Text": "Company", "Page": 1},
+    {"BlockType": "WORD", "Id": "w-footer-2", "Text": "Inc.", "Page": 1}
+  ]
+}

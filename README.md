@@ -26,6 +26,26 @@ export AWS_REGION=ap-southeast-2
 export BEDROCK_VLM_MODEL=anthropic.claude-3-5-sonnet-20241022-v2:0
 ```
 
+**Escalation engine** (`PARSER_ESCALATION_ENGINE`, default `vlm`): chooses which
+engine parses pages the quality gate promotes to escalation. Docling still handles
+confident pages either way; this only swaps the escalation engine.
+
+```bash
+# vlm (default): Bedrock Claude Sonnet on promoted pages.
+export PARSER_ESCALATION_ENGINE=vlm
+
+# textract: AWS Textract synchronous AnalyzeDocument (FeatureTypes LAYOUT+TABLES),
+# sending the rendered page bytes directly — no S3, no async StartDocumentAnalysis,
+# one call per promoted page (<=10 MB, ~5 MB recommended). Reuses AWS_REGION and the
+# same instance-role credentials as the VLM (verified in ap-southeast-2); adds no new
+# heavy local dependency (boto3 is already installed). Emits the same element-JSON
+# the VLM does, so Docling fallback on empty/garbage output is identical.
+export PARSER_ESCALATION_ENGINE=textract
+```
+
+The default stays `vlm` (zero behavior change). Flipping the default to `textract`
+is gated on a head-to-head eval, not this switch.
+
 ### One document → Markdown
 ```bash
 # print markdown to stdout
@@ -55,7 +75,7 @@ from parser_service.markdown_pipeline import parse_to_markdown
 
 result = parse_to_markdown(Path("report.pdf"))
 result["markdown"]      # the RAG-ready Markdown string
-result["page_routes"]   # [{page_index, route: docling-kept|vlm|vlm-fallback-docling, reason}]
+result["page_routes"]   # [{page_index, route: docling-kept|vlm|vlm-fallback-docling|textract|textract-fallback-docling, reason}]
 result["warnings"]      # never raises — failures surface here
 ```
 
