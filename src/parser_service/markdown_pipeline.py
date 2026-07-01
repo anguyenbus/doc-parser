@@ -52,6 +52,11 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from parser_service.confidence import (
+    LOW_CONFIDENCE_THRESHOLD,
+    document_confidence,
+    page_confidence,
+)
 from parser_service.markdown import render_markdown
 from parser_service.parser_service import (
     PARSER_VERSION,
@@ -165,7 +170,39 @@ def parse_to_markdown(file_path: Path) -> dict[str, Any]:
             scope="document",
         )
 
-    return {"markdown": markdown, "page_routes": page_routes, "warnings": warnings}
+    # Advisory confidence (read-only over the fully-populated page_routes). This
+    # NEVER gates anything — it does not touch markdown, page_routes, or any
+    # promote/keep decision. It is a transparent routing-derived heuristic, not a
+    # gold-calibrated probability (see parser_service.confidence).
+    page_confidences = [
+        {"page_index": r["page_index"], "confidence": page_confidence(r)}
+        for r in page_routes
+    ]
+    confidence = {
+        "document": document_confidence(page_routes),
+        "pages": page_confidences,
+    }
+    # Surface below-threshold pages as additive, advisory-only warnings.
+    for pconf in page_confidences:
+        if pconf["confidence"] < LOW_CONFIDENCE_THRESHOLD:
+            _append_warning(
+                container,
+                code="low_confidence_page",
+                message=(
+                    f"advisory: page {pconf['page_index']} scored "
+                    f"{pconf['confidence']:.2f}, below the review threshold "
+                    f"{LOW_CONFIDENCE_THRESHOLD}"
+                ),
+                scope="page",
+                page_index=pconf["page_index"],
+            )
+
+    return {
+        "markdown": markdown,
+        "page_routes": page_routes,
+        "warnings": warnings,
+        "confidence": confidence,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -306,7 +343,12 @@ def _pdf_to_markdown(
 
         if decision.action == "keep":
             page_routes.append(
-                {"page_index": page_idx, "route": _ROUTE_DOCLING_KEPT, "reason": None}
+                {
+                    "page_index": page_idx,
+                    "route": _ROUTE_DOCLING_KEPT,
+                    "reason": None,
+                    "n_chars": len(docling_md),
+                }
             )
             pages_md.append(docling_md)
             continue
@@ -414,7 +456,14 @@ def _vlm_page_markdown(
             scope="page",
             page_index=page_idx,
         )
-        page_routes.append({"page_index": page_idx, "route": route, "reason": reason})
+        page_routes.append(
+            {
+                "page_index": page_idx,
+                "route": route,
+                "reason": reason,
+                "n_chars": len(docling_fallback or ""),
+            }
+        )
         return docling_fallback or ""
 
     # Obtain the page image (rendered from the PDF unless raw bytes were given).
@@ -471,6 +520,7 @@ def _vlm_page_markdown(
                 "reason": reason,
                 "vlm_quality_passes": signals.passes,
                 "vlm_quality_failing_signals": signals.failing_signals,
+                "n_chars": len(engine_md),
             }
         )
         return engine_md
@@ -484,6 +534,12 @@ def _vlm_page_markdown(
     #       promotion would re-introduce the missing content escalation recovered.
     #       The discriminator is the reason prefix, NOT layer (coverage and
     #       Layer-2 garble both carry layer=2).
+    # Measure the Docling markdown here rather than reusing a gate signal: the gate
+    # only runs its text-quality check for Layer-2 promotions (Layer-1 and coverage
+    # promotions return before `_layer2_decision`), so most promoted pages were never
+    # measured; and even for a Layer-2 promotion the gate scored the joined element
+    # TEXT, not the rendered markdown that actually ships. This scores the shipped
+    # string directly, once, only on the arbitration-on revert-eligible path.
     docling_signals = (
         _measure_text_quality(docling_fallback) if docling_fallback is not None else None
     )
@@ -524,11 +580,13 @@ def _vlm_page_markdown(
         )
         record["route"] = route_rejected
         record["arbitration"] = "kept-docling"
+        record["n_chars"] = len(docling_fallback or "")
         page_routes.append(record)
         return docling_fallback or ""
 
     record["route"] = route_ok
     record["arbitration"] = "kept-engine"
+    record["n_chars"] = len(engine_md)
     page_routes.append(record)
     return engine_md
 
@@ -567,7 +625,14 @@ def _image_to_markdown(
     decision = evaluate_page(0, result, page_elems)
 
     if decision.action == "keep" and page_elems:
-        page_routes.append({"page_index": 0, "route": _ROUTE_DOCLING_KEPT, "reason": None})
+        page_routes.append(
+            {
+                "page_index": 0,
+                "route": _ROUTE_DOCLING_KEPT,
+                "reason": None,
+                "n_chars": len(docling_md),
+            }
+        )
         return docling_md
 
     # Gate fired (or Docling extracted nothing) → VLM on the raw image bytes.
@@ -615,7 +680,14 @@ def _whole_doc_to_markdown(
         return ""
 
     markdown: str = doc.export_to_markdown().strip()
-    page_routes.append({"page_index": 0, "route": _ROUTE_DOCLING_KEPT, "reason": None})
+    page_routes.append(
+        {
+            "page_index": 0,
+            "route": _ROUTE_DOCLING_KEPT,
+            "reason": None,
+            "n_chars": len(markdown),
+        }
+    )
     return markdown
 
 

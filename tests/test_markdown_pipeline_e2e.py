@@ -212,7 +212,10 @@ def test_office_html_whole_doc_roundtrip(
 
     assert isinstance(result["markdown"], str)
     assert len(result["page_routes"]) == 1
-    assert result["page_routes"][0] == {
+    route = dict(result["page_routes"][0])
+    # `n_chars` is the additive per-page length key from the confidence feature.
+    assert isinstance(route.pop("n_chars"), int)
+    assert route == {
         "page_index": 0,
         "route": "docling-kept",
         "reason": None,

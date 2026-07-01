@@ -283,13 +283,15 @@ def test_flag_off_byte_identical(
     # Today's behavior: engine kept, normal route, signal-only record.
     assert r["route"] == ok_route
     assert ENGINE_SENTINEL in result["markdown"]
-    # Signal-only record — exactly today's keys, NONE of the arbitration keys.
+    # Signal-only record — today's keys plus the additive `n_chars` (from the
+    # confidence feature), and NONE of the arbitration keys.
     assert set(r.keys()) == {
         "page_index",
         "route",
         "reason",
         "vlm_quality_passes",
         "vlm_quality_failing_signals",
+        "n_chars",
     }
     assert "arbitration" not in r
     assert "engine_quality_passes" not in r

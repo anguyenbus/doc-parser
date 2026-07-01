@@ -106,13 +106,67 @@ from parser_service.markdown_pipeline import parse_to_markdown
 
 result = parse_to_markdown(Path("report.pdf"))
 result["markdown"]      # the RAG-ready Markdown string
-result["page_routes"]   # [{page_index, route: docling-kept|vlm|vlm-fallback-docling|textract|textract-fallback-docling|vlm-rejected-kept-docling|textract-rejected-kept-docling, reason}]
+result["page_routes"]   # [{page_index, route: docling-kept|vlm|vlm-fallback-docling|textract|textract-fallback-docling|vlm-rejected-kept-docling|textract-rejected-kept-docling, reason, n_chars}]
 result["warnings"]      # never raises — failures surface here
+result["confidence"]    # {document: float, pages: [{page_index, confidence}, ...]} — advisory only
 ```
+
+Each `page_routes` record also carries an additive `n_chars` key — the length of
+the Markdown string shipped for that page — which is the sole weight used by the
+document confidence.
 
 Two guarantees: a document **never crashes the run** (failures land in
 `warnings`/`failures.json`), and **Bedrock is contacted only when a page
 escalates** — so HTML/Office and clean digital PDFs run fully offline.
+
+### Confidence score (advisory, non-gating)
+
+`parse_to_markdown` returns a `confidence` block — a 0-1 `document` score plus a
+per-page map `pages: [{page_index, confidence}]` — derived entirely from the
+routing outcomes doc-parser already computes. It is meant for a downstream RAG
+consumer to threshold low-confidence documents for human review without
+reverse-engineering the route vocabulary.
+
+**It is advisory only.** The score **NEVER** gates parsing, routing, the quality
+gate, the promote/keep decision, or the shipped Markdown — it is computed
+read-only over `page_routes` after the fact. It is a transparent,
+**routing-derived heuristic**, **NOT** a gold-NED/TEDS-calibrated probability of
+correctness.
+
+Per-page base score (`src/parser_service/confidence.py`), keyed on the page
+`route` and disambiguated by the quality-gate signal booleans already on the
+record:
+
+| route                                   | score | meaning                                             |
+| --------------------------------------- | ----- | --------------------------------------------------- |
+| `docling-kept`                          | 0.95  | gate kept a clean digital Docling page              |
+| `vlm` / `textract`, quality signal passes | 0.85  | engine shipped and its text-quality signal passed   |
+| `*-rejected-kept-docling`               | 0.70  | promoted, but the clean Docling render shipped      |
+| `vlm` / `textract`, signal fails but kept | 0.60  | engine shipped but its text-quality signal failed   |
+| `*-fallback-docling`                    | 0.50  | engine errored/emptied; gate-flagged Docling shipped |
+| error / empty / unparseable page        | 0.15  | no Docling and no engine output for the page        |
+
+The **document score** is the content-weighted mean
+`Σ(page_score × n_chars) / Σ(n_chars)` — one bad half-page image can't tank a long
+clean doc. Because the weighting is a convex combination, the document score
+stays within `[min_page, max_page]` (it never escapes the tier band its pages
+occupy). If `Σ(n_chars) == 0`, or there are no `page_routes` at all, the document
+score is `0.0`.
+
+Pages scoring **below the advisory review threshold** surface as additive
+`low_confidence_page` warnings (`scope="page"`, the page index, an advisory
+message) so low-confidence pages are visible for re-review — again without
+changing what shipped. The threshold (`confidence.LOW_CONFIDENCE_THRESHOLD`, `0.65`)
+is derived as the midpoint between the highest **untrusted** tier
+(engine-failing-kept, `0.60`) and the lowest **trusted** tier
+(rejected-kept-docling, `0.70`), so it flags exactly the tiers whose shipped output
+the pipeline does not trust — engine-failing-kept (`0.60`), `*-fallback-docling`
+(`0.50`), and error/empty (`0.15`) — and never coincides with a tier value.
+
+The score is **not** written to `route_stats.csv`: the CSV schema
+(`route_stats.FIELDNAMES`) is a fixed positional contract, so no column is added.
+Confidence lives only in the `parse_to_markdown` return dict; a CSV column may be
+a follow-up.
 
 ## Architecture
 
