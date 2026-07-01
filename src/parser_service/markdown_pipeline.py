@@ -502,7 +502,7 @@ def _vlm_page_markdown(
         "true",
     )
 
-    def _fallback(detail: str) -> str:
+    def _fallback(detail: str, reason_override: str | None = None) -> str:
         route = route_fallback if docling_fallback is not None else route_ok
         _append_warning(
             container,
@@ -516,7 +516,11 @@ def _vlm_page_markdown(
             {
                 "page_index": page_idx,
                 "route": route,
-                "reason": reason,
+                # An exhausted-throttle overrides the gate reason with
+                # "throttled" so route_stats can distinguish a throttle storm from
+                # a legitimate low-quality gate fallback. The route VOCABULARY is
+                # unchanged — the throttle fact rides only in `reason`.
+                "reason": reason_override if reason_override is not None else reason,
                 "n_chars": len(docling_fallback or ""),
             }
         )
@@ -541,7 +545,16 @@ def _vlm_page_markdown(
             if isinstance(engine_result, dict)
             else "returned a non-dict"
         )
-        return _fallback(f"error: {detail}")
+        # An exhausted-throttle (error_kind == "throttled") is recorded with a
+        # distinct reason instead of the gate reason; every other error keeps the
+        # gate reason (current behavior).
+        reason_override = (
+            "throttled"
+            if isinstance(engine_result, dict)
+            and engine_result.get("error_kind") == "throttled"
+            else None
+        )
+        return _fallback(f"error: {detail}", reason_override=reason_override)
 
     elements_raw = engine_result.get("elements")
     if not isinstance(elements_raw, list):

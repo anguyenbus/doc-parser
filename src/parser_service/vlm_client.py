@@ -22,6 +22,8 @@ import os
 import threading
 from typing import Any, Literal
 
+from parser_service.retry import is_transient, retry_call
+
 logger = logging.getLogger(__name__)
 
 Mode = Literal["table", "page"]
@@ -151,7 +153,11 @@ def call_vlm(image_bytes: bytes, mode: Mode) -> dict[str, Any]:
         # Cost attribution uses IAM role/resource tags at the AWS account level
         # with tag key 'parser-service'. Do not attempt to pass a 'tags'
         # parameter to invoke_model — it will be rejected by the API.
-        resp = client.invoke_model(
+        # Retry ONLY the inner Bedrock call on transient throttles/5xx (bounded
+        # exponential backoff). This stays INSIDE the try so the public
+        # never-raises {"error": ...} contract is unchanged when retries exhaust.
+        resp = retry_call(
+            client.invoke_model,
             modelId=model_id,
             body=json.dumps(body),
             contentType="application/json",
@@ -171,6 +177,11 @@ def call_vlm(image_bytes: bytes, mode: Mode) -> dict[str, Any]:
 
     except Exception as exc:
         logger.warning("VLM call failed (mode=%s): %s", mode, exc)
+        # On an EXHAUSTED transient throttle, tag the failure so the escalation
+        # seam can record a distinct `throttled` route reason. Permanent errors
+        # (auth/validation/4xx) keep the plain {"error": ...} shape.
+        if is_transient(exc):
+            return {"error": str(exc), "error_kind": "throttled"}
         return {"error": str(exc)}
 
 

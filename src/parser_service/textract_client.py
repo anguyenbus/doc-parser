@@ -24,6 +24,8 @@ import os
 import threading
 from typing import Any
 
+from parser_service.retry import is_transient, retry_call
+
 logger = logging.getLogger(__name__)
 
 # -------------------------------------------------------------------------
@@ -103,7 +105,11 @@ def analyze_page(image_bytes: bytes) -> dict[str, Any]:
         region = os.environ.get("AWS_REGION", "us-east-1")
         client = boto3.client("textract", region_name=region)
 
-        resp = client.analyze_document(
+        # Retry ONLY the inner Textract call on transient throttles/5xx (bounded
+        # exponential backoff). Inside the try, so the public never-raises
+        # {"error": ...} contract is unchanged when retries exhaust.
+        resp = retry_call(
+            client.analyze_document,
             Document={"Bytes": image_bytes},
             FeatureTypes=["LAYOUT", "TABLES"],
         )
@@ -114,6 +120,11 @@ def analyze_page(image_bytes: bytes) -> dict[str, Any]:
 
     except Exception as exc:
         logger.warning("Textract call failed: %s", exc)
+        # On an EXHAUSTED transient throttle, tag the failure so the escalation
+        # seam records a distinct `throttled` route reason. Permanent errors keep
+        # the plain {"error": ...} shape.
+        if is_transient(exc):
+            return {"error": str(exc), "error_kind": "throttled"}
         return {"error": str(exc)}
 
 

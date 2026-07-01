@@ -64,7 +64,7 @@ _ENGINE_FALLBACK_ROUTES = (ROUTE_VLM_FALLBACK, ROUTE_TEXTRACT_FALLBACK)
 
 # CSV column order. ``doc_id`` and ``route`` are the columns ``aggregate_benchmark.py``
 # consumes (it reads only those two), and are kept first to preserve that contract.
-FIELDNAMES = ["doc_id", "route", "pages", "vlm_pages", "routes", "reason"]
+FIELDNAMES = ["doc_id", "route", "pages", "vlm_pages", "throttled_pages", "routes", "reason"]
 
 
 def route_record(page_routes: list[dict[str, Any]], doc_id: str) -> dict[str, Any]:
@@ -149,11 +149,18 @@ def route_record(page_routes: list[dict[str, Any]], doc_id: str) -> dict[str, An
             reason = str(r["reason"])
             break
 
+    # Exhausted-throttle pages, DERIVED FROM the page reason (set by the seam) —
+    # NOT a new route label. The route vocabulary is unchanged, so these pages
+    # already count toward the sum invariant under their *-fallback-docling route;
+    # this is an additional reason-derived signal, not a separate route bucket.
+    throttled_pages = sum(1 for r in page_routes if r.get("reason") == "throttled")
+
     return {
         "doc_id": doc_id,
         "route": route,
         "pages": page_count,
         "vlm_pages": vlm_pages,
+        "throttled_pages": throttled_pages,
         "routes": ",".join(f"{r.get('route')}" for r in page_routes) or "-",
         "reason": reason,
     }
@@ -166,6 +173,7 @@ def error_record(doc_id: str, reason: str) -> dict[str, Any]:
         "route": "error",
         "pages": 0,
         "vlm_pages": 0,
+        "throttled_pages": 0,
         "routes": "-",
         "reason": reason[:200],
     }
@@ -182,6 +190,7 @@ def summarize(records: list[dict[str, Any]]) -> dict[str, int]:
     errors = sum(1 for r in records if r["route"] == "error")
     total_pages = sum(int(r.get("pages", 0)) for r in records)
     vlm_pages = sum(int(r.get("vlm_pages", 0)) for r in records)
+    throttled_pages = sum(int(r.get("throttled_pages", 0)) for r in records)
     return {
         "total": total,
         "used_vlm": used_vlm,
@@ -192,6 +201,7 @@ def summarize(records: list[dict[str, Any]]) -> dict[str, int]:
         "errors": errors,
         "total_pages": total_pages,
         "vlm_pages": vlm_pages,
+        "throttled_pages": throttled_pages,
     }
 
 
@@ -221,6 +231,6 @@ def format_table(records: list[dict[str, Any]]) -> str:
         f"used VLM: {s['used_vlm']} | vlm-failed: {s['vlm_failed']} | "
         f"used Textract: {s['used_textract']} | textract-failed: {s['textract_failed']} | "
         f"docling-kept: {s['docling_kept']} | errors: {s['errors']} | "
-        f"escalated pages: {s['vlm_pages']}"
+        f"escalated pages: {s['vlm_pages']} | throttled pages: {s['throttled_pages']}"
     )
     return "\n".join(lines)

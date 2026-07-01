@@ -77,6 +77,27 @@ populated only when arbitration is on and a Docling rendering exists), and an
 Default stays **OFF**. A bench A/B (NED / TEDS) must be recorded and show
 non-regression **before** any proposal to flip the default to ON.
 
+**Escalation client retry + throttle observability.** Both escalation clients
+(`vlm_client.call_vlm` → Bedrock `invoke_model`, `textract_client.analyze_page` →
+Textract `analyze_document`) wrap **only** their inner AWS call in a bounded
+exponential-backoff retry (`parser_service.retry`). Transient failures —
+throttling / provisioned-throughput / timeout / connection / 5xx (incl. 429 / 408 /
+425) and the botocore `ThrottlingException` / `TooManyRequestsException` /
+`ProvisionedThroughputExceededException` / `ServiceUnavailable` error codes — are
+retried with 50–100% jitter, honoring a `Retry-After` header when present; permanent
+errors (auth / `AccessDenied*` / `ValidationException` / 404 / 4xx) **fail fast** and
+are never retried. The retry lives **inside** the client's existing `try`, so the
+public never-raises `{"error": ...}` contract is unchanged when retries exhaust.
+
+When retries are exhausted on a **throttle**, the client returns
+`{"error": ..., "error_kind": "throttled"}`. The escalation seam then records that
+page's `*-fallback-docling` route with a distinct `reason="throttled"` (instead of
+the gate reason), so a throttle storm is **visible** in `page_routes` — the route
+**vocabulary is unchanged**; the throttle fact rides only in `reason`. `route_stats`
+derives a `throttled_pages` count from that reason (and a `route_stats.csv` column of
+the same name); the per-page route counts still sum to the page count. Every
+non-throttle path keeps today's gate reason (byte-for-byte).
+
 ### One document → Markdown
 ```bash
 # print markdown to stdout
@@ -95,8 +116,10 @@ uv run python scripts/parse_batch.py --input s3://bucket/in --output s3://bucket
 ```
 Writes `out/<name>.md` per document, plus `route_stats.csv` (which pages went
 Docling vs VLM) and `failures.json`. Knobs: `PARSER_CONCURRENCY`,
-`PARSER_RENDER_DPI` (default 144), `PARSER_MAX_PAGES`, `--retry-on-throttle`,
-`--timeout-per-file`, `--budget-usd` (see [Cost accounting & budget cap](#cost-accounting--budget-cap)).
+`PARSER_RENDER_DPI` (default 144), `PARSER_MAX_PAGES`, `--timeout-per-file`,
+`--budget-usd` (see [Cost accounting & budget cap](#cost-accounting--budget-cap)).
+(`--retry-on-throttle` is **deprecated / a no-op** — retry now lives inside the
+escalation clients, above.)
 (`--emit-test-json` additionally writes the benchmark JSON wrapper — eval only.)
 
 ### Programmatic

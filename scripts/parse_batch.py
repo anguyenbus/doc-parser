@@ -21,7 +21,11 @@ Usage:
         [--concurrency 4] \
         [--max-files 100] \
         [--timeout-per-file 120.0] \
-        [--retry-on-throttle]
+        [--budget-usd 5.00]
+
+``--retry-on-throttle`` is DEPRECATED (no-op): transient-throttle retry now
+lives inside the escalation clients (bounded exponential backoff), and an
+exhausted throttle is recorded as the ``throttled`` route reason.
 """
 
 from __future__ import annotations
@@ -198,11 +202,18 @@ class BudgetTracker:
 # ---------------------------------------------------------------------------
 
 
-def _parse_file_sync(ref: InputRef, retry_on_throttle: bool, escalate: bool = True) -> dict[str, Any]:
+def _parse_file_sync(ref: InputRef, escalate: bool = True) -> dict[str, Any]:
     """Parse one file to markdown synchronously (runs in thread pool).
 
     Returns the ``parse_to_markdown`` result
     (``{"markdown", "page_routes", "warnings"}``).
+
+    NOTE: transient-throttle retry now lives INSIDE the escalation clients
+    (``vlm_client.call_vlm`` / ``textract_client.analyze_page`` wrap their inner
+    AWS call in bounded exponential backoff). The old batch-layer
+    ``ThrottlingException``-on-``parse_to_markdown`` retry loop is gone — the
+    clients swallow the exception and return ``{"error": ...}`` (never re-raising
+    the throttle), so it never reached this layer anyway.
     """
     from pathlib import Path as P
 
@@ -211,27 +222,6 @@ def _parse_file_sync(ref: InputRef, retry_on_throttle: bool, escalate: bool = Tr
     # budget-cap path). On the default path we call ``parse_to_markdown(path)``
     # positionally so the call site is byte-identical to before this feature.
     ptm_kwargs: dict[str, Any] = {} if escalate else {"escalate": False}
-    if retry_on_throttle:
-        # Retry loop at the batch layer for ThrottlingException.
-        max_retries = 5
-        delay = 1.0
-        for attempt in range(max_retries + 1):
-            try:
-                return parse_to_markdown(path, **ptm_kwargs)
-            except Exception as exc:
-                exc_name = type(exc).__name__
-                if "ThrottlingException" in exc_name and attempt < max_retries:
-                    logger.warning(
-                        "ThrottlingException on %s (attempt %d/%d); retrying in %.1fs",
-                        ref.filename,
-                        attempt + 1,
-                        max_retries,
-                        delay,
-                    )
-                    time.sleep(delay)
-                    delay = min(delay * 2, 30.0)
-                else:
-                    raise
     return parse_to_markdown(path, **ptm_kwargs)
 
 
@@ -242,7 +232,6 @@ async def _process_file(
     semaphore: asyncio.Semaphore,
     executor: concurrent.futures.Executor,
     timeout_per_file: float | None,
-    retry_on_throttle: bool,
     results: list[dict[str, Any]],
     failures: dict[str, list[dict[str, Any]]],
     route_records: list[dict[str, Any]],
@@ -270,9 +259,7 @@ async def _process_file(
             )
         try:
             loop = asyncio.get_event_loop()
-            coro = loop.run_in_executor(
-                executor, _parse_file_sync, ref, retry_on_throttle, escalate
-            )
+            coro = loop.run_in_executor(executor, _parse_file_sync, ref, escalate)
             if timeout_per_file is not None:
                 result = await asyncio.wait_for(coro, timeout=timeout_per_file)
             else:
@@ -389,7 +376,6 @@ async def run_batch(
     concurrency: int,
     max_files: int | None,
     timeout_per_file: float | None,
-    retry_on_throttle: bool,
     emit_test_json: bool,
     budget_usd: float | None = None,
 ) -> None:
@@ -426,7 +412,6 @@ async def run_batch(
                 semaphore,
                 executor,
                 timeout_per_file,
-                retry_on_throttle,
                 results,
                 failures,
                 route_records,
@@ -550,7 +535,13 @@ def main() -> None:
     parser.add_argument(
         "--retry-on-throttle",
         action="store_true",
-        help="Enable exponential backoff on Bedrock ThrottlingException",
+        help=(
+            "DEPRECATED no-op (accepted for one release). Transient-throttle "
+            "retry now lives inside the escalation clients (bounded exponential "
+            "backoff in vlm_client/textract_client); an exhausted throttle is "
+            "recorded as a distinct `throttled` route reason. This flag no longer "
+            "has any effect."
+        ),
     )
     parser.add_argument(
         "--budget-usd",
@@ -566,6 +557,14 @@ def main() -> None:
     )
     args = parser.parse_args()
 
+    if args.retry_on_throttle:
+        logger.warning(
+            "--retry-on-throttle is DEPRECATED and now a no-op: transient-throttle "
+            "retry lives inside the escalation clients (bounded exponential "
+            "backoff), and exhausted throttles are recorded as the `throttled` "
+            "route reason. The flag will be removed in a future release."
+        )
+
     asyncio.run(
         run_batch(
             input_uri=args.input,
@@ -573,7 +572,6 @@ def main() -> None:
             concurrency=args.concurrency,
             max_files=args.max_files,
             timeout_per_file=args.timeout_per_file,
-            retry_on_throttle=args.retry_on_throttle,
             emit_test_json=args.emit_test_json,
             budget_usd=args.budget_usd,
         )
