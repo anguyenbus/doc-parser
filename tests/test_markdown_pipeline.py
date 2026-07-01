@@ -83,9 +83,15 @@ def test_keep_pages_use_docling_slices(monkeypatch: pytest.MonkeyPatch) -> None:
 
     result = parse_to_markdown(DIGITAL)
 
-    # ``confidence`` is the additive advisory block (2026-07-01 spec); the
-    # pre-existing keys are unchanged alongside it.
-    assert set(result) == {"markdown", "page_routes", "warnings", "confidence"}
+    # ``confidence`` (2026-07-01 confidence spec) and ``call_counts`` (2026-07-01
+    # cost-accounting spec) are additive; the pre-existing keys are unchanged.
+    assert set(result) == {
+        "markdown",
+        "page_routes",
+        "warnings",
+        "confidence",
+        "call_counts",
+    }
     assert "page one" in result["markdown"].lower()
     assert "page two" in result["markdown"].lower()
     # Page 1's text comes after page 0's (order preserved).

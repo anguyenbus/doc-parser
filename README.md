@@ -96,8 +96,8 @@ uv run python scripts/parse_batch.py --input s3://bucket/in --output s3://bucket
 Writes `out/<name>.md` per document, plus `route_stats.csv` (which pages went
 Docling vs VLM) and `failures.json`. Knobs: `PARSER_CONCURRENCY`,
 `PARSER_RENDER_DPI` (default 144), `PARSER_MAX_PAGES`, `--retry-on-throttle`,
-`--timeout-per-file`. (`--emit-test-json` additionally writes the benchmark JSON
-wrapper — eval only.)
+`--timeout-per-file`, `--budget-usd` (see [Cost accounting & budget cap](#cost-accounting--budget-cap)).
+(`--emit-test-json` additionally writes the benchmark JSON wrapper — eval only.)
 
 ### Programmatic
 ```python
@@ -109,6 +109,7 @@ result["markdown"]      # the RAG-ready Markdown string
 result["page_routes"]   # [{page_index, route: docling-kept|vlm|vlm-fallback-docling|textract|textract-fallback-docling|vlm-rejected-kept-docling|textract-rejected-kept-docling, reason, n_chars}]
 result["warnings"]      # never raises — failures surface here
 result["confidence"]    # {document: float, pages: [{page_index, confidence}, ...]} — advisory only
+result["call_counts"]   # {vlm: int, textract: int} — this invocation's successful escalation calls
 ```
 
 Each `page_routes` record also carries an additive `n_chars` key — the length of
@@ -167,6 +168,68 @@ The score is **not** written to `route_stats.csv`: the CSV schema
 (`route_stats.FIELDNAMES`) is a fixed positional contract, so no column is added.
 Confidence lives only in the `parse_to_markdown` return dict; a CSV column may be
 a follow-up.
+
+## Cost accounting & budget cap
+
+### Per-invocation call counts
+
+`parse_to_markdown` returns an additive `call_counts` key
+`{"vlm": int, "textract": int}` — the number of successful escalation-engine
+calls **this invocation** made. The two counters (`vlm_client` / `textract_client`)
+are backed by `threading.local()`, so under the batch's default concurrency each
+file's counts are **race-free per worker thread**: a concurrent neighbor's reset
+at the start of its own parse cannot corrupt another thread's count. The public
+`get_*_call_count` / `reset_*_call_count` API is unchanged; single-threaded callers
+are unaffected.
+
+### Both-engine cost estimate
+
+`scripts/parse_batch.py` sums the per-file `call_counts` and reports a both-engine
+cost in the run summary (previously a Textract-only batch reported `$0`):
+
+- **Bedrock (VLM) leg:** `total_vlm_calls × _AVG_COST_PER_CALL`, a per-call token
+  model using **average** input/output tokens.
+- **Textract leg:** `total_textract_calls × TEXTRACT_PRICE_PER_PAGE` (one
+  `AnalyzeDocument` LAYOUT+TABLES call per promoted page).
+
+The run summary carries `estimated_cost_usd` (the combined total) plus the
+per-engine breakdown `bedrock_cost_usd`, `textract_cost_usd`, and
+`total_textract_calls` (alongside `total_vlm_calls`). A **pre-flight**
+`preflight_worst_case_usd` = `Σ page_count × per-page cost` is also emitted: because
+the engine that fires per page is unknown until the gate runs (most pages stay on
+Docling), it is a **worst-case bound** over page counts, not a per-page prediction.
+
+**The number is an ESTIMATE, not billed cost** (`cost_is_estimate: true` in the
+summary): the Bedrock leg uses average tokens rather than metered usage. The
+Textract per-page price is **PROVISIONAL** — `TEXTRACT_PRICE_PER_PAGE = $0.019/page`
+is the starting figure from `docs/escalation-engine-comparison.md`. A live check of
+the AWS Textract pricing page surfaced only US West (Oregon) list rates (Tables
+$0.015/page; Layout free when used with Tables → LAYOUT+TABLES ≈ $0.015/page in
+us-west-2) and **did not display an `ap-southeast-2` (Sydney) breakdown**; Textract
+pricing is region-specific. Verifying the live `ap-southeast-2` LAYOUT+TABLES
+per-page price and replacing the constant is a pending human/ops step (see the code
+comment on the constant).
+
+### `--budget-usd` document-level cap
+
+`--budget-usd <float>` (default: disabled) is an optional spend ceiling enforced
+**at the document boundary**. Running spend is accumulated from each completed
+file's estimated cost; once it would exceed the ceiling, escalation is halted and
+**every subsequently-dispatched file parses via Docling only (no engine calls)** —
+the batch never crashes mid-run. The stop is reflected in the run summary via
+`budget_exceeded` (bool), `budget_exceeded_at_file_index`, and `running_spend_usd`.
+
+The cap is **coarse**: because it is checked at the document boundary and files run
+concurrently, actual spend can overshoot the ceiling by roughly one document's
+worth of in-flight escalation (files already dispatched before the trip finish
+escalating). Per-page hard capping is **out of scope** — a mid-page shared spend
+counter under concurrency would re-introduce the cross-thread race the thread-local
+counters removed.
+
+The cost estimate is **not** written to `route_stats.csv`: the CSV schema
+(`route_stats.FIELDNAMES`) is a fixed positional contract, so no cost column is
+added; the estimate lives only in the run-summary dict / logs (a CSV column may be
+a follow-up).
 
 ## Architecture
 

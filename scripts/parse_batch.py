@@ -63,7 +63,6 @@ from parser_service.route_stats import (  # noqa: E402
     summarize,
     write_route_csv,
 )
-from parser_service.vlm_client import get_vlm_call_count  # noqa: E402
 
 logger = logging.getLogger(__name__)
 
@@ -80,13 +79,126 @@ _AVG_COST_PER_CALL = (
     + AVG_OUTPUT_TOKENS_PER_CALL * BEDROCK_OUTPUT_PRICE_PER_TOKEN
 )
 
+# Textract AnalyzeDocument (LAYOUT + TABLES) price, per promoted page (= one
+# analyze_document call per page). PROVISIONAL — this is a starting figure, NOT
+# a verified ap-southeast-2 number.
+#
+#   - docs/escalation-engine-comparison.md cites ≈ $0.019/page for LAYOUT+TABLES
+#     (used here as the starting figure).
+#   - The public AWS Textract pricing page only surfaced US West (Oregon) list
+#     rates when checked (Tables $0.015/page; Layout free when used with Tables,
+#     so LAYOUT+TABLES ≈ $0.015/page in us-west-2). It did NOT display an
+#     ap-southeast-2 (Sydney) breakdown, and Textract pricing is region-specific.
+#
+# ACTION REQUIRED (human/ops): verify the live ap-southeast-2 AnalyzeDocument
+# LAYOUT+TABLES per-page price via the AWS Pricing Calculator / a billing export
+# and replace this constant with the confirmed figure. Until then this is
+# labelled PROVISIONAL and the emitted cost is an ESTIMATE (see below).
+TEXTRACT_PRICE_PER_PAGE = 0.019  # PROVISIONAL — pending ap-southeast-2 verification
+
+
+def _compute_cost_summary(results: list[dict[str, Any]]) -> dict[str, Any]:
+    """Both-engine estimated-cost breakdown summed over per-file ``call_counts``.
+
+    Bedrock leg: ``total_vlm_calls × _AVG_COST_PER_CALL`` — a per-call token model
+    using AVERAGE tokens, NOT actual usage, so the number is an ESTIMATE, not a
+    billed cost. Textract leg: ``total_textract_calls × TEXTRACT_PRICE_PER_PAGE``
+    (one call per promoted page). ``estimated_cost_usd`` is the combined total.
+    """
+    total_vlm_calls = sum(r.get("vlm_calls", 0) for r in results)
+    total_textract_calls = sum(r.get("textract_calls", 0) for r in results)
+    bedrock_cost = total_vlm_calls * _AVG_COST_PER_CALL
+    textract_cost = total_textract_calls * TEXTRACT_PRICE_PER_PAGE
+    return {
+        "total_vlm_calls": total_vlm_calls,
+        "total_textract_calls": total_textract_calls,
+        "bedrock_cost_usd": round(bedrock_cost, 6),
+        "textract_cost_usd": round(textract_cost, 6),
+        # Combined total (round the summed float, not the two rounded legs).
+        "estimated_cost_usd": round(bedrock_cost + textract_cost, 6),
+        # Explicit label: this is an ESTIMATE (Bedrock leg uses average tokens),
+        # not billed cost; the Textract per-page price is PROVISIONAL.
+        "cost_is_estimate": True,
+    }
+
+
+def _preflight_estimate(page_counts: list[int], engine: str) -> float:
+    """Worst/expected-case cost bound over page counts: ``Σ page_count × per-page cost``.
+
+    Modeled on pdfmux's ``estimate_document_cost``. Because the engine that will
+    fire per page is NOT known until the gate runs (most pages are kept on
+    Docling and never escalate), this is an upper bound assuming EVERY page
+    escalates on ``engine`` — a worst-case bound over page counts, not a per-page
+    prediction.
+    """
+    total_pages = sum(page_counts)
+    per_page = TEXTRACT_PRICE_PER_PAGE if engine == "textract" else _AVG_COST_PER_CALL
+    return round(total_pages * per_page, 6)
+
+
+def _file_cost(result: dict[str, Any]) -> float:
+    """Estimated spend for one completed file, from its returned ``call_counts``."""
+    return (
+        int(result.get("vlm_calls", 0)) * _AVG_COST_PER_CALL
+        + int(result.get("textract_calls", 0)) * TEXTRACT_PRICE_PER_PAGE
+    )
+
+
+class BudgetTracker:
+    """Document-level ``--budget-usd`` cap enforced at the document boundary.
+
+    Running spend is accumulated from each COMPLETED file's per-engine call
+    counts (the Part B cost table). ``allows_escalation()`` is checked before a
+    file is dispatched; once running spend has exceeded the ceiling, escalation
+    is halted for every subsequently-dispatched file (they still parse via
+    Docling — no engine calls).
+
+    COARSENESS: the cap is checked at the document boundary and files run
+    concurrently, so actual spend can overshoot the ceiling by roughly one
+    document's worth of in-flight escalation (files already dispatched before the
+    trip finish escalating). Per-page hard capping is out of scope — a mid-page
+    shared spend counter under concurrency would re-introduce the cross-thread
+    race the thread-local counters removed.
+    """
+
+    def __init__(self, budget_usd: float | None) -> None:
+        self.budget_usd = budget_usd
+        self.running_spend = 0.0
+        self.budget_exceeded = False
+        self.exceeded_at_file_index: int | None = None
+
+    def allows_escalation(self) -> bool:
+        """True if a newly-dispatched file may still escalate (budget not spent)."""
+        if self.budget_usd is None:
+            return True
+        return self.running_spend < self.budget_usd
+
+    def record(self, result: dict[str, Any], file_index: int) -> None:
+        """Add a completed file's estimated spend; trip the cap if it now exceeds."""
+        self.running_spend += _file_cost(result)
+        if (
+            self.budget_usd is not None
+            and not self.budget_exceeded
+            and self.running_spend >= self.budget_usd
+        ):
+            self.budget_exceeded = True
+            self.exceeded_at_file_index = file_index
+
+    def summary_fields(self) -> dict[str, Any]:
+        return {
+            "budget_usd": self.budget_usd,
+            "budget_exceeded": self.budget_exceeded,
+            "budget_exceeded_at_file_index": self.exceeded_at_file_index,
+            "running_spend_usd": round(self.running_spend, 6),
+        }
+
 
 # ---------------------------------------------------------------------------
 # Per-file processing
 # ---------------------------------------------------------------------------
 
 
-def _parse_file_sync(ref: InputRef, retry_on_throttle: bool) -> dict[str, Any]:
+def _parse_file_sync(ref: InputRef, retry_on_throttle: bool, escalate: bool = True) -> dict[str, Any]:
     """Parse one file to markdown synchronously (runs in thread pool).
 
     Returns the ``parse_to_markdown`` result
@@ -95,13 +207,17 @@ def _parse_file_sync(ref: InputRef, retry_on_throttle: bool) -> dict[str, Any]:
     from pathlib import Path as P
 
     path = P(ref.uri)
+    # Only pass the additive ``escalate`` kwarg when suppressing escalation (the
+    # budget-cap path). On the default path we call ``parse_to_markdown(path)``
+    # positionally so the call site is byte-identical to before this feature.
+    ptm_kwargs: dict[str, Any] = {} if escalate else {"escalate": False}
     if retry_on_throttle:
         # Retry loop at the batch layer for ThrottlingException.
         max_retries = 5
         delay = 1.0
         for attempt in range(max_retries + 1):
             try:
-                return parse_to_markdown(path)
+                return parse_to_markdown(path, **ptm_kwargs)
             except Exception as exc:
                 exc_name = type(exc).__name__
                 if "ThrottlingException" in exc_name and attempt < max_retries:
@@ -116,7 +232,7 @@ def _parse_file_sync(ref: InputRef, retry_on_throttle: bool) -> dict[str, Any]:
                     delay = min(delay * 2, 30.0)
                 else:
                     raise
-    return parse_to_markdown(path)
+    return parse_to_markdown(path, **ptm_kwargs)
 
 
 async def _process_file(
@@ -130,21 +246,44 @@ async def _process_file(
     results: list[dict[str, Any]],
     failures: dict[str, list[dict[str, Any]]],
     route_records: list[dict[str, Any]],
+    file_index: int = 0,
+    budget: BudgetTracker | None = None,
 ) -> None:
     """Process one file with semaphore-controlled concurrency."""
     doc_id = Path(ref.filename).stem
     async with semaphore:
         start = time.monotonic()
+        # Document-boundary budget check: decide (once, before dispatch) whether
+        # this file may still escalate. Once running spend has tripped the cap,
+        # remaining files parse Docling-only (no engine calls). Checked here at
+        # the document boundary, NEVER inside the per-page escalation seam.
+        escalate = budget.allows_escalation() if budget is not None else True
+        if not escalate:
+            logger.info(
+                json.dumps(
+                    {
+                        "event": "budget_exceeded_skip_escalation",
+                        "filename": ref.filename,
+                        "file_index": file_index,
+                    }
+                )
+            )
         try:
             loop = asyncio.get_event_loop()
-            coro = loop.run_in_executor(executor, _parse_file_sync, ref, retry_on_throttle)
+            coro = loop.run_in_executor(
+                executor, _parse_file_sync, ref, retry_on_throttle, escalate
+            )
             if timeout_per_file is not None:
                 result = await asyncio.wait_for(coro, timeout=timeout_per_file)
             else:
                 result = await coro
 
             duration = time.monotonic() - start
-            vlm_calls = get_vlm_call_count()
+            # Per-invocation, race-free counts returned by parse_to_markdown
+            # (thread-local backed) — NOT a module global read.
+            call_counts = result.get("call_counts", {"vlm": 0, "textract": 0})
+            vlm_calls = call_counts.get("vlm", 0)
+            textract_calls = call_counts.get("textract", 0)
 
             page_routes = result.get("page_routes", [])
             warnings = result.get("warnings", [])
@@ -163,6 +302,7 @@ async def _process_file(
                 "markdown_chars": len(markdown),
                 "parse_duration_s": round(duration, 3),
                 "vlm_call_count": vlm_calls,
+                "textract_call_count": textract_calls,
             }
             logger.info(json.dumps(log_line))
 
@@ -190,7 +330,16 @@ async def _process_file(
                     {"filename": ref.filename, "page_index": w.get("page_index"), "warnings": [w]}
                 )
 
-            results.append({"filename": ref.filename, "success": True, "vlm_calls": vlm_calls})
+            file_result = {
+                "filename": ref.filename,
+                "success": True,
+                "vlm_calls": vlm_calls,
+                "textract_calls": textract_calls,
+            }
+            results.append(file_result)
+            if budget is not None:
+                # Update running spend at the document boundary (after completion).
+                budget.record(file_result, file_index)
 
         except TimeoutError:
             duration = time.monotonic() - start
@@ -203,7 +352,9 @@ async def _process_file(
                     ],
                 }
             )
-            results.append({"filename": ref.filename, "success": False, "vlm_calls": 0})
+            results.append(
+                {"filename": ref.filename, "success": False, "vlm_calls": 0, "textract_calls": 0}
+            )
             route_records.append(error_record(doc_id, "timeout"))
 
         except Exception as exc:
@@ -221,7 +372,9 @@ async def _process_file(
                     ],
                 }
             )
-            results.append({"filename": ref.filename, "success": False, "vlm_calls": 0})
+            results.append(
+                {"filename": ref.filename, "success": False, "vlm_calls": 0, "textract_calls": 0}
+            )
             route_records.append(error_record(doc_id, str(exc)))
 
 
@@ -238,6 +391,7 @@ async def run_batch(
     timeout_per_file: float | None,
     retry_on_throttle: bool,
     emit_test_json: bool,
+    budget_usd: float | None = None,
 ) -> None:
     """Run the batch parsing pipeline."""
     refs = list(list_input_files(input_uri))
@@ -258,6 +412,10 @@ async def run_batch(
     results: list[dict[str, Any]] = []
     failures: dict[str, list[dict[str, Any]]] = {}
     route_records: list[dict[str, Any]] = []
+    # Document-level spend cap. None => disabled (unchanged behavior). The
+    # allows_escalation()/record() calls run in the coroutine bodies on the
+    # single asyncio loop thread, so the shared running-spend state is not racy.
+    budget = BudgetTracker(budget_usd)
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=concurrency) as executor:
         tasks = [
@@ -272,16 +430,17 @@ async def run_batch(
                 results,
                 failures,
                 route_records,
+                file_index=idx,
+                budget=budget,
             )
-            for ref in refs
+            for idx, ref in enumerate(refs)
         ]
         await asyncio.gather(*tasks)
 
     total_files = len(refs)
     succeeded = sum(1 for r in results if r["success"])
     failed = total_files - succeeded
-    total_vlm_calls = sum(r.get("vlm_calls", 0) for r in results)
-    estimated_cost = total_vlm_calls * _AVG_COST_PER_CALL
+    cost = _compute_cost_summary(results)
 
     route_summary = summarize(route_records)
     summary = {
@@ -289,13 +448,30 @@ async def run_batch(
         "total_files": total_files,
         "succeeded": succeeded,
         "failed": failed,
-        "total_vlm_calls": total_vlm_calls,
-        "estimated_cost_usd": round(estimated_cost, 6),
+        "total_vlm_calls": cost["total_vlm_calls"],
+        "total_textract_calls": cost["total_textract_calls"],
+        # Combined both-engine ESTIMATE (not billed cost — Bedrock leg uses
+        # average tokens; Textract per-page price is PROVISIONAL).
+        "estimated_cost_usd": cost["estimated_cost_usd"],
+        "bedrock_cost_usd": cost["bedrock_cost_usd"],
+        "textract_cost_usd": cost["textract_cost_usd"],
+        "cost_is_estimate": cost["cost_is_estimate"],
         "total_pages": route_summary["total_pages"],
         "vlm_routed_pages": route_summary["vlm_pages"],
         "docs_using_vlm": route_summary["used_vlm"],
         "docs_docling_kept": route_summary["docling_kept"],
     }
+    # Pre-flight worst-case bound: Σ page_count × per-page cost for the configured
+    # escalation engine, assuming EVERY page escalates. Because the firing engine
+    # per page is unknown until the gate runs (most pages stay on Docling), this
+    # is an upper bound over page counts, not a per-page prediction. Emitted for
+    # visibility alongside the realized estimate.
+    _engine = os.environ.get("PARSER_ESCALATION_ENGINE", "vlm")
+    summary["preflight_worst_case_usd"] = _preflight_estimate(
+        [route_summary["total_pages"]], engine=_engine
+    )
+    # Document-level budget cap outcome (budget_exceeded + the trip file index).
+    summary.update(budget.summary_fields())
     logger.info(json.dumps(summary))
 
     # Write route_stats.csv (per-document routing breakdown).
@@ -376,6 +552,18 @@ def main() -> None:
         action="store_true",
         help="Enable exponential backoff on Bedrock ThrottlingException",
     )
+    parser.add_argument(
+        "--budget-usd",
+        type=float,
+        default=None,
+        help=(
+            "Optional document-level spend ceiling (estimated USD). Once running "
+            "spend would exceed it, escalation is halted at the document boundary "
+            "and remaining files parse via Docling only (no engine calls). "
+            "Coarse: actual spend can overshoot by ~one document's in-flight "
+            "escalation. Default: disabled. The cost is an ESTIMATE."
+        ),
+    )
     args = parser.parse_args()
 
     asyncio.run(
@@ -387,6 +575,7 @@ def main() -> None:
             timeout_per_file=args.timeout_per_file,
             retry_on_throttle=args.retry_on_throttle,
             emit_test_json=args.emit_test_json,
+            budget_usd=args.budget_usd,
         )
     )
 

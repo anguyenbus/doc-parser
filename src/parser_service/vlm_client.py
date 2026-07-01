@@ -19,6 +19,7 @@ import base64
 import json
 import logging
 import os
+import threading
 from typing import Any, Literal
 
 logger = logging.getLogger(__name__)
@@ -92,21 +93,31 @@ Rules:
 """
 
 # -------------------------------------------------------------------------
-# VLM call counter (module-level)
+# VLM call counter (per-worker-thread)
 # -------------------------------------------------------------------------
-
-_vlm_call_count: int = 0
+# Backed by threading.local() so reset / increment / read are isolated per
+# worker thread. Each file in a batch parses start-to-finish on exactly one
+# ThreadPoolExecutor worker (parse_to_markdown spawns no threads/asyncio
+# itself), so a concurrent neighbor's reset_vlm_call_count() at the start of
+# ITS parse can never corrupt the count this thread is about to read. The
+# public get_/reset_ API shape is unchanged; single-threaded callers on the
+# main thread are unaffected.
+_vlm_counter = threading.local()
 
 
 def get_vlm_call_count() -> int:
-    """Return the number of successful VLM calls since last reset."""
-    return _vlm_call_count
+    """Return the number of successful VLM calls on THIS thread since last reset."""
+    return getattr(_vlm_counter, "count", 0)
 
 
 def reset_vlm_call_count() -> None:
-    """Reset the VLM call counter to zero (called at the start of each parse())."""
-    global _vlm_call_count
-    _vlm_call_count = 0
+    """Reset THIS thread's VLM call counter to zero (called at the start of each parse())."""
+    _vlm_counter.count = 0
+
+
+def _increment_vlm_call_count() -> None:
+    """Increment THIS thread's VLM call counter by one (on a successful call)."""
+    _vlm_counter.count = getattr(_vlm_counter, "count", 0) + 1
 
 
 # -------------------------------------------------------------------------
@@ -125,8 +136,6 @@ def call_vlm(image_bytes: bytes, mode: Mode) -> dict[str, Any]:
         Parsed JSON dict on success. {"error": "<reason>"} on any failure.
         Never raises.
     """
-    global _vlm_call_count
-
     try:
         import boto3  # AWS SDK — only imported at call time
 
@@ -157,7 +166,7 @@ def call_vlm(image_bytes: bytes, mode: Mode) -> dict[str, Any]:
         )
 
         result = _safe_parse(raw_text)
-        _vlm_call_count += 1
+        _increment_vlm_call_count()
         return result
 
     except Exception as exc:

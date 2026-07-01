@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import logging
 import os
+import threading
 from typing import Any
 
 logger = logging.getLogger(__name__)
@@ -49,21 +50,28 @@ _HEADING_LEVELS: dict[str, int] = {
 }
 
 # -------------------------------------------------------------------------
-# Textract call counter (module-level) — telemetry parity with vlm_client
+# Textract call counter (per-worker-thread) — parity with vlm_client
 # -------------------------------------------------------------------------
-
-_textract_call_count: int = 0
+# Backed by threading.local() so reset / increment / read are isolated per
+# worker thread (same rationale as vlm_client: one parse per pool thread, no
+# threads/asyncio spawned inside parse_to_markdown). The public get_/reset_
+# API shape is unchanged; single-threaded main-thread callers are unaffected.
+_textract_counter = threading.local()
 
 
 def get_textract_call_count() -> int:
-    """Return the number of successful Textract calls since last reset."""
-    return _textract_call_count
+    """Return the number of successful Textract calls on THIS thread since last reset."""
+    return getattr(_textract_counter, "count", 0)
 
 
 def reset_textract_call_count() -> None:
-    """Reset the Textract call counter to zero (called at the start of each parse)."""
-    global _textract_call_count
-    _textract_call_count = 0
+    """Reset THIS thread's Textract call counter to zero (called at the start of each parse)."""
+    _textract_counter.count = 0
+
+
+def _increment_textract_call_count() -> None:
+    """Increment THIS thread's Textract call counter by one (on a successful call)."""
+    _textract_counter.count = getattr(_textract_counter, "count", 0) + 1
 
 
 # -------------------------------------------------------------------------
@@ -89,8 +97,6 @@ def analyze_page(image_bytes: bytes) -> dict[str, Any]:
         ``{"elements": [...]}`` on success; ``{"error": "<reason>"}`` on failure.
         Never raises.
     """
-    global _textract_call_count
-
     try:
         import boto3  # AWS SDK — only imported at call time (mirrors call_vlm)
 
@@ -103,7 +109,7 @@ def analyze_page(image_bytes: bytes) -> dict[str, Any]:
         )
 
         elements = _blocks_to_elements(resp.get("Blocks", []))
-        _textract_call_count += 1
+        _increment_textract_call_count()
         return {"elements": elements}
 
     except Exception as exc:

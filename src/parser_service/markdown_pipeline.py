@@ -72,10 +72,12 @@ from parser_service.quality_gate import _measure_text_quality, evaluate_page
 from parser_service.render import render_page, text_layer_tokens
 from parser_service.textract_client import (
     analyze_page,
+    get_textract_call_count,
     reset_textract_call_count,
 )
 from parser_service.vlm_client import (
     call_vlm,
+    get_vlm_call_count,
     reset_vlm_call_count,
 )
 
@@ -111,7 +113,7 @@ def _document_converter() -> Any:
 # ---------------------------------------------------------------------------
 
 
-def parse_to_markdown(file_path: Path) -> dict[str, Any]:
+def parse_to_markdown(file_path: Path, escalate: bool = True) -> dict[str, Any]:
     """Parse a document into a single RAG-ready markdown string + telemetry.
 
     Never raises — all failures are captured in ``warnings[]`` and reflected in
@@ -119,10 +121,24 @@ def parse_to_markdown(file_path: Path) -> dict[str, Any]:
 
     Args:
         file_path: Path to the document to parse.
+        escalate: When True (default) the quality gate may promote pages to the
+            escalation engine (VLM/Textract) exactly as before — behavior is
+            byte-identical to the pre-budget-cap path. When False, promotion is
+            suppressed and every page stays on its Docling rendering (no engine
+            calls). Used ONLY by the batch's document-level ``--budget-usd`` cap
+            to run post-budget files Docling-only; it does NOT change the gate's
+            promote/keep decision logic, only whether a promote is acted on.
 
     Returns:
-        ``{"markdown": str, "page_routes": [{page_index, route, reason}, ...],
-           "warnings": [...]}``.
+        ``{"markdown": str,
+           "page_routes": [{page_index, route, reason}, ...],
+           "warnings": [...],
+           "confidence": {"document": float, "pages": [...]},
+           "call_counts": {"vlm": int, "textract": int}}``.
+
+        ``call_counts`` reflects exactly THIS invocation's successful escalation
+        calls (read from the per-worker-thread counters at the end of the call,
+        after the reset at the start), so it is race-free under concurrency.
     """
     file_path = Path(file_path).resolve()
     reset_vlm_call_count()
@@ -156,9 +172,9 @@ def parse_to_markdown(file_path: Path) -> dict[str, Any]:
                 scope="document",
             )
         elif kind == "pdf":
-            markdown = _pdf_to_markdown(file_path, container, page_routes)
+            markdown = _pdf_to_markdown(file_path, container, page_routes, escalate)
         elif kind == "image":
-            markdown = _image_to_markdown(file_path, container, page_routes)
+            markdown = _image_to_markdown(file_path, container, page_routes, escalate)
         elif kind in ("docx", "xlsx", "html"):
             markdown = _whole_doc_to_markdown(file_path, container, page_routes)
     except Exception as exc:  # noqa: BLE001 — never-raises contract
@@ -202,6 +218,14 @@ def parse_to_markdown(file_path: Path) -> dict[str, Any]:
         "page_routes": page_routes,
         "warnings": warnings,
         "confidence": confidence,
+        # Additive: per-invocation successful escalation-call counts, read from
+        # the (now thread-local) counters after the parse body and the
+        # confidence block. Race-free per worker thread; the reset lives at the
+        # start of this function.
+        "call_counts": {
+            "vlm": get_vlm_call_count(),
+            "textract": get_textract_call_count(),
+        },
     }
 
 
@@ -276,13 +300,20 @@ def wrap_md_as_prediction(md: str, source: Path | str | dict[str, Any]) -> dict[
 
 
 def _pdf_to_markdown(
-    path: Path, container: dict[str, Any], page_routes: list[dict[str, Any]]
+    path: Path,
+    container: dict[str, Any],
+    page_routes: list[dict[str, Any]],
+    escalate: bool = True,
 ) -> str:
     """Per-page gated markdown for a PDF (Route B).
 
     Runs Docling once, groups its items into elements per 0-based page index,
     renders each page's elements to markdown via ``render_markdown``, gates each
     page, and replaces gate-promoted pages with VLM markdown.
+
+    When ``escalate`` is False the gate still runs but promotions are NOT acted
+    on: every page keeps its Docling rendering (no engine call). Used by the
+    batch budget cap to run post-budget files Docling-only.
     """
     converter = _document_converter()
     try:
@@ -322,6 +353,19 @@ def _pdf_to_markdown(
             # No Docling content for this page (scanned / image-only / dropped).
             # The gate would promote a zero-text page anyway; go straight to VLM
             # with no Docling fallback available.
+            if not escalate:
+                # Budget cap: no engine call. Nothing to keep, so record an empty
+                # Docling-kept page (a zero-text page under a spent budget).
+                page_routes.append(
+                    {
+                        "page_index": page_idx,
+                        "route": _ROUTE_DOCLING_KEPT,
+                        "reason": "budget_exhausted_no_escalation",
+                        "n_chars": 0,
+                    }
+                )
+                pages_md.append("")
+                continue
             page_md = _vlm_page_markdown(
                 path,
                 page_idx,
@@ -354,6 +398,18 @@ def _pdf_to_markdown(
             continue
 
         # promote_to_vlm
+        if not escalate:
+            # Budget cap: suppress the engine call, keep Docling's page markdown.
+            page_routes.append(
+                {
+                    "page_index": page_idx,
+                    "route": _ROUTE_DOCLING_KEPT,
+                    "reason": "budget_exhausted_no_escalation",
+                    "n_chars": len(docling_md),
+                }
+            )
+            pages_md.append(docling_md)
+            continue
         page_md = _vlm_page_markdown(
             path,
             page_idx,
@@ -597,7 +653,10 @@ def _vlm_page_markdown(
 
 
 def _image_to_markdown(
-    path: Path, container: dict[str, Any], page_routes: list[dict[str, Any]]
+    path: Path,
+    container: dict[str, Any],
+    page_routes: list[dict[str, Any]],
+    escalate: bool = True,
 ) -> str:
     """Image (PNG/JPEG/TIFF) → gated one-page path (Route B).
 
@@ -637,6 +696,17 @@ def _image_to_markdown(
 
     # Gate fired (or Docling extracted nothing) → VLM on the raw image bytes.
     docling_fallback = docling_md if page_elems else None
+    if not escalate:
+        # Budget cap: suppress the engine call, keep whatever Docling produced.
+        page_routes.append(
+            {
+                "page_index": 0,
+                "route": _ROUTE_DOCLING_KEPT,
+                "reason": "budget_exhausted_no_escalation",
+                "n_chars": len(docling_md),
+            }
+        )
+        return docling_md
     return _vlm_page_markdown(
         path,
         0,
