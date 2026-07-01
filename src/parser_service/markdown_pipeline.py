@@ -83,6 +83,11 @@ _ROUTE_VLM_FALLBACK = "vlm-fallback-docling"  # VLM promoted but garbage → Doc
 # Textract escalation engine (selected via PARSER_ESCALATION_ENGINE=textract):
 _ROUTE_TEXTRACT = "textract"  # Textract markdown replaced the page
 _ROUTE_TEXTRACT_FALLBACK = "textract-fallback-docling"  # Textract promoted but garbage → Docling
+# Arbitration (PARSER_ESCALATION_ARBITRATION, default off): the engine produced a
+# successful, non-empty rendering, but it was detectably low-quality while the
+# Docling rendering of the same page was clean, so Docling shipped instead.
+_ROUTE_VLM_REJECTED = "vlm-rejected-kept-docling"  # VLM output rejected → Docling
+_ROUTE_TEXTRACT_REJECTED = "textract-rejected-kept-docling"  # Textract output rejected → Docling
 
 
 def _document_converter() -> Any:
@@ -390,6 +395,14 @@ def _vlm_page_markdown(
     engine_label = "Textract" if is_textract else "VLM"
     route_ok = _ROUTE_TEXTRACT if is_textract else _ROUTE_VLM
     route_fallback = _ROUTE_TEXTRACT_FALLBACK if is_textract else _ROUTE_VLM_FALLBACK
+    route_rejected = _ROUTE_TEXTRACT_REJECTED if is_textract else _ROUTE_VLM_REJECTED
+    # Post-escalation arbitration (default OFF): keep-the-better-of Docling vs
+    # engine. When OFF the block below is skipped entirely and the signal-only
+    # record path is byte-identical to today.
+    arbitration_on = os.environ.get("PARSER_ESCALATION_ARBITRATION", "").lower() in (
+        "1",
+        "true",
+    )
 
     def _fallback(detail: str) -> str:
         route = route_fallback if docling_fallback is not None else route_ok
@@ -444,17 +457,79 @@ def _vlm_page_markdown(
     if not engine_md:
         return _fallback("rendered whitespace-only markdown")
 
-    # Quality SIGNAL only — recorded, never used to change the route.
+    # Quality signal on the engine markdown (already computed regardless of path).
     signals = _measure_text_quality(engine_md)
-    page_routes.append(
-        {
-            "page_index": page_idx,
-            "route": route_ok,
-            "reason": reason,
-            "vlm_quality_passes": signals.passes,
-            "vlm_quality_failing_signals": signals.failing_signals,
-        }
+
+    if not arbitration_on:
+        # Flag OFF: signal-only record, byte-identical to today. The route is
+        # NEVER gated on the signal here (re-rejecting would return the worse
+        # output); arbitration is the only path that may keep Docling on quality.
+        page_routes.append(
+            {
+                "page_index": page_idx,
+                "route": route_ok,
+                "reason": reason,
+                "vlm_quality_passes": signals.passes,
+                "vlm_quality_failing_signals": signals.failing_signals,
+            }
+        )
+        return engine_md
+
+    # Arbitration ON: choose, post-escalation, between the two already-produced
+    # renderings (engine_md and docling_fallback). Revert to Docling only when
+    # ALL hold:
+    #   (1) the engine output is detectably low-quality (not signals.passes);
+    #   (2) a real Docling rendering exists AND its text is clean; and
+    #   (3) the promotion was NOT a coverage promotion — reverting a coverage
+    #       promotion would re-introduce the missing content escalation recovered.
+    #       The discriminator is the reason prefix, NOT layer (coverage and
+    #       Layer-2 garble both carry layer=2).
+    docling_signals = (
+        _measure_text_quality(docling_fallback) if docling_fallback is not None else None
     )
+    is_coverage_promotion = reason is not None and reason.startswith("low_coverage:")
+    revert_to_docling = (
+        not signals.passes
+        and docling_signals is not None
+        and docling_signals.passes
+        and not is_coverage_promotion
+    )
+
+    record: dict[str, Any] = {
+        "page_index": page_idx,
+        "reason": reason,
+        # Engine signals — recorded under both the descriptive keys and the
+        # back-compat vlm_quality_* keys the Studio inspector already reads.
+        "engine_quality_passes": signals.passes,
+        "engine_quality_failing_signals": signals.failing_signals,
+        "vlm_quality_passes": signals.passes,
+        "vlm_quality_failing_signals": signals.failing_signals,
+        # Docling signals populated only when a Docling rendering exists.
+        "docling_quality_passes": (
+            docling_signals.passes if docling_signals is not None else None
+        ),
+        "docling_quality_failing_signals": (
+            docling_signals.failing_signals if docling_signals is not None else None
+        ),
+    }
+
+    if revert_to_docling:
+        _append_warning(
+            container,
+            "vlm_rejected_kept_docling",
+            f"{engine_label} output rejected on page {page_idx}; kept Docling "
+            f"(engine failing signals: {signals.failing_signals})",
+            scope="page",
+            page_index=page_idx,
+        )
+        record["route"] = route_rejected
+        record["arbitration"] = "kept-docling"
+        page_routes.append(record)
+        return docling_fallback or ""
+
+    record["route"] = route_ok
+    record["arbitration"] = "kept-engine"
+    page_routes.append(record)
     return engine_md
 
 

@@ -12,6 +12,9 @@ vocabulary is EXACTLY what ``markdown_pipeline`` emits:
   - "vlm"                  VLM markdown replaced this page's slice
   - "vlm-fallback-docling" the page was promoted to the VLM but the VLM produced
                            garbage, so Docling's slice was kept
+  - "*-rejected-kept-docling"  arbitration (PARSER_ESCALATION_ARBITRATION)
+                           rejected the engine output as low-quality and kept
+                           Docling's clean slice — a Docling-output page
 
 This module turns those per-page routes into a tidy per-document record plus a
 CSV writer, so a batch run (or an ad-hoc scan of an output directory) yields a
@@ -48,6 +51,12 @@ ROUTE_VLM = "vlm"
 ROUTE_VLM_FALLBACK = "vlm-fallback-docling"
 ROUTE_TEXTRACT = "textract"
 ROUTE_TEXTRACT_FALLBACK = "textract-fallback-docling"
+# Arbitration rejected the engine output; the clean Docling rendering shipped.
+# A rejected-kept-docling page is a DOCLING-output page (NOT an escalation
+# success): it counts toward the sum invariant but is excluded from the
+# vlm/textract roll-up and from vlm_pages.
+ROUTE_VLM_REJECTED = "vlm-rejected-kept-docling"
+ROUTE_TEXTRACT_REJECTED = "textract-rejected-kept-docling"
 
 # Routes where an escalation engine produced the page vs fell back to Docling.
 _ENGINE_ROUTES = (ROUTE_VLM, ROUTE_TEXTRACT)
@@ -82,22 +91,42 @@ def route_record(page_routes: list[dict[str, Any]], doc_id: str) -> dict[str, An
     textract_fallback = sum(
         1 for r in page_routes if r.get("route") == ROUTE_TEXTRACT_FALLBACK
     )
+    # Arbitration rejected the engine output; Docling shipped. These are
+    # Docling-output pages — counted for the sum invariant, but EXCLUDED from the
+    # vlm/textract roll-up and from vlm_pages below.
+    vlm_rejected = sum(1 for r in page_routes if r.get("route") == ROUTE_VLM_REJECTED)
+    textract_rejected = sum(
+        1 for r in page_routes if r.get("route") == ROUTE_TEXTRACT_REJECTED
+    )
 
     # INVARIANT: every page's route is one of the known vocabulary values, so the
     # counts (both escalation engines + Docling) must sum to the page count. If this
     # fires, the route vocabulary emitted by markdown_pipeline drifted from what we
     # count here.
-    counted = docling_kept + vlm + vlm_fallback + textract + textract_fallback
+    counted = (
+        docling_kept
+        + vlm
+        + vlm_fallback
+        + textract
+        + textract_fallback
+        + vlm_rejected
+        + textract_rejected
+    )
     assert counted == page_count, (
         f"route-count invariant violated for {doc_id!r}: counted {counted} "
         f"(docling-kept={docling_kept}, vlm={vlm}, vlm-fallback-docling={vlm_fallback}, "
-        f"textract={textract}, textract-fallback-docling={textract_fallback}) "
+        f"textract={textract}, textract-fallback-docling={textract_fallback}, "
+        f"vlm-rejected-kept-docling={vlm_rejected}, "
+        f"textract-rejected-kept-docling={textract_rejected}) "
         f"!= {page_count} page_routes; the route vocabulary drifted "
         f"(saw routes: {sorted(str(r.get('route')) for r in page_routes)})"
     )
 
-    # Pages that reached an escalation engine (whether or not its output was kept).
-    # A run uses one engine, so this is the VLM count or the Textract count.
+    # Pages that reached an escalation engine AND shipped its output (or fell back
+    # on garbage). A run uses one engine, so this is the VLM count or the Textract
+    # count. Rejected-kept-docling pages are DELIBERATELY excluded: arbitration
+    # rejected the engine output, so Docling shipped — it is not an escalation
+    # success and must not inflate vlm_pages or the vlm/textract roll-up below.
     vlm_pages = vlm + vlm_fallback + textract + textract_fallback
 
     if vlm > 0:

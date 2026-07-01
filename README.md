@@ -46,6 +46,37 @@ export PARSER_ESCALATION_ENGINE=textract
 The default stays `vlm` (zero behavior change). Flipping the default to `textract`
 is gated on a head-to-head eval, not this switch.
 
+**Escalation output arbitration** (`PARSER_ESCALATION_ARBITRATION`, default **OFF**):
+a post-escalation *keep-the-better-of* chooser. After a page is escalated and the
+engine returns a successful, non-empty rendering, arbitration compares that engine
+markdown against the Docling markdown already rendered for the same page and keeps
+Docling when **all** hold: (1) the engine output fails the `_measure_text_quality`
+garble proxy, (2) a real Docling rendering exists and its text passes the same proxy,
+and (3) the promotion was **not** a coverage promotion (`reason` prefix
+`low_coverage:` — never reverted, since Docling there is clean but *incomplete* and
+reverting would drop the content escalation recovered). The gate's promote decision
+is untouched; this only chooses between two already-produced renderings.
+
+```bash
+# off (default): engine output ships unconditionally on the success path (today's
+# behavior — byte-identical markdown and route_stats).
+# on: keep a clean Docling page over a garbled/hallucinated engine page.
+export PARSER_ESCALATION_ARBITRATION=1
+```
+
+When it fires, the page is recorded under a new per-page route —
+`vlm-rejected-kept-docling` or `textract-rejected-kept-docling` — which counts as a
+**Docling-output** page (excluded from the `vlm`/`textract` document roll-up and from
+`vlm_pages`; still counted in the route sum invariant). The `page_routes` entry adds
+telemetry: `engine_quality_passes` / `engine_quality_failing_signals` (the engine's
+signals, also mirrored under the back-compat `vlm_quality_*` keys),
+`docling_quality_passes` / `docling_quality_failing_signals` (the Docling signals,
+populated only when arbitration is on and a Docling rendering exists), and an
+`arbitration` marker (`kept-engine` vs `kept-docling`).
+
+Default stays **OFF**. A bench A/B (NED / TEDS) must be recorded and show
+non-regression **before** any proposal to flip the default to ON.
+
 ### One document → Markdown
 ```bash
 # print markdown to stdout
@@ -75,7 +106,7 @@ from parser_service.markdown_pipeline import parse_to_markdown
 
 result = parse_to_markdown(Path("report.pdf"))
 result["markdown"]      # the RAG-ready Markdown string
-result["page_routes"]   # [{page_index, route: docling-kept|vlm|vlm-fallback-docling|textract|textract-fallback-docling, reason}]
+result["page_routes"]   # [{page_index, route: docling-kept|vlm|vlm-fallback-docling|textract|textract-fallback-docling|vlm-rejected-kept-docling|textract-rejected-kept-docling, reason}]
 result["warnings"]      # never raises — failures surface here
 ```
 
@@ -131,6 +162,39 @@ On the representative samples, doc-parser **matches the Docling baseline** (the
 hybrid's job on clean corpora is to *not regress* Docling while rescuing degraded
 pages). The detailed route/gold analysis and ship-gate record live in
 [the spec planning docs](agent-os/specs/2026-05-30-markdown-first-pipeline/planning/).
+
+### Escalation engine & VLM model
+
+Two knobs decide how escalated pages are parsed: the **engine**
+(`PARSER_ESCALATION_ENGINE=vlm|textract`) and, for the VLM, the **model**
+(`BEDROCK_VLM_MODEL`). Only gate-promoted pages differ; `docling-kept` pages are
+byte-identical. We benchmarked both — see
+[docs/escalation-engine-comparison.md](docs/escalation-engine-comparison.md)
+(engine head-to-head + §10 VLM model comparison).
+
+VLM escalation across Claude models, on the two bundled docs that escalate
+(NED ↑; Textract shown as a fixed, model-independent reference):
+
+| escalated doc | Sonnet 3.5 | Sonnet 4.6 | Haiku 4.5 | Textract |
+|---|--:|--:|--:|--:|
+| **ato_bench** `1371-6.1997` (scanned form — target workload) | 0.662 | 0.700 | **0.706** | 0.322 |
+| **dp_bench** `…027` (figure-heavy digital page) | 0.360 | 0.286 | 0.205 | **0.887** |
+
+Read together (full analysis in §10):
+
+- **On scanned text/forms — the workload doc-parser targets — the newer VLMs win on
+  quality *and* speed.** Sonnet 4.6 (+5.8%) and Haiku 4.5 (+6.7%) beat the current
+  default Sonnet 3.5, and **Haiku 4.5 is the fastest VLM** (~47 s/doc quicker
+  end-to-end). All three VLMs beat Textract ~2× here.
+- **On the figure-heavy page, the newer VLMs score *lower* — but that's a metric
+  artifact, not worse extraction.** The gold is verbatim chart labels; the VLM prompt
+  asks models to transcribe *and describe* every chart value, and stronger models obey
+  more thoroughly (output grows to 151%→290%→407% of gold length) while **word recall
+  actually rises** (54%→61%→72%). Sequential edit distance penalizes the extra prose.
+  Textract wins there only because plain OCR matches a verbatim-label gold.
+- **Default unchanged** (`vlm` + Sonnet 3.5): switching the production model is gated on a
+  larger escalating corpus (only 2 docs escalate here). Reproduce with
+  [scripts/run_model_compare.sh](scripts/run_model_compare.sh).
 
 > **Benchmark caveat (open, on the doc-bench side):** the current DP-Bench/
 > OmniDocBench samples are **single-page**, so they don't exercise multi-page
