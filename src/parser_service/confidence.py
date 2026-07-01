@@ -3,8 +3,7 @@
 Emits a 0-1 confidence per parsed page and a content-weighted document score,
 derived ENTIRELY from signals ``parse_to_markdown`` already computes on each
 ``page_routes`` record (the page ``route``, the quality-gate signal booleans, and
-the arbitration outcome). See spec
-``agent-os/specs/2026-07-01-document-confidence-score/spec.md``.
+the arbitration outcome). 
 
 IMPORTANT — advisory heuristic, NOT a calibrated probability. This score is a
 transparent, hand-set mapping from routing outcomes to a number. It is NOT
