@@ -98,7 +98,7 @@ reusing `AWS_REGION` and the instance-role credentials.
 | toggle | effect |
 | --- | --- |
 | `PARSER_ESCALATION_ARBITRATION=1` | *Keep-the-better-of:* after a page escalates, if the engine output fails the garble proxy but a clean Docling render exists (and it wasn't a coverage promotion), keep Docling. Records a `*-rejected-kept-docling` route. |
-| `PARSER_SCAN_FASTPATH=1` | Skip Docling on documents that are **all** image-only scans (no text layer + embedded image, probed via `pypdf`). Docling would extract nothing there and every page escalates anyway, so `convert()` is skipped and pages route straight to the engine (`reason="scan_fastpath"`). **Forfeits Docling's OCR** — only for batches known to be hopeless-for-Docling scans. All-or-nothing: any text-bearing page keeps the normal path. |
+| `PARSER_SCAN_FASTPATH=1` | **Why:** on all-scan docs Docling wastes a full parse, then every page escalates anyway. Skips straight to the engine — saves CPU + ~1.6 GB/worker memory on large scan batches. Same output (only `reason="scan_fastpath"` differs). Off by default: forfeits Docling OCR, so use only for known scan-only batches. All-or-nothing — one text page keeps the normal path. |
 
 ## Confidence score (advisory, non-gating)
 
