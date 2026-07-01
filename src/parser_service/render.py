@@ -7,6 +7,8 @@ Public API:
   render_page(pdf_path, page_no, dpi=144) -> bytes    # full page PNG
   render_region(pdf_path, page_no, bbox, dpi=144) -> bytes  # cropped PNG
   text_layer_tokens(pdf_path) -> dict[int, int]       # per-page embedded-text token counts
+  page_has_images(page) -> bool                        # pypdf has-images probe (no decode)
+  classify_for_fastpath(pdf_path) -> dict              # all-scanned fast-path classifier
 
 Coordinate system:
   PDF uses bottom-left origin in points (1/72 inch).
@@ -110,6 +112,93 @@ def text_layer_tokens(pdf_path: Path) -> dict[int, int]:
     finally:
         pdf.close()
     return counts
+
+
+def page_has_images(page: Any) -> bool:
+    """Return True iff a pypdf page has any embedded raster image.
+
+    A resource-level probe: walks the page's ``/Resources /XObject`` dict for an
+    entry whose ``/Subtype`` is ``/Image``, RECURSING into ``/Form`` XObjects
+    (a form has its own ``/Resources`` and can nest image XObjects). Returns a
+    boolean and NEVER decodes pixels — ``page.images`` decodes and is unnecessary
+    for a has-images check.
+
+    pypdf (BSD-3) is used deliberately: PyMuPDF's ``get_images`` is the correct
+    resource-level enumeration but is AGPL (banned here), and pypdfium2's
+    ``get_objects`` walks *painted content* objects, MISSING resource-declared
+    images — it reports 0 on ``tests/fixtures/scanned.pdf``, which in fact has two
+    ``/XObject /Image`` entries pypdf finds (verified 2026-07-01). Never raises;
+    a malformed resource tree yields False.
+    """
+    try:
+        return _resources_have_image(page.get("/Resources"), depth=0)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("page_has_images: resource walk failed: %s", exc)
+        return False
+
+
+# Bound the /Form recursion so a self-referential/cyclic resource tree cannot loop
+# forever. Real nesting is shallow; anything deeper is pathological.
+_MAX_XOBJECT_DEPTH = 32
+
+
+def _resources_have_image(resources: Any, depth: int) -> bool:
+    """Recursively test whether a ``/Resources`` dict declares an image XObject.
+
+    Checks each ``/XObject`` entry's ``/Subtype``: ``/Image`` short-circuits True;
+    ``/Form`` recurses into the form's own ``/Resources``. Bounded by
+    ``_MAX_XOBJECT_DEPTH`` against cyclic references.
+    """
+    if resources is None or depth > _MAX_XOBJECT_DEPTH:
+        return False
+    resources = resources.get_object()
+    xobjects = resources.get("/XObject")
+    if xobjects is None:
+        return False
+    xobjects = xobjects.get_object()
+    for key in xobjects:
+        obj = xobjects[key].get_object()
+        subtype = str(obj.get("/Subtype"))
+        if subtype == "/Image":
+            return True
+        if subtype == "/Form" and _resources_have_image(obj.get("/Resources"), depth + 1):
+            return True
+    return False
+
+
+def classify_for_fastpath(pdf_path: Path) -> dict[str, Any]:
+    """Classify a PDF for the all-scanned Docling fast-path (PURE — no convert).
+
+    A page QUALIFIES for the fast-path iff its embedded-text token count is zero
+    AND it has an embedded image: ``text_layer_tokens[page] == 0 AND
+    page_has_images(page)``. This is the exact, non-relaxable qualify rule — the
+    ambiguous middle (any embedded text at all) must keep Docling + its fallback,
+    and a truly-empty page (no text, no images) has nothing for escalation to
+    recover so it does NOT qualify.
+
+    Returns ``{"skip_docling": bool, "page_qualifies": dict[int, bool]}``. The
+    document skips ``DocumentConverter.convert()`` iff EVERY page qualifies (the
+    Docling API is whole-document, so only an all-scanned doc can skip convert).
+
+    Pure: reuses ``text_layer_tokens`` and the ``page_has_images`` pypdf probe;
+    it does NOT construct Docling, run the gate, or call the escalation engine.
+    Never raises — a probe failure degrades to ``skip_docling=False`` (normal path).
+    """
+    from pypdf import PdfReader  # local import; only needed for PDFs
+
+    tokens = text_layer_tokens(pdf_path)
+
+    page_qualifies: dict[int, bool] = {}
+    try:
+        reader = PdfReader(str(pdf_path))
+        for idx, page in enumerate(reader.pages):
+            page_qualifies[idx] = tokens.get(idx, 0) == 0 and page_has_images(page)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("classify_for_fastpath: could not classify %s: %s", pdf_path, exc)
+        return {"skip_docling": False, "page_qualifies": {}}
+
+    skip_docling = bool(page_qualifies) and all(page_qualifies.values())
+    return {"skip_docling": skip_docling, "page_qualifies": page_qualifies}
 
 
 def render_page(pdf_path: Path, page_no: int, dpi: int = _DEFAULT_DPI) -> bytes:

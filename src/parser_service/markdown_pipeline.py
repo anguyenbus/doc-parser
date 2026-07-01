@@ -69,7 +69,7 @@ from parser_service.parser_service import (
     _input_size_error,
 )
 from parser_service.quality_gate import _measure_text_quality, evaluate_page
-from parser_service.render import render_page, text_layer_tokens
+from parser_service.render import classify_for_fastpath, render_page, text_layer_tokens
 from parser_service.textract_client import (
     analyze_page,
     get_textract_call_count,
@@ -106,6 +106,18 @@ def _document_converter() -> Any:
     from docling.document_converter import DocumentConverter
 
     return DocumentConverter()
+
+
+def _scan_fastpath_enabled() -> bool:
+    """Whether the all-scanned Docling fast-path is enabled (``PARSER_SCAN_FASTPATH``).
+
+    OPT-IN, default OFF. The fast-path skips Docling's OCR on scanned pages and
+    routes them straight to escalation; on a real scan where Docling OCR would have
+    succeeded and the gate would have KEPT it, that changes output. So it ships
+    opt-in (like ``PARSER_ESCALATION_ARBITRATION``); with the flag OFF the pipeline
+    is byte-identical to today.
+    """
+    return os.environ.get("PARSER_SCAN_FASTPATH", "").lower() in ("1", "true")
 
 
 # ---------------------------------------------------------------------------
@@ -314,7 +326,48 @@ def _pdf_to_markdown(
     When ``escalate`` is False the gate still runs but promotions are NOT acted
     on: every page keeps its Docling rendering (no engine call). Used by the
     batch budget cap to run post-budget files Docling-only.
+
+    Scan fast-path (opt-in, ``PARSER_SCAN_FASTPATH`` — default OFF): before the
+    expensive whole-document ``convert()``, classify the doc with the cheap
+    text-layer/has-images probe. When EVERY page is a zero-text image-only scan
+    (all-scanned), Docling would extract nothing on every page and every page
+    would escalate anyway, so we SKIP ``convert()`` entirely and route each page
+    straight to the escalation seam with ``docling_fallback=None,
+    reason="scan_fastpath"`` — the seam already supports a ``None`` fallback. The
+    page count/indices and additive route keys (``n_chars``) match the normal
+    ``no_docling_content`` path exactly, so eval grading is unaffected (only
+    ``reason`` differs). A mixed doc (any text-bearing page) falls through to the
+    unchanged convert + gate below — the Docling API is whole-document, so mixed
+    docs cannot skip convert.
+
+    SAFETY / OCR-SKIP RISK (why this ships OPT-IN, default OFF): the fast-path
+    forfeits Docling's OCR pass on scanned pages. On a real scan where Docling OCR
+    would have succeeded and the gate would have KEPT it, going straight to
+    escalation changes output. With the flag OFF the pipeline is byte-identical to
+    today. See README.
     """
+    if escalate and _scan_fastpath_enabled():
+        classification = classify_for_fastpath(path)
+        if classification["skip_docling"]:
+            logger.info(
+                "scan fast-path: %s is all-scanned (%d pages); skipping Docling convert",
+                path.name,
+                len(classification["page_qualifies"]),
+            )
+            pages_md: list[str] = []
+            for page_idx in sorted(classification["page_qualifies"].keys()):
+                page_md = _vlm_page_markdown(
+                    path,
+                    page_idx,
+                    container,
+                    page_routes,
+                    docling_fallback=None,
+                    reason="scan_fastpath",
+                    layer=None,
+                )
+                pages_md.append(page_md)
+            return _join_pages(pages_md)
+
     converter = _document_converter()
     try:
         result = converter.convert(str(path))
@@ -344,7 +397,7 @@ def _pdf_to_markdown(
         logger.warning("text_layer_tokens failed for %s: %s", path.name, exc)
         raw_tokens = {}
 
-    pages_md: list[str] = []
+    pages_md = []  # type already fixed by the fast-path branch's annotation above
     for page_idx in page_indices:
         page_elems = page_elements.get(page_idx, [])
         docling_md = _render_page_markdown(page_elems)

@@ -77,6 +77,40 @@ populated only when arbitration is on and a Docling rendering exists), and an
 Default stays **OFF**. A bench A/B (NED / TEDS) must be recorded and show
 non-regression **before** any proposal to flip the default to ON.
 
+**Scan fast-path** (`PARSER_SCAN_FASTPATH`, default **OFF**): skip the dominant
+60–115 s/page Docling CPU pass on documents that are *all* image-only scans. Before
+`DocumentConverter.convert()`, a cheap probe classifies each page with the
+text-layer/has-images signals we already own: a page qualifies for the fast-path iff
+`text_layer_tokens[page] == 0` **AND** the page has an embedded image (`pypdf`
+resource-level `/XObject /Image` walk, recursing into `/Form` XObjects — **not**
+PyMuPDF, which is AGPL, and **not** pypdfium2, whose content-walk misses
+resource-declared images). When **every** page qualifies, Docling would extract
+nothing on every page and each page would escalate anyway, so `convert()` is skipped
+entirely and every page is routed straight to the escalation engine with
+`reason="scan_fastpath"`. Page count/indices and the additive route keys
+(`n_chars`) match the normal path exactly, so eval grading is unaffected — only
+`reason` differs.
+
+```bash
+# off (default): all-scanned docs still run Docling convert (byte-identical to today).
+# on: all-scanned docs skip convert and escalate every page directly.
+export PARSER_SCAN_FASTPATH=1
+```
+
+**OCR-skip risk (why it ships OPT-IN, default OFF).** The fast-path forfeits
+Docling's OCR pass on scanned pages. On a real scan where Docling OCR would have
+*succeeded* and the quality gate would have *kept* it, going straight to escalation
+changes the output. With the flag OFF the pipeline is byte-identical to today
+(regression-tested). Flip it ON only for batches you know are hopeless-for-Docling
+scans, or after a bench A/B shows non-regression.
+
+**Mixed-document limitation (honest scope).** `DocumentConverter.convert()` is
+whole-document; Docling has **no** per-page convert. So a mixed document (any
+text-bearing page) **cannot** skip convert — only *all-scanned* documents do. The
+fast-path never skips Docling on a page with a usable text layer, so that page keeps
+its Docling pass and its fallback. Recorded latency on the 2-page all-scanned fixture:
+~11.6 s (convert) → ~0.17 s (fast-path).
+
 **Escalation client retry + throttle observability.** Both escalation clients
 (`vlm_client.call_vlm` → Bedrock `invoke_model`, `textract_client.analyze_page` →
 Textract `analyze_document`) wrap **only** their inner AWS call in a bounded

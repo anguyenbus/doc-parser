@@ -155,6 +155,13 @@ def route_record(page_routes: list[dict[str, Any]], doc_id: str) -> dict[str, An
     # this is an additional reason-derived signal, not a separate route bucket.
     throttled_pages = sum(1 for r in page_routes if r.get("reason") == "throttled")
 
+    # Scan fast-path pages (PARSER_SCAN_FASTPATH) likewise ride in `reason`
+    # ("scan_fastpath"), NOT a new route label: an all-scanned doc that skipped
+    # Docling routes every page via the normal escalation route (vlm/textract or
+    # *-fallback-docling). So they already count toward the sum invariant above and
+    # into vlm_pages/the roll-up, exactly like a normally-escalated page — the only
+    # difference is the surfaced `reason`. No special counting is required here.
+
     return {
         "doc_id": doc_id,
         "route": route,
