@@ -50,7 +50,7 @@ harness scripts. Confirm + export Bedrock/Textract env (same region for both):
 ```bash
 doc-bench-list-datasets        # dp_bench / omnidocbench / ato_bench / …
 export AWS_REGION=ap-southeast-2
-export BEDROCK_VLM_MODEL=anthropic.claude-3-5-sonnet-20241022-v2:0
+export BEDROCK_VLM_MODEL=au.anthropic.claude-sonnet-4-6
 ```
 
 ---

@@ -23,7 +23,7 @@ uv sync                          # install deps (Docling, pypdfium2, boto3, …)
 # Only needed if the VLM may run (PDFs that escalate, images, scans).
 # HTML / DOCX / XLSX are Docling-only and need no AWS.
 export AWS_REGION=ap-southeast-2
-export BEDROCK_VLM_MODEL=anthropic.claude-3-5-sonnet-20241022-v2:0
+export BEDROCK_VLM_MODEL=au.anthropic.claude-sonnet-4-6
 ```
 
 **Escalation engine** (`PARSER_ESCALATION_ENGINE`, default `vlm`): chooses which

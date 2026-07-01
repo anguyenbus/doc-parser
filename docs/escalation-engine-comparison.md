@@ -1,7 +1,15 @@
 # Escalation Engine Comparison: Bedrock Claude Sonnet VLM vs AWS Textract
 
-**Date:** 2026-06-16 · **Status:** Findings + recommendation. The default escalation engine
-remains `vlm`; no production change has been made.
+> ⚠️ **SUPERSEDED (2026-06-30) — historical record.** The VLM figures below were measured on
+> **Sonnet 3.5** (`claude-3-5-sonnet-20241022-v2:0`), now retired. The Sonnet **4.6** re-benchmark
+> at `eval_runs/model_compare/model_compare_report.md` is the current source of truth: it
+> **inverts** this doc's scan conclusion — VLM 4.6 now *beats* Textract on the ATO scan (0.648 vs
+> 0.322, vs 3.5's 0.149), while Textract still wins dp_bench…027 (0.887 vs 0.287). This doc is
+> preserved as the dated record that motivated the re-benchmark; do not treat its Sonnet-3.5
+> numbers as current. See `agent-os/product/engine-hardening-plan.md` §2.2.
+
+**Date:** 2026-06-16 · **Status:** Findings + recommendation (Sonnet 3.5). The default escalation
+engine remains `vlm`; no production change has been made.
 
 > **Primary run uses the updated doc-bench wheel's bundled stratified fixtures: 5 dp_bench /
 > 5 omnidocbench / 1 ato_bench (11 docs total)** (§1–§6). Because that set escalated almost
@@ -409,3 +417,338 @@ see the appendix to regenerate.)
 | dp_bench | textract | 0.9647 | 0.0000 | 19.1 s | 1/5 docs |
 | omnidocbench | vlm | 0.6974 | 0.2621 | 91.9 s | 0/5 docs |
 | omnidocbench | textract | 0.6974 | 0.2621 | 90.5 s | 0/5 docs |
+
+---
+
+## 10. VLM model comparison — Sonnet 3.5 vs Sonnet 4.6 vs Haiku 4.5
+
+**Date:** 2026-06-25 · **Status:** Closes the §8 open item ("re-test the VLM on a newer
+model"). The default escalation engine and VLM model are **unchanged**; this is evidence only.
+
+§8 flagged that every VLM number above used the older **Claude 3.5 Sonnet** and was therefore a
+**floor** for the VLM. We re-ran the `vlm` engine across three models — **Sonnet 3.5**
+(`anthropic.claude-3-5-sonnet-20241022-v2:0`), **Sonnet 4.6** (`au.anthropic.claude-sonnet-4-6`),
+and **Haiku 4.5** (`au.anthropic.claude-haiku-4-5-20251001-v1:0`) — with **Textract** as a fixed,
+model-independent reference. (**Opus was intentionally excluded** from this project.)
+
+**Method.** Only gate-promoted pages differ between models, and in the bundled set only
+**dp_bench `…027`** (1 pp) and **ato_bench `1371-6.1997`** (2 pp) escalate; **omnidocbench escalates
+0/5**, so it is model-independent and was skipped. Each model parsed both datasets via
+`PARSER_ESCALATION_ENGINE=vlm` + `BEDROCK_VLM_MODEL=<id>`, graded against bundled gold (NED/TEDS),
+temperature 0, concurrency 4, `ap-southeast-2`. Runner: [`scripts/run_model_compare.sh`](../scripts/run_model_compare.sh)
+→ [`scripts/aggregate_model_compare.py`](../scripts/aggregate_model_compare.py).
+
+### 10.1 Results — the two datasets disagree, and that is the finding
+
+| dataset / doc | gate | Sonnet 3.5 | Sonnet 4.6 | Haiku 4.5 | Textract (ref) |
+|---|---|--:|--:|--:|--:|
+| **ato_bench** `1371-6.1997` (scanned form) | vlm 2/2 pp | 0.6617 | 0.6998 | **0.7062** | 0.3216 |
+| **dp_bench** `…027` (figure-heavy digital) | vlm 1/1 pp | **0.3604** | 0.2860 | 0.2053 | **0.8866** |
+| mean parse latency, ato (s) | | 211.7 | 196.5 | **164.6** | 145.1 |
+
+(dp_bench's four `docling-kept` docs are byte-identical across all models — NED ≈ 0.98–0.99 — so
+the dp_bench *average* moves only with `…027`.)
+
+- **On the scanned form (our target workload), the newer VLMs win on quality *and* speed.**
+  Sonnet 4.6 +5.8% and Haiku 4.5 +6.7% NED over Sonnet 3.5, and Haiku 4.5 is the **fastest VLM**
+  (~47 s/doc faster than Sonnet 3.5 end-to-end). All three VLMs beat Textract ~2× here — note this
+  **flips** the older-wheel ATO result in §3 (Textract 0.280 > VLM 0.149); the current bundled gold
+  now favours the VLM on this form, and a stronger VLM widens that lead.
+- **On the figure-heavy page (`…027`), the newer VLMs score *lower* — but this is a metric/gold
+  artifact, not worse extraction** (see §10.2). Textract dominates because the gold is verbatim
+  chart labels and Textract OCRs exactly those.
+
+### 10.2 Investigation — why "better" models score lower on `…027`
+
+`…027`'s gold is **tiny and verbatim**: 589 normalized chars / 54 distinct words — the bare
+on-canvas chart labels and axis numbers ("`Number of impellers`", "`Figure 7.`", "`single-frequency`",
+"`Resource, years`", "`0 1 2 3 4 5 6`"). The gate escalated it precisely because Docling under-read
+it ("extracted 109 of 447 text-layer tokens"). Measured with the grader's own `ned_score`/`_normalize`:
+
+| engine | seq NED (grader) | output len vs gold | word recall (% of gold words) | order-indep NED |
+|---|--:|--:|--:|--:|
+| Sonnet 3.5 | 0.360 | 151% | 54% | 0.464 |
+| Sonnet 4.6 | 0.286 | 290% | 61% | 0.299 |
+| Haiku 4.5 | 0.205 | 407% | 72% | 0.239 |
+| **Textract** | **0.883** | **98%** | **96%** | **0.927** |
+
+**Diagnosis.** The VLM `PAGE_PROMPT` instructs the model to emit, for every figure, a description
+**plus every data label/value** in the graphic. The **more capable the model, the more faithfully
+it obeys**:
+
+- Sonnet 3.5 writes a short prose *summary* ("Graph shows … values range from approximately 0.05 to
+  0.3 on y-axis"), 890 chars.
+- Sonnet 4.6 emits structured chart *data* ("`Legend:` …", "`Data values approximately:`",
+  "`Impeller 1: single-frequence ~0.08`"), 1,711 chars.
+- Haiku 4.5 adds a heading + full chart interpretation + every point, 2,412 chars.
+
+So **word recall rises with capability (54% → 72%)** — the newer models capture *more* of the gold's
+real content — but they wrap it in scaffolding ("Legend:", "Data values:", "≈0.08") and prose the
+verbatim gold never had. Sequential edit distance counts all of that as insertions, so NED **falls**
+as the model improves. This is the same class of artifact as §7.2 (there: reading order; here:
+verbose chart description vs a sparse verbatim gold). Textract wins on `…027` only because plain OCR
+emits exactly the on-canvas tokens — which *is* the gold.
+
+### 10.3 Takeaways
+
+1. **Upgrading the VLM from Sonnet 3.5 helps the real workload.** On the scanned ATO form, Sonnet 4.6
+   and Haiku 4.5 both raise NED and cut latency; **Haiku 4.5 is the sweet spot** (best NED, fastest,
+   cheapest). This is the workload doc-parser actually targets.
+2. **Engine choice still matters more than model choice, and is workload-dependent.** VLM for scanned
+   text/forms; Textract for verbatim chart/label pages. Neither model nor engine is universally best.
+3. **`…027` is not evidence against the newer VLMs.** Their lower NED there is the metric punishing
+   thorough chart transcription against a verbatim-label gold (recall actually rises). A prompt that
+   says "transcribe figure text verbatim, no description/interpretation" is the untested lever to
+   recover NED on chart pages without losing content — worth trying before reading `…027` as a regression.
+4. **Evidence base is still narrow** (2 escalated docs); validate at scale on a corpus that escalates
+   more before changing the default `BEDROCK_VLM_MODEL`.
+
+> Reproduce: `scripts/run_model_compare.sh` → `eval_runs/model_compare/model_compare_report.md`
+> (gitignored). The §10.2 length/recall/order-independent NED figures were computed directly from the
+> per-model prediction JSON with `doc_bench.metrics.parsing.ned`.
+
+### 10.4 Appendix — actual markdown for the escalated doc (`dp_bench/…027`)
+
+The rendered markdown each engine produced for `01030000000027` (the figure-heavy
+page from §10.2), verbatim. These are the real `.md` products
+(`predictions_<label>/01030000000027.md`). Seeing them side by side makes §10.2
+concrete: the gold is a flat list of on-canvas chart labels, Textract reproduces it
+almost exactly, and each newer VLM adds progressively more descriptive scaffolding.
+
+**Gold** (the entire reference — bare chart labels / axis numbers; 589 norm. chars):
+
+```text
+Probability, Combinatorics and Control
+■ single-frequence ■ multi-frequence
+0,3
+0.25
+damage
+0,2
+0.15
+of
+Level
+0,1
+0.05
+0
+1 2 3 4 5 6
+Number of impellers
+Figure 7.
+Estimated cumulative damage for impeller blades.
+■ single-frequency ■ multi-frequency
+8
+7
+6
+years
+5
+Resource,
+4
+3
+2
+1
+0
+1 2 3 4 5 6
+Number of impellers
+Figure 8.
+Estimated residual life of impeller blades by the criterion of cracking.
+■ single-frequence ■ multi-frequence
+12
+10
+years
+8
+Resource,
+6
+4
+2
+0
+1 2 3 4 5 6
+Number of impellers
+Figure 9.
+Estimated residual life of impeller blades at the stage of crack development.
+```
+
+**Textract (ref) — NED 0.887** (verbatim OCR; matches the gold's label list, minor OCR noise like `0,3`):
+
+```text
+# Probability, Combinatorics and Control
+
+single-frequence
+mu ti-frecuence
+0,3
+0.25
+0,2
+Level of damage
+0.15
+0,1
+0.05
+0
+1
+2
+3
+4
+5
+0
+Number of impellers
+
+Figure 7.
+Estimated cumulative damage for impeller blades.
+
+single-frequency
+multi-frequency
+8
+7
+6
+Resource, years
+5
+4
+3
+7
+1
+0
+1
+2
+3
+4
+5
+6
+Number of impellers
+
+Figure 8.
+Estimated residual life of impeller blades by the criterion of cracking.
+
+single-frequence
+multi-frequence
+12
+10
+8
+Resource, years
+6
+4
+2
+0
+1
+2
+3
+4
+5
+6
+Number of impellers
+
+Figure 9.
+Estimated residual life of impeller blades at the stage of crack development.
+```
+
+**VLM Sonnet 3.5 — NED 0.360** (prose *summary* of each figure; few literal labels, but short):
+
+```text
+Figure 7. Estimated cumulative damage for impeller blades. Graph shows single-frequency and multi-frequency data for 1-6 impellers. Values range from approximately 0.05 to 0.3 on y-axis (Level of damage) with multi-frequency generally showing higher damage levels than single-frequency.
+
+Figure 8. Estimated residual life of impeller blades by the criterion of cracking. Graph shows single-frequency and multi-frequency data for 1-6 impellers. Y-axis shows Resource, years ranging from 0-8, with single-frequency generally showing higher values (up to 7 years) compared to multi-frequency.
+
+Figure 9. Estimated residual life of impeller blades at the stage of crack development. Graph shows single-frequency and multi-frequency data for 1-6 impellers. Y-axis shows Resource, years ranging from 0-12, with single-frequency showing higher values (up to ~11 years) compared to multi-frequency.
+```
+
+**VLM Sonnet 4.6 — NED 0.286** (structured chart *data*: per-impeller values + `Legend:`/`Y-axis:` scaffolding the gold never had):
+
+```text
+Legend: single-frequence, mu ti-frecuence
+Y-axis: Level of damage
+X-axis: Number of impellers
+Data values approximately:
+Impeller 1: single-frequence ~0.08, multi-frequence ~0.06
+Impeller 2: single-frequence ~0.15, multi-frequence ~0.25
+Impeller 3: single-frequence ~0.16, multi-frequence ~0.28
+Impeller 4: single-frequence ~0.14, multi-frequence ~0.26
+Impeller 5: single-frequence ~0.16, multi-frequence ~0.24
+Impeller 6: single-frequence ~0.24, multi-frequence ~0.24
+Y-axis values: 0, 0.05, 0.1, 0.15, 0.2, 0.25, 0.3
+
+Figure 7.
+Estimated cumulative damage for impeller blades.
+
+Legend: single-frequency, multi-frequency
+Y-axis: Resource, years
+X-axis: Number of impellers
+Data values approximately:
+Impeller 1: single-frequency ~5, multi-frequency ~3
+Impeller 2: single-frequency ~4, multi-frequency ~2
+Impeller 3: single-frequency ~7, multi-frequency ~1
+Impeller 4: single-frequency ~7, multi-frequency ~4
+Impeller 5: single-frequency ~6.5, multi-frequency ~3.5
+Impeller 6: single-frequency ~3.5, multi-frequency ~2
+Y-axis values: 0, 1, 2, 3, 4, 5, 6, 7, 8
+
+Figure 8.
+Estimated residual life of impeller blades by the criterion of cracking.
+
+Legend: single-frequence, multi-frequence
+Y-axis: Resource, years
+X-axis: Number of impellers
+Data values approximately:
+Impeller 1: single-frequency ~7, multi-frequency ~5
+Impeller 2: single-frequency ~8, multi-frequency ~6
+Impeller 3: single-frequency ~9, multi-frequency ~3
+Impeller 4: single-frequency ~11, multi-frequency ~8
+Impeller 5: single-frequency ~10.5, multi-frequency ~7.5
+Impeller 6: single-frequency ~4.5, multi-frequency ~3
+Y-axis values: 0, 2, 4, 6, 8, 10, 12
+
+Figure 9.
+Estimated residual life of impeller blades at the stage of crack development.
+```
+
+**VLM Haiku 4.5 — NED 0.205** (most verbose: page heading + per-figure description + every data point):
+
+```text
+# Probability, Combinatorics and Control
+
+Figure 7. Estimated cumulative damage for impeller blades.
+
+Chart showing two series (single-frequency in dark blue and multi-frequency in red/brown) across 6 groups representing number of impellers (1-6).
+
+Y-axis: Leveled damage (ranging from 0 to 0.3)
+X-axis: Number of impellers
+
+Data values:
+Number of impellers 1: single-frequency ≈ 0.08, multi-frequency ≈ 0.16
+Number of impellers 2: single-frequency ≈ 0.10, multi-frequency ≈ 0.26
+Number of impellers 3: single-frequency ≈ 0.17, multi-frequency ≈ 0.28
+Number of impellers 4: single-frequency ≈ 0.13, multi-frequency ≈ 0.27
+Number of impellers 5: single-frequency ≈ 0.16, multi-frequency ≈ 0.24
+Number of impellers 6: single-frequency ≈ 0.23, multi-frequency ≈ 0.23
+
+Legend: single-frequency (dark blue), multi-frequency (red/brown)
+
+Figure 8. Estimated residual life of impeller blades by the criterion of cracking.
+
+Chart showing two series (single-frequency in dark blue and multi-frequency in red/brown) across 6 groups representing number of impellers (1-6).
+
+Y-axis: Resource, years (ranging from 0 to 8)
+X-axis: Number of impellers
+
+Data values:
+Number of impellers 1: single-frequency ≈ 5, multi-frequency ≈ 3
+Number of impellers 2: single-frequency ≈ 4, multi-frequency ≈ 2
+Number of impellers 3: single-frequency ≈ 7, multi-frequency ≈ 1
+Number of impellers 4: single-frequency ≈ 7, multi-frequency ≈ 4
+Number of impellers 5: single-frequency ≈ 6.5, multi-frequency ≈ 3.5
+Number of impellers 6: single-frequency ≈ 3.5, multi-frequency ≈ 2
+
+Legend: single-frequency (dark blue), multi-frequency (red/brown)
+
+Figure 9. Estimated residual life of impeller blades at the stage of crack development.
+
+Chart showing two series (single-frequency in dark blue and multi-frequency in red/brown) across 6 groups representing number of impellers (1-6).
+
+Y-axis: Resource, years (ranging from 0 to 12)
+X-axis: Number of impellers
+
+Data values:
+Number of impellers 1: single-frequency ≈ 6.5, multi-frequency ≈ 4.5
+Number of impellers 2: single-frequency ≈ 7.5, multi-frequency ≈ 5.5
+Number of impellers 3: single-frequency ≈ 9, multi-frequency ≈ 3
+Number of impellers 4: single-frequency ≈ 11, multi-frequency ≈ 7.5
+Number of impellers 5: single-frequency ≈ 10.5, multi-frequency ≈ 7
+Number of impellers 6: single-frequency ≈ 4.5, multi-frequency ≈ 3
+
+Legend: single-frequency (dark blue), multi-frequency (red/brown)
+```

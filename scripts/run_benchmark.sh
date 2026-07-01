@@ -9,7 +9,7 @@ set -uo pipefail
 cd /home/admin/projects/doc-parser
 
 export AWS_REGION=ap-southeast-2
-export BEDROCK_VLM_MODEL=anthropic.claude-3-5-sonnet-20241022-v2:0
+export BEDROCK_VLM_MODEL=au.anthropic.claude-sonnet-4-6
 export PARSER_LOG_LEVEL=INFO
 
 W=eval_runs/bench2
