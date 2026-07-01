@@ -1,0 +1,131 @@
+{
+  "DocumentMetadata": {"Pages": 1},
+  "_comment": "Hand-crafted two-column page with NO PAGE->CHILD reading order (geometry-only fallback). A full-width title spans both columns at the top; two vertical columns (A left, B right) whose Tops interleave so a naive (Top, Left) sort mixes the columns. Column A: a1..a3 (Left~0.06, Width~0.40, x-center~0.26). Column B: b1..b3 (Left~0.54, Width~0.40, x-center~0.74). Title is full-width (Left 0.05, Width 0.90, x-center 0.50).",
+  "Blocks": [
+    {
+      "BlockType": "LAYOUT_TITLE",
+      "Id": "lay-title",
+      "Page": 1,
+      "Confidence": 99.0,
+      "Geometry": {"BoundingBox": {"Width": 0.90, "Height": 0.04, "Left": 0.05, "Top": 0.03}},
+      "Relationships": [{"Type": "CHILD", "Ids": ["line-title"]}]
+    },
+    {
+      "BlockType": "LINE",
+      "Id": "line-title",
+      "Page": 1,
+      "Geometry": {"BoundingBox": {"Width": 0.90, "Height": 0.04, "Left": 0.05, "Top": 0.03}},
+      "Relationships": [{"Type": "CHILD", "Ids": ["w-title-1", "w-title-2"]}]
+    },
+    {"BlockType": "WORD", "Id": "w-title-1", "Text": "Spanning", "Page": 1},
+    {"BlockType": "WORD", "Id": "w-title-2", "Text": "Title", "Page": 1},
+
+    {
+      "BlockType": "LAYOUT_TEXT",
+      "Id": "lay-a1",
+      "Page": 1,
+      "Confidence": 98.0,
+      "Geometry": {"BoundingBox": {"Width": 0.40, "Height": 0.10, "Left": 0.06, "Top": 0.12}},
+      "Relationships": [{"Type": "CHILD", "Ids": ["line-a1"]}]
+    },
+    {
+      "BlockType": "LINE",
+      "Id": "line-a1",
+      "Page": 1,
+      "Geometry": {"BoundingBox": {"Width": 0.40, "Height": 0.03, "Left": 0.06, "Top": 0.12}},
+      "Relationships": [{"Type": "CHILD", "Ids": ["w-a1-1", "w-a1-2"]}]
+    },
+    {"BlockType": "WORD", "Id": "w-a1-1", "Text": "COLA", "Page": 1},
+    {"BlockType": "WORD", "Id": "w-a1-2", "Text": "one", "Page": 1},
+
+    {
+      "BlockType": "LAYOUT_TEXT",
+      "Id": "lay-b1",
+      "Page": 1,
+      "Confidence": 98.0,
+      "Geometry": {"BoundingBox": {"Width": 0.40, "Height": 0.10, "Left": 0.54, "Top": 0.13}},
+      "Relationships": [{"Type": "CHILD", "Ids": ["line-b1"]}]
+    },
+    {
+      "BlockType": "LINE",
+      "Id": "line-b1",
+      "Page": 1,
+      "Geometry": {"BoundingBox": {"Width": 0.40, "Height": 0.03, "Left": 0.54, "Top": 0.13}},
+      "Relationships": [{"Type": "CHILD", "Ids": ["w-b1-1", "w-b1-2"]}]
+    },
+    {"BlockType": "WORD", "Id": "w-b1-1", "Text": "COLB", "Page": 1},
+    {"BlockType": "WORD", "Id": "w-b1-2", "Text": "one", "Page": 1},
+
+    {
+      "BlockType": "LAYOUT_TEXT",
+      "Id": "lay-a2",
+      "Page": 1,
+      "Confidence": 98.0,
+      "Geometry": {"BoundingBox": {"Width": 0.40, "Height": 0.10, "Left": 0.06, "Top": 0.26}},
+      "Relationships": [{"Type": "CHILD", "Ids": ["line-a2"]}]
+    },
+    {
+      "BlockType": "LINE",
+      "Id": "line-a2",
+      "Page": 1,
+      "Geometry": {"BoundingBox": {"Width": 0.40, "Height": 0.03, "Left": 0.06, "Top": 0.26}},
+      "Relationships": [{"Type": "CHILD", "Ids": ["w-a2-1", "w-a2-2"]}]
+    },
+    {"BlockType": "WORD", "Id": "w-a2-1", "Text": "COLA", "Page": 1},
+    {"BlockType": "WORD", "Id": "w-a2-2", "Text": "two", "Page": 1},
+
+    {
+      "BlockType": "LAYOUT_TEXT",
+      "Id": "lay-b2",
+      "Page": 1,
+      "Confidence": 98.0,
+      "Geometry": {"BoundingBox": {"Width": 0.40, "Height": 0.10, "Left": 0.54, "Top": 0.27}},
+      "Relationships": [{"Type": "CHILD", "Ids": ["line-b2"]}]
+    },
+    {
+      "BlockType": "LINE",
+      "Id": "line-b2",
+      "Page": 1,
+      "Geometry": {"BoundingBox": {"Width": 0.40, "Height": 0.03, "Left": 0.54, "Top": 0.27}},
+      "Relationships": [{"Type": "CHILD", "Ids": ["w-b2-1", "w-b2-2"]}]
+    },
+    {"BlockType": "WORD", "Id": "w-b2-1", "Text": "COLB", "Page": 1},
+    {"BlockType": "WORD", "Id": "w-b2-2", "Text": "two", "Page": 1},
+
+    {
+      "BlockType": "LAYOUT_TEXT",
+      "Id": "lay-a3",
+      "Page": 1,
+      "Confidence": 98.0,
+      "Geometry": {"BoundingBox": {"Width": 0.40, "Height": 0.10, "Left": 0.06, "Top": 0.40}},
+      "Relationships": [{"Type": "CHILD", "Ids": ["line-a3"]}]
+    },
+    {
+      "BlockType": "LINE",
+      "Id": "line-a3",
+      "Page": 1,
+      "Geometry": {"BoundingBox": {"Width": 0.40, "Height": 0.03, "Left": 0.06, "Top": 0.40}},
+      "Relationships": [{"Type": "CHILD", "Ids": ["w-a3-1", "w-a3-2"]}]
+    },
+    {"BlockType": "WORD", "Id": "w-a3-1", "Text": "COLA", "Page": 1},
+    {"BlockType": "WORD", "Id": "w-a3-2", "Text": "three", "Page": 1},
+
+    {
+      "BlockType": "LAYOUT_TEXT",
+      "Id": "lay-b3",
+      "Page": 1,
+      "Confidence": 98.0,
+      "Geometry": {"BoundingBox": {"Width": 0.40, "Height": 0.10, "Left": 0.54, "Top": 0.41}},
+      "Relationships": [{"Type": "CHILD", "Ids": ["line-b3"]}]
+    },
+    {
+      "BlockType": "LINE",
+      "Id": "line-b3",
+      "Page": 1,
+      "Geometry": {"BoundingBox": {"Width": 0.40, "Height": 0.03, "Left": 0.54, "Top": 0.41}},
+      "Relationships": [{"Type": "CHILD", "Ids": ["w-b3-1", "w-b3-2"]}]
+    },
+    {"BlockType": "WORD", "Id": "w-b3-1", "Text": "COLB", "Page": 1},
+    {"BlockType": "WORD", "Id": "w-b3-2", "Text": "three", "Page": 1}
+  ]
+}

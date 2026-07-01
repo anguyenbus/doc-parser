@@ -1,0 +1,73 @@
+{
+  "DocumentMetadata": {"Pages": 1},
+  "_comment": "Hand-crafted single-column page with NO PAGE->CHILD reading order (geometry-only fallback). All body blocks share one x-band (Left~0.10, Width~0.80, x-center~0.50). Column detection must yield exactly one band; the A/B valve must keep the original (Top, Left) order byte-for-byte.",
+  "Blocks": [
+    {
+      "BlockType": "LAYOUT_TITLE",
+      "Id": "lay-title",
+      "Page": 1,
+      "Confidence": 99.0,
+      "Geometry": {"BoundingBox": {"Width": 0.80, "Height": 0.05, "Left": 0.10, "Top": 0.05}},
+      "Relationships": [{"Type": "CHILD", "Ids": ["line-title"]}]
+    },
+    {
+      "BlockType": "LINE",
+      "Id": "line-title",
+      "Page": 1,
+      "Geometry": {"BoundingBox": {"Width": 0.80, "Height": 0.05, "Left": 0.10, "Top": 0.05}},
+      "Relationships": [{"Type": "CHILD", "Ids": ["w-title-1"]}]
+    },
+    {"BlockType": "WORD", "Id": "w-title-1", "Text": "Single", "Page": 1},
+
+    {
+      "BlockType": "LAYOUT_TEXT",
+      "Id": "lay-p1",
+      "Page": 1,
+      "Confidence": 98.0,
+      "Geometry": {"BoundingBox": {"Width": 0.80, "Height": 0.06, "Left": 0.10, "Top": 0.15}},
+      "Relationships": [{"Type": "CHILD", "Ids": ["line-p1"]}]
+    },
+    {
+      "BlockType": "LINE",
+      "Id": "line-p1",
+      "Page": 1,
+      "Geometry": {"BoundingBox": {"Width": 0.80, "Height": 0.03, "Left": 0.10, "Top": 0.15}},
+      "Relationships": [{"Type": "CHILD", "Ids": ["w-p1-1"]}]
+    },
+    {"BlockType": "WORD", "Id": "w-p1-1", "Text": "First", "Page": 1},
+
+    {
+      "BlockType": "LAYOUT_TEXT",
+      "Id": "lay-p2",
+      "Page": 1,
+      "Confidence": 98.0,
+      "Geometry": {"BoundingBox": {"Width": 0.80, "Height": 0.06, "Left": 0.10, "Top": 0.25}},
+      "Relationships": [{"Type": "CHILD", "Ids": ["line-p2"]}]
+    },
+    {
+      "BlockType": "LINE",
+      "Id": "line-p2",
+      "Page": 1,
+      "Geometry": {"BoundingBox": {"Width": 0.80, "Height": 0.03, "Left": 0.10, "Top": 0.25}},
+      "Relationships": [{"Type": "CHILD", "Ids": ["w-p2-1"]}]
+    },
+    {"BlockType": "WORD", "Id": "w-p2-1", "Text": "Second", "Page": 1},
+
+    {
+      "BlockType": "LAYOUT_TEXT",
+      "Id": "lay-p3",
+      "Page": 1,
+      "Confidence": 98.0,
+      "Geometry": {"BoundingBox": {"Width": 0.80, "Height": 0.06, "Left": 0.10, "Top": 0.35}},
+      "Relationships": [{"Type": "CHILD", "Ids": ["line-p3"]}]
+    },
+    {
+      "BlockType": "LINE",
+      "Id": "line-p3",
+      "Page": 1,
+      "Geometry": {"BoundingBox": {"Width": 0.80, "Height": 0.03, "Left": 0.10, "Top": 0.35}},
+      "Relationships": [{"Type": "CHILD", "Ids": ["w-p3-1"]}]
+    },
+    {"BlockType": "WORD", "Id": "w-p3-1", "Text": "Third", "Page": 1}
+  ]
+}

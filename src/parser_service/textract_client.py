@@ -134,7 +134,8 @@ def _blocks_to_elements(blocks: list[dict[str, Any]]) -> list[dict[str, Any]]:
     additionally carry a heading ``level`` (1 / 2). ``LAYOUT_TABLE`` and bare ``TABLE`` blocks
     build a 0-indexed table object from their CELL grid (Textract is 1-indexed). Reading order
     follows the PAGE block's CHILD relationship (Textract's reading order); when that ordering
-    is absent, LAYOUT blocks are sorted by geometry top-then-left.
+    is absent, LAYOUT blocks fall back to geometry with column-aware reconciliation
+    (see ``_reconcile_geometry_order``).
 
     Args:
         blocks: The ``Blocks`` list from an ``AnalyzeDocument`` response.
@@ -185,9 +186,12 @@ def _ordered_layout_blocks(
 ) -> list[dict[str, Any]]:
     """Return LAYOUT_* blocks in Textract reading order.
 
-    Reading order is the order of LAYOUT children under the PAGE block(s). When no
-    PAGE->CHILD ordering is available, fall back to sorting LAYOUT blocks by geometry
-    (top, then left).
+    Reading order is the order of LAYOUT children under the PAGE block(s) — this
+    native ordering is usually correct and is returned unchanged. When no
+    PAGE->CHILD ordering is available, fall back to geometry: apply column-aware
+    reading-order reconciliation (see ``_reconcile_geometry_order``) which keeps
+    single-column pages byte-identical to the plain ``(Top, Left)`` sort and only
+    reorders multi-column pages when a self-consistency score clears a margin.
     """
     ordered: list[dict[str, Any]] = []
     seen: set[str] = set()
@@ -203,14 +207,174 @@ def _ordered_layout_blocks(
     if ordered:
         return ordered
 
-    # No PAGE ordering — sort by geometry top-then-left.
+    # No PAGE ordering — geometry fallback with column-aware reconciliation.
     layout = [b for b in blocks if str(b.get("BlockType", "")).startswith("LAYOUT_")]
+    return _reconcile_geometry_order(layout)
 
-    def _geo_key(b: dict[str, Any]) -> tuple[float, float]:
-        bbox = b.get("Geometry", {}).get("BoundingBox", {})
-        return (bbox.get("Top", 0.0), bbox.get("Left", 0.0))
 
-    return sorted(layout, key=_geo_key)
+# -------------------------------------------------------------------------
+# Geometry-fallback reading-order reconciliation (pure; no boto3 / env / I/O)
+# -------------------------------------------------------------------------
+# When Textract emits no PAGE->CHILD reading order, the legacy behavior sorted
+# LAYOUT blocks by raw ``(Top, Left)``. On a two-column page that interleaves the
+# columns row-by-row and destroys reading order. We instead detect column bands
+# from block geometry, build a column-aware order, and adopt it ONLY when a pure
+# self-consistency score beats the original by a fixed margin — an A/B safety
+# valve (ported from ``references/pdfmux``'s ``reorder_text_ab``) that guarantees
+# single-column pages stay byte-identical to the plain ``(Top, Left)`` sort.
+
+# A block wider than this fraction of the page spans columns (header/footer/title).
+_SPAN_WIDTH_RATIO = 0.85
+# x-center jitter tolerance when clustering blocks into column bands.
+_COLUMN_XCENTER_TOL = 0.10
+# The column-reordered candidate must beat the original by this margin to be adopted.
+_REORDER_MARGIN = 0.05
+
+
+def _bbox(block: dict[str, Any]) -> dict[str, float]:
+    bbox: dict[str, float] = block.get("Geometry", {}).get("BoundingBox", {})
+    return bbox
+
+
+def _geo_top_left(block: dict[str, Any]) -> tuple[float, float]:
+    bbox = _bbox(block)
+    return (bbox.get("Top", 0.0), bbox.get("Left", 0.0))
+
+
+def _x_center(block: dict[str, Any]) -> float:
+    bbox = _bbox(block)
+    return bbox.get("Left", 0.0) + bbox.get("Width", 0.0) / 2.0
+
+
+def _detect_column_bands(
+    layout: list[dict[str, Any]],
+) -> tuple[list[list[dict[str, Any]]], list[dict[str, Any]]]:
+    """Cluster LAYOUT blocks into vertical column bands by x-center.
+
+    Full-width blocks (Width > ``_SPAN_WIDTH_RATIO`` of the page) are pulled out as
+    spanning furniture and returned separately — they must NOT be forced into a
+    single column. The remaining blocks are clustered by x-center with a jitter
+    tolerance; bands are returned left-to-right, each band's blocks kept in input
+    order. Pure — geometry only.
+
+    Returns:
+        ``(bands, full_width)`` where ``bands`` is a left-to-right list of column
+        block-lists and ``full_width`` is the spanning blocks.
+    """
+    full_width: list[dict[str, Any]] = []
+    column_blocks: list[dict[str, Any]] = []
+    for b in layout:
+        if _bbox(b).get("Width", 0.0) > _SPAN_WIDTH_RATIO:
+            full_width.append(b)
+        else:
+            column_blocks.append(b)
+
+    if not column_blocks:
+        return [], full_width
+
+    # Cluster x-centers: walk sorted centers, start a new band when the gap to the
+    # running band's mean center exceeds the tolerance.
+    order = sorted(range(len(column_blocks)), key=lambda i: _x_center(column_blocks[i]))
+    bands_idx: list[list[int]] = []
+    band_centers: list[float] = []
+    for i in order:
+        c = _x_center(column_blocks[i])
+        if bands_idx and abs(c - band_centers[-1]) <= _COLUMN_XCENTER_TOL:
+            bands_idx[-1].append(i)
+            n = len(bands_idx[-1])
+            band_centers[-1] += (c - band_centers[-1]) / n
+        else:
+            bands_idx.append([i])
+            band_centers.append(c)
+
+    # Rebuild each band preserving the blocks' original input order, ordered L->R.
+    bands: list[list[dict[str, Any]]] = [
+        [column_blocks[i] for i in sorted(idxs)] for idxs in bands_idx
+    ]
+    return bands, full_width
+
+
+def _column_reordered_blocks(layout: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Build the column-aware reading order for a geometry-only page.
+
+    Full-width spanning blocks act as horizontal dividers: sorted by Top, each one
+    LEADS the vertical zone it opens. Within each zone the column bands are emitted
+    left-to-right, each band top-to-bottom. With a single band this is exactly the
+    ``(Top, Left)`` order, so single-column pages are unchanged. Pure.
+    """
+    bands, full_width = _detect_column_bands(layout)
+
+    if len(bands) <= 1:
+        # Single band (or none): identical to the plain (Top, Left) sort.
+        return sorted(layout, key=_geo_top_left)
+
+    dividers = sorted(full_width, key=lambda b: _bbox(b).get("Top", 0.0))
+    boundaries = [_bbox(d).get("Top", 0.0) for d in dividers]
+
+    out: list[dict[str, Any]] = []
+    prev = float("-inf")
+    for i, top in enumerate(boundaries + [float("inf")]):
+        # Column blocks whose Top falls in [prev, top): band by band, each top->bottom.
+        for band in bands:
+            zone = [b for b in band if prev <= _bbox(b).get("Top", 0.0) < top]
+            out.extend(sorted(zone, key=_geo_top_left))
+        if i < len(dividers):
+            out.append(dividers[i])
+            prev = top
+    return out
+
+
+def _reading_order_score(ordered: list[dict[str, Any]]) -> float:
+    """Pure self-consistency score for an ordered block sequence (0.0..1.0).
+
+    Rewards transitions that stay within one column while progressing down the page
+    (or move down within the same row band); gives partial credit to a genuine
+    column reset (jump back UP to the top of a column further right); and penalizes
+    transitions that thrash horizontally between columns — the tell-tale of a naive
+    ``(Top, Left)`` sort interleaving multiple columns row-by-row. Geometry-native
+    analogue of pdfmux's ``_score_reading_order``. No text, no model, no I/O.
+    """
+    if len(ordered) < 2:
+        return 0.5
+
+    forward = 0.0
+    total = len(ordered) - 1
+    for i in range(total):
+        t_cur = _bbox(ordered[i]).get("Top", 0.0)
+        t_nxt = _bbox(ordered[i + 1]).get("Top", 0.0)
+        cx_cur = _x_center(ordered[i])
+        cx_nxt = _x_center(ordered[i + 1])
+        same_column = abs(cx_nxt - cx_cur) <= _COLUMN_XCENTER_TOL
+
+        if same_column:
+            # Same column: reward downward (or same-line) progression; a backward
+            # jump within one column is the only within-column penalty.
+            forward += 1.0 if t_nxt >= t_cur - 1e-6 else 0.0
+        elif t_nxt < t_cur - 1e-6 and cx_nxt > cx_cur:
+            # Column switch: jumped UP to a column further right (A->B reset). Clean.
+            forward += 1.0
+        else:
+            # Different column but NOT a clean top-of-next-column reset: horizontal
+            # thrash (row-by-row interleaving). No credit.
+            forward += 0.0
+
+    return forward / total if total else 0.5
+
+
+def _reconcile_geometry_order(layout: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """A/B valve: adopt the column-aware order only when it clears the margin.
+
+    Scores the original ``(Top, Left)`` order against the column-reordered order and
+    returns the reordered one ONLY when it beats the original by ``_REORDER_MARGIN``.
+    Single-column pages tie (identical sequences) and keep the original, so their
+    output is byte-identical to the legacy geometry sort.
+    """
+    original = sorted(layout, key=_geo_top_left)
+    reordered = _column_reordered_blocks(layout)
+
+    if _reading_order_score(reordered) > _reading_order_score(original) + _REORDER_MARGIN:
+        return reordered
+    return original
 
 
 def _child_blocks(
