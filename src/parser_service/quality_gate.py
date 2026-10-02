@@ -89,8 +89,12 @@ def _layer1_decision(conversion_result: object, page_no: int) -> Decision | None
         if not pages_conf:
             return None
 
-        # Docling pages_conf may be a dict keyed by 1-based page number
-        page_conf = pages_conf.get(page_no) or pages_conf.get(page_no + 1)
+        # ``page_no`` is 0-based; Docling keys pages_conf by 1-based page number
+        # (observed on 2.96.0), so the page's own entry is ``page_no + 1``. Looking
+        # up ``page_no`` first read the PREVIOUS page's grade on every page after
+        # the first. A key 0 can only exist under 0-based keying, so it selects that.
+        own_key = page_no if 0 in pages_conf else page_no + 1
+        page_conf = pages_conf.get(own_key)
         if page_conf is None:
             return None
 
