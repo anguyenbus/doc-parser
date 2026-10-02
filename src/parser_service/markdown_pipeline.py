@@ -97,15 +97,34 @@ _ROUTE_VLM_REJECTED = "vlm-rejected-kept-docling"  # VLM output rejected → Doc
 _ROUTE_TEXTRACT_REJECTED = "textract-rejected-kept-docling"  # Textract output rejected → Docling
 
 
+# Process-wide converter reuse (OPT-IN, default OFF). The per-page pipeline
+# (``page_pipeline``) converts many one-page files in one worker process; building
+# a fresh converter for each would reload Docling's models per page. With the flag
+# OFF ``_document_converter`` returns a fresh converter exactly as before.
+_reuse_converter = False
+_cached_converter: Any = None
+
+
+def enable_converter_reuse() -> None:
+    """Make ``_document_converter`` return one cached converter for this process."""
+    global _reuse_converter
+    _reuse_converter = True
+
+
 def _document_converter() -> Any:
-    """Return a fresh Docling ``DocumentConverter``.
+    """Return a Docling ``DocumentConverter`` (fresh unless reuse is enabled).
 
     Wrapped in a helper so tests can monkeypatch the converter (to force a
     conversion failure) without importing Docling at module load.
     """
+    global _cached_converter
     from docling.document_converter import DocumentConverter
 
-    return DocumentConverter()
+    if not _reuse_converter:
+        return DocumentConverter()
+    if _cached_converter is None:
+        _cached_converter = DocumentConverter()
+    return _cached_converter
 
 
 def _scan_fastpath_enabled() -> bool:
