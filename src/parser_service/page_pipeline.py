@@ -52,14 +52,20 @@ PDF only: office, HTML and image inputs have no page split and stay on
 from __future__ import annotations
 
 import hashlib
+import http.client
 import io
 import json
 import logging
 import multiprocessing
 import os
+import random
 import re
+import socket
+import threading
 import time
-from concurrent.futures import ProcessPoolExecutor, as_completed
+import urllib.error
+import urllib.request
+from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_completed
 from concurrent.futures.process import BrokenProcessPool
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -495,6 +501,7 @@ def _write_record(
         "attempt": attempt,
         "finished_at": datetime.now(tz=UTC).isoformat(),
         "worker_pid": os.getpid(),
+        "worker_host": socket.gethostname(),
     }
     if extra:
         record.update(extra)
@@ -795,6 +802,209 @@ def _run_pages(
 
 
 # ---------------------------------------------------------------------------
+# Running pages on a page service (KServe InferenceService)
+# ---------------------------------------------------------------------------
+
+EXECUTOR_LOCAL = "local"
+EXECUTOR_KSERVE = "kserve"
+KSERVE_MODEL_NAME = "page-parser"
+
+# 429: the pod is parsing another page; 503: the model is not ready yet. Neither
+# reached _process_page, so neither costs an attempt.
+_REMOTE_BUSY_CODES = (429, 503)
+_REMOTE_REQUEST_TIMEOUT = 900.0
+_REMOTE_BUSY_DEADLINE = 3600.0
+# Failed requests allowed beyond max_attempts before a page that never starts
+# (no attempt counted) is reported instead of retried forever.
+_REMOTE_EXTRA_ERRORS = 5
+_sleep = time.sleep  # replaced in tests
+
+
+class RemotePageError(RuntimeError):
+    """The page service refused a page for a reason a retry cannot fix, or never took it."""
+
+
+def kserve_predict_url(endpoint: str) -> str:
+    """The V1 predict URL of the page model at ``endpoint`` (``http://host[:port]``)."""
+    return f"{endpoint.rstrip('/')}/v1/models/{KSERVE_MODEL_NAME}:predict"
+
+
+def process_page_request(
+    store: Store, file_id: str, page_number: int, escalate: bool, max_attempts: int
+) -> dict[str, Any]:
+    """Serve one page request: the page service's side of the remote executor.
+
+    The file must already be split under ``store``, under this process's pipeline
+    config: a page parsed with other settings than the ones pinned at intake would
+    silently mix outputs, so a mismatch raises ``PipelineConfigMismatch``. A page
+    number outside the file raises ``ValueError``. Otherwise this is
+    ``_process_page``: a page already recorded is returned as stored, and a
+    page-level failure is a ``failed`` record, never an exception.
+
+    Returns a summary of the record; the record itself is in the store.
+    """
+    manifest = _read_json(store, _manifest_key(file_id))
+    if not isinstance(manifest, dict):
+        raise ValueError(f"{store.location(_work_prefix(file_id))} has no manifest; split it first")
+    if manifest.get("config") != pipeline_config():
+        raise PipelineConfigMismatch(
+            f"{file_id} was split with config {manifest.get('config')} but this page service "
+            f"runs {pipeline_config()}"
+        )
+    if not 1 <= page_number <= int(manifest["page_count"]):
+        raise ValueError(f"{file_id} has {manifest['page_count']} pages, not page {page_number}")
+    record = _process_page(store, file_id, page_number, escalate, max_attempts)
+    return {
+        "file_id": file_id,
+        "page": page_number,
+        "state": record.get("state"),
+        "reason": record.get("reason"),
+        "attempt": record.get("attempt"),
+        "route": record.get("route"),
+        "elapsed_seconds": record.get("elapsed_seconds"),
+        "worker_host": record.get("worker_host"),
+    }
+
+
+def _post_page(
+    url: str, file_id: str, page_number: int, escalate: bool, max_attempts: int, timeout: float
+) -> tuple[int, dict[str, Any] | None, str]:
+    """POST one page; return ``(status, body, error detail)``.
+
+    One connection per request (``Connection: close``): a kept-alive connection
+    stays on the pod it first reached, so pods added by a scale-out would get no
+    pages. A transport error (refused, reset, timeout) raises.
+    """
+    instance = {
+        "file_id": file_id,
+        "page": page_number,
+        "escalate": escalate,
+        "max_attempts": max_attempts,
+    }
+    request = urllib.request.Request(
+        url,
+        data=json.dumps({"instances": [instance]}).encode("utf-8"),
+        method="POST",
+        headers={"Content-Type": "application/json", "Connection": "close"},
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            return response.status, json.loads(response.read()), ""
+    except urllib.error.HTTPError as exc:
+        return exc.code, None, exc.read().decode("utf-8", "replace")[:500]
+
+
+def _remote_page(
+    store: Store,
+    url: str,
+    file_id: str,
+    page_number: int,
+    escalate: bool,
+    max_attempts: int,
+    stop: threading.Event,
+) -> dict[str, Any]:
+    """Send one page until it has a result; return the summary or the record.
+
+    - 200: the service parsed the page (or returned its stored record).
+    - 429/503: the service did not start it. Retried with jittered backoff at no
+      attempt cost, for at most ``busy_deadline`` seconds of continuous refusals.
+    - Any other 4xx: a request the service will never accept (config mismatch, a
+      page or file it does not know). Raises ``RemotePageError``.
+    - A transport error or other 5xx: the page may have started on a pod that died.
+      The store decides: a record means the page is done; an attempt counter at
+      the limit means the page is finalized ``failed``; otherwise it is sent again.
+      A page whose requests keep failing without it ever starting raises.
+    """
+    timeout, busy_deadline = _REMOTE_REQUEST_TIMEOUT, _REMOTE_BUSY_DEADLINE
+    busy_since: float | None = None
+    backoff = 0.5
+    errors = 0
+    while True:
+        if stop.is_set():
+            raise RemotePageError(f"page {page_number}: stopped after another page failed")
+        try:
+            status, body, detail = _post_page(
+                url, file_id, page_number, escalate, max_attempts, timeout
+            )
+        except (OSError, http.client.HTTPException) as exc:  # URLError is an OSError
+            status, body, detail = 0, None, f"{type(exc).__name__}: {exc}"
+
+        if status == 200 and body and body.get("predictions"):
+            return dict(body["predictions"][0])
+        if status in _REMOTE_BUSY_CODES:
+            now = time.monotonic()
+            busy_since = now if busy_since is None else busy_since
+            if now - busy_since > busy_deadline:
+                raise RemotePageError(
+                    f"page {page_number}: the page service refused it for {busy_deadline:.0f}s "
+                    f"({status}: {detail})"
+                )
+            _sleep(random.uniform(0.5, 1.0) * backoff)
+            backoff = min(backoff * 2, 8.0)
+            continue
+        if 400 <= status < 500:
+            raise RemotePageError(f"page {page_number}: the page service refused it ({status}: {detail})")
+
+        busy_since, backoff = None, 0.5
+        errors += 1
+        logger.warning("page %d: request failed (%s); checking the store", page_number, detail or status)
+        record = _load_record_checked(store, file_id, page_number)
+        if record is not None:
+            return record
+        if _read_attempts(store, file_id, page_number) >= max_attempts:
+            return _finalize_exhausted(store, file_id, page_number)
+        if errors > max_attempts + _REMOTE_EXTRA_ERRORS:
+            raise RemotePageError(
+                f"page {page_number}: {errors} requests failed without the page starting; "
+                f"last: {detail or status}"
+            )
+        _sleep(random.uniform(0.5, 2.0))
+
+
+def _run_pages_remote(
+    store: Store,
+    endpoint: str,
+    file_id: str,
+    pages: list[int],
+    concurrency: int,
+    escalate: bool,
+    max_attempts: int,
+) -> None:
+    """Process ``pages`` once each on the page service at ``endpoint``.
+
+    Up to ``concurrency`` requests are in flight; the service admits one page per
+    pod and refuses the rest with 429, so the queue lives here and the service
+    scales on its own load. The first ``RemotePageError`` stops the other pages
+    and propagates; pages without a record stay ``pending``.
+    """
+    url = kserve_predict_url(endpoint)
+    stop = threading.Event()
+    with ThreadPoolExecutor(max_workers=max(1, min(concurrency, len(pages)))) as pool:
+        futures = {
+            pool.submit(
+                _remote_page, store, url, file_id, n, escalate, max_attempts, stop
+            ): n
+            for n in pages
+        }
+        try:
+            for future in as_completed(futures):
+                page_number = futures[future]
+                summary = future.result()
+                logger.info(
+                    "page %d: %s%s%s",
+                    page_number,
+                    summary.get("state"),
+                    f" ({summary.get('reason')})" if summary.get("reason") else "",
+                    f" on {summary['worker_host']}" if summary.get("worker_host") else "",
+                )
+        except BaseException:
+            stop.set()
+            for future in futures:
+                future.cancel()
+            raise
+
+
+# ---------------------------------------------------------------------------
 # Status and stitch
 # ---------------------------------------------------------------------------
 
@@ -945,6 +1155,9 @@ def parse_pdf_pages_in_store(
     max_attempts: int | None = None,
     partial: bool = False,
     restart: bool = False,
+    executor: str = EXECUTOR_LOCAL,
+    endpoint: str | None = None,
+    concurrency: int | None = None,
 ) -> dict[str, Any]:
     """Split a PDF, parse its pages in parallel, and stitch when every page is ok.
 
@@ -962,6 +1175,11 @@ def parse_pdf_pages_in_store(
         max_attempts: Attempt limit per page (default ``default_max_attempts()``).
         partial: Also write ``output.partial.md`` when the file is not complete.
         restart: Delete everything stored for this file first and start again.
+        executor: ``"local"`` (worker processes here) or ``"kserve"``: each page is
+            sent to the page service at ``endpoint``, which writes its record to
+            the same store. Split, archive, status and stitch stay here either way.
+        endpoint: The page service base URL (``http://host[:port]``), for kserve.
+        concurrency: Page requests in flight, for kserve (default ``workers``).
 
     Returns:
         ``{"state", "file_id", "work_dir", "out_dir", "page_count", "counts",
@@ -981,6 +1199,10 @@ def parse_pdf_pages_in_store(
         raise FileNotFoundError(source)
     if source.suffix.lower() != ".pdf":
         raise ValueError(f"the page pipeline handles PDFs only, got {source.name}")
+    if executor not in (EXECUTOR_LOCAL, EXECUTOR_KSERVE):
+        raise ValueError(f"executor must be {EXECUTOR_LOCAL} or {EXECUTOR_KSERVE}, got {executor!r}")
+    if executor == EXECUTOR_KSERVE and not endpoint:
+        raise ValueError("the kserve executor needs the page service endpoint")
     workers = default_workers() if workers is None else workers
     max_attempts = default_max_attempts() if max_attempts is None else max_attempts
     if store is None:
@@ -1009,15 +1231,21 @@ def parse_pdf_pages_in_store(
             continue
         todo.append(page_number)
 
+    remote = executor == EXECUTOR_KSERVE
+    in_flight = (concurrency or max(1, workers)) if remote else workers
     logger.info(
-        "%s: %d pages, %d to process, %d already done, workers=%d",
+        "%s: %d pages, %d to process, %d already done, %s=%d",
         source.name,
         manifest["page_count"],
         len(todo),
         int(manifest["page_count"]) - len(todo),
-        workers,
+        f"kserve {endpoint} concurrency" if remote else "workers",
+        in_flight,
     )
-    if todo:
+    if todo and remote:
+        assert endpoint is not None
+        _run_pages_remote(store, endpoint, file_id, todo, in_flight, escalate, max_attempts)
+    elif todo:
         _run_pages(store, location, region, file_id, todo, workers, escalate, max_attempts)
 
     status = build_status(store, file_id, manifest, max_attempts)

@@ -1,0 +1,10 @@
+# KServe controller (chart kserve-resources): Standard (raw Deployment) mode, no
+# ingress objects (the page service is reached on its cluster Service only).
+kserve:
+  controller:
+    deploymentMode: Standard
+    nodeSelector:
+      role: system
+    gateway:
+      disableIngressCreation: true
+      disableIstioVirtualHost: true

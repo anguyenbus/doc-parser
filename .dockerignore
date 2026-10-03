@@ -1,0 +1,10 @@
+# Build context for deploy/docker/Dockerfile: only pyproject, the lock, src,
+# scripts/parse_pages.py and the warm-up fixture are needed.
+*
+!pyproject.toml
+!uv.lock
+!README.md
+!src/
+!scripts/parse_pages.py
+!tests/fixtures/scanned.pdf
+**/__pycache__

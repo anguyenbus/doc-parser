@@ -188,3 +188,57 @@ def test_importing_the_module_reads_nothing_from_the_environment() -> None:
         [sys.executable, "-c", code], capture_output=True, text=True, check=True
     )
     assert done.stdout.strip() == "[]"
+
+
+def test_executor_defaults_to_local() -> None:
+    settings = load_settings(store_location="/w", escalate=False, environ={})
+    assert (settings.executor, settings.kserve_url, settings.kserve_concurrency) == (
+        "local",
+        None,
+        None,
+    )
+
+
+def test_kserve_executor_needs_a_url_and_an_s3_store() -> None:
+    env = {"AWS_REGION": REGION, "PARSER_EXECUTOR": "kserve"}
+    assert _problems(store_location="s3://b/parser/", escalate=False, environ=env) == [
+        "PARSER_KSERVE_URL is required (the executor is kserve)"
+    ]
+    problems = _problems(
+        store_location="/w", escalate=False, environ={**env, "PARSER_KSERVE_URL": "http://svc"}
+    )
+    assert len(problems) == 1 and "needs an s3:// store location" in problems[0]
+    assert _problems(
+        store_location="s3://b/parser/",
+        escalate=False,
+        environ={**env, "PARSER_KSERVE_URL": "svc:8080"},
+    ) == ["PARSER_KSERVE_URL must be an http:// or https:// URL, got 'svc:8080'"]
+
+    settings = load_settings(
+        store_location="s3://b/parser/",
+        escalate=False,
+        environ={**env, "PARSER_KSERVE_URL": "http://svc", "PARSER_KSERVE_CONCURRENCY": "16"},
+    )
+    assert (settings.executor, settings.kserve_url, settings.kserve_concurrency) == (
+        "kserve",
+        "http://svc",
+        16,
+    )
+
+
+def test_executor_arguments_override_the_environment() -> None:
+    settings = load_settings(
+        store_location="s3://b/parser/",
+        escalate=False,
+        executor="kserve",
+        kserve_url="http://other",
+        environ={"AWS_REGION": REGION, "PARSER_EXECUTOR": "local", "PARSER_KSERVE_URL": "http://x"},
+    )
+    assert (settings.executor, settings.kserve_url) == ("kserve", "http://other")
+
+
+def test_bad_executor_settings_are_reported() -> None:
+    env = {"PARSER_EXECUTOR": "ray", "PARSER_KSERVE_CONCURRENCY": "0"}
+    problems = _problems(store_location="/w", escalate=False, environ=env)
+    assert "PARSER_EXECUTOR must be local or kserve, got 'ray'" in problems
+    assert any(p.startswith("PARSER_KSERVE_CONCURRENCY must be an integer") for p in problems)

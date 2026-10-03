@@ -54,6 +54,9 @@ class Settings:
     page_max_attempts: int
     scan_fastpath: bool
     arbitration: bool
+    executor: str = "local"  # "local" (worker processes) or "kserve" (the page service)
+    kserve_url: str | None = None
+    kserve_concurrency: int | None = None  # None: the pipeline's own default
 
 
 def _integer(
@@ -84,6 +87,8 @@ def load_settings(
     store_location: str | None = None,
     input_is_s3: bool = False,
     escalate: bool = True,
+    executor: str | None = None,
+    kserve_url: str | None = None,
     environ: Mapping[str, str] | None = None,
 ) -> Settings:
     """Validate the environment for one run and return its settings.
@@ -91,6 +96,10 @@ def load_settings(
     Args:
         store_location: The caller's override of ``PARSER_STORE_LOCATION`` (a
             ``--work-dir`` argument), or None to use the environment.
+        executor: The caller's override of ``PARSER_EXECUTOR`` (``local`` or
+            ``kserve``). kserve needs ``PARSER_KSERVE_URL`` (or ``kserve_url``) and
+            an ``s3://`` store, which the page service writes to.
+        kserve_url: The caller's override of ``PARSER_KSERVE_URL``.
         input_is_s3: The input is an ``s3://`` URI (it then needs ``AWS_REGION``).
         escalate: Engine calls may be made (they need ``AWS_REGION``, and the VLM
             engine needs ``BEDROCK_VLM_MODEL``).
@@ -147,6 +156,22 @@ def load_settings(
     scan_fastpath = _flag(env, "PARSER_SCAN_FASTPATH", problems)
     arbitration = _flag(env, "PARSER_ESCALATION_ARBITRATION", problems)
 
+    executor = executor or env.get("PARSER_EXECUTOR", "").strip() or "local"
+    url = kserve_url or env.get("PARSER_KSERVE_URL", "").strip() or None
+    concurrency = _integer(env, "PARSER_KSERVE_CONCURRENCY", 1, None, problems)
+    if executor not in ("local", "kserve"):
+        problems.append(f"PARSER_EXECUTOR must be local or kserve, got {executor!r}")
+    elif executor == "kserve":
+        if url is None:
+            problems.append("PARSER_KSERVE_URL is required (the executor is kserve)")
+        elif not url.startswith(("http://", "https://")):
+            problems.append(f"PARSER_KSERVE_URL must be an http:// or https:// URL, got {url!r}")
+        if location is not None and store_kind != "s3":
+            problems.append(
+                "the kserve executor needs an s3:// store location: the page service "
+                "writes the page records there"
+            )
+
     if problems or location is None or max_attempts is None:
         raise SettingsError(problems)
 
@@ -160,10 +185,14 @@ def load_settings(
         page_max_attempts=max_attempts,
         scan_fastpath=scan_fastpath,
         arbitration=arbitration,
+        executor=executor,
+        kserve_url=url if executor == "kserve" else None,
+        kserve_concurrency=concurrency,
     )
     logger.info(
         "settings: store_location=%s aws_region=%s escalate=%s escalation_engine=%s "
-        "vlm_model=%s page_workers=%s page_max_attempts=%d scan_fastpath=%s arbitration=%s",
+        "vlm_model=%s page_workers=%s page_max_attempts=%d scan_fastpath=%s arbitration=%s "
+        "executor=%s kserve_url=%s",
         settings.store_location,
         settings.aws_region,
         escalate,
@@ -173,5 +202,7 @@ def load_settings(
         settings.page_max_attempts,
         settings.scan_fastpath,
         settings.arbitration,
+        settings.executor,
+        settings.kserve_url,
     )
     return settings

@@ -1,0 +1,65 @@
+%PDF-1.4
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R >>
+endobj
+2 0 obj
+<< /Type /Pages /Kids [3 0 R 4 0 R] /Count 2 >>
+endobj
+3 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 5 0 R /Resources << /Font << /F1 << /Type /Font /Subtype /Type1 /BaseFont /Helvetica >> >> >> >>
+endobj
+4 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 6 0 R /Resources << /Font << /F1 << /Type /Font /Subtype /Type1 /BaseFont /Helvetica >> >> >> >>
+endobj
+5 0 obj
+<< /Length 450 >>
+stream
+BT
+/F1 14 Tf
+72 720 Td
+(Digital PDF - Page 1) Tj
+0 -30 Td
+/F1 12 Tf
+(This is the first paragraph on page one of a digital PDF document.) Tj
+0 -20 Td
+(It contains readable text that Docling can extract directly.) Tj
+0 -40 Td
+/F1 14 Tf
+(Section 1.1 Introduction) Tj
+0 -25 Td
+/F1 12 Tf
+(The document parser service routes files through appropriate parsing paths.) Tj
+0 -20 Td
+(Digital PDFs use Docling for text extraction and VLM for table crops.) Tj
+ET
+endstream
+endobj
+6 0 obj
+<< /Length 206 >>
+stream
+BT
+/F1 14 Tf
+72 720 Td
+(Digital PDF - Page 2) Tj
+0 -30 Td
+/F1 12 Tf
+(This is page two with additional content for testing.) Tj
+0 -20 Td
+(Multiple pages ensure the page index tracking works correctly.) Tj
+ET
+endstream
+endobj
+xref
+0 7
+0000000000 65535 f 
+0000000009 00000 n 
+0000000058 00000 n 
+0000000121 00000 n 
+0000000296 00000 n 
+0000000471 00000 n 
+0000000972 00000 n 
+trailer
+<< /Size 7 /Root 1 0 R >>
+startxref
+1229
+%%EOF

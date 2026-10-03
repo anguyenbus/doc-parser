@@ -25,6 +25,9 @@ dev = [
     "python-docx>=1.1",
     "openpyxl>=3.1",
 ]
+serve = [
+    "kserve==0.21.0",
+]
 
 [build-system]
 requires = ["hatchling"]
@@ -51,4 +54,5 @@ testpaths = ["tests"]
 markers = [
     "live: requires real Bedrock credentials (manual or nightly only)",
     "slow: full eval-harness run, weekly only",
+    "kserve: needs the kserve SDK (the serve extra); skipped without it",
 ]
