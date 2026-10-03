@@ -70,7 +70,7 @@ def test_split_writes_one_page_files_and_manifest_last(tmp_path: Path) -> None:
     from pypdf import PdfReader
 
     work_dir = work_dir_for(THREE_PAGE, tmp_path)
-    work_dir.mkdir()
+    work_dir.mkdir(parents=True)
     manifest = split_pdf(THREE_PAGE, work_dir)
 
     assert manifest["page_count"] == 3
@@ -98,7 +98,7 @@ def test_all_pages_ok_stitches_with_page_markers(
     )
     assert strip_page_markers(markdown) == "text of page 1\n\ntext of page 2\n\ntext of page 3\n"
 
-    metadata = json.loads((Path(result["work_dir"]) / "output.json").read_text())
+    metadata = json.loads((Path(result["out_dir"]) / "output.json").read_text())
     start, end = metadata["pages"][1]["char_span"]
     assert markdown[start:end] == "==== page 2 ===\n\ntext of page 2"
 
@@ -118,9 +118,9 @@ def test_degraded_page_fails_the_file_and_writes_no_output(
 
     assert result["state"] == "failed"
     assert result["output_path"] is None
-    assert not (work_dir / "output.md").exists()
+    assert not (work_dir.parents[1] / "out" / work_dir.name / "output.md").exists()
     assert [(p["page"], p["state"]) for p in result["not_ok_pages"]] == [(2, "degraded")]
-    status = json.loads((work_dir / "status.json").read_text())
+    status = json.loads((work_dir.parents[1] / "out" / work_dir.name / "status.json").read_text())
     assert status["state"] == "failed"
 
     partial = Path(result["partial_path"]).read_text()
@@ -180,7 +180,7 @@ def test_page_with_no_result_after_all_attempts_is_failed(
     """A page that killed its worker leaves an attempt count and no record."""
     _install_fake(monkeypatch, lambda n: _result(f"p{n}"))
     work_dir = work_dir_for(THREE_PAGE, tmp_path)
-    work_dir.mkdir()
+    work_dir.mkdir(parents=True)
     split_pdf(THREE_PAGE, work_dir)
     (work_dir / "attempts" / "0001").write_text("3")
 
