@@ -44,7 +44,7 @@ from typing import Any
 import pytest
 
 from parser_service import io_layer
-from parser_service.page_pipeline import file_id_for
+from parser_service.page_pipeline import file_id_for, work_id_for
 from parser_service.store import Store, StoreNotFoundError, open_store
 
 pytestmark = pytest.mark.live
@@ -125,11 +125,11 @@ def _run_script(location: str, source: Path, *extra: str) -> dict[str, Any]:
     }
 
 
-def _records(store: Store, file_id: str) -> dict[str, dict[str, Any]]:
+def _records(store: Store, work_id: str) -> dict[str, dict[str, Any]]:
     """The page records of a file (archives excluded), by key."""
     keys = [
         key
-        for key in store.list_keys(f"work/{file_id}/results/")
+        for key in store.list_keys(f"work/{work_id}/results/")
         if re.fullmatch(r"\d{4}\.json", key.rpartition("/")[2])
     ]
     return {key: json.loads(store.read(key)) for key in keys}
@@ -245,8 +245,8 @@ def test_live_s3_store_and_pipeline(tmp_path: Path) -> None:
         assert store.list_keys("check/") == ["check/conditional.txt", "check/subway.md"]
 
         # ---- Step 3: the three-page fixture, twice, then --restart ----------
-        file_id = file_id_for(THREE_PAGE)
-        step3: dict[str, Any] = {"file_id": file_id}
+        file_id, work_id = file_id_for(THREE_PAGE), work_id_for(THREE_PAGE)
+        step3: dict[str, Any] = {"file_id": file_id, "work_id": work_id}
         report["step3_three_page"] = step3
 
         # With engine calls off this fixture's pages may be promoted by the gate and
@@ -254,8 +254,8 @@ def test_live_s3_store_and_pipeline(tmp_path: Path) -> None:
         # are accepted: an ``ok`` page must be left untouched by the second run, and a
         # non-ok page must be archived (``NNNN.attempt-1.json``) and tried again.
         step3["run1"] = _run_script(location, THREE_PAGE)
-        records1 = _records(store, file_id)
-        listing1 = {o["key"]: o for o in _listing(client, f"{run_prefix}work/{file_id}/")}
+        records1 = _records(store, work_id)
+        listing1 = {o["key"]: o for o in _listing(client, f"{run_prefix}work/{work_id}/")}
         step3["run1_keys"] = _listing(client, run_prefix)
         step3["run1_worker_pids"] = sorted({r["worker_pid"] for r in records1.values()})
         step3["run1_states"] = {k.rpartition("/")[2]: r["state"] for k, r in records1.items()}
@@ -266,8 +266,8 @@ def test_live_s3_store_and_pipeline(tmp_path: Path) -> None:
         not_ok_keys = sorted(k for k, r in records1.items() if r["state"] != "ok")
 
         step3["run2"] = _run_script(location, THREE_PAGE)
-        records2 = _records(store, file_id)
-        listing2 = {o["key"]: o for o in _listing(client, f"{run_prefix}work/{file_id}/")}
+        records2 = _records(store, work_id)
+        listing2 = {o["key"]: o for o in _listing(client, f"{run_prefix}work/{work_id}/")}
         full_ok = [f"{run_prefix}{k}" for k in ok_keys]
         archives = sorted(k for k in listing2 if ".attempt-" in k)
         step3["run2_ok_pages"] = len(ok_keys)
@@ -293,11 +293,11 @@ def test_live_s3_store_and_pipeline(tmp_path: Path) -> None:
         assert all(records2[k]["attempt"] == 2 for k in not_ok_keys)
 
         # A key the pipeline does not know, to show --restart removes the whole prefix.
-        store.write(f"work/{file_id}/stray/marker.txt", b"removed by --restart\n")
+        store.write(f"work/{work_id}/stray/marker.txt", b"removed by --restart\n")
         store.write(f"out/{file_id}/stray.txt", b"removed by --restart\n")
         step3["restart"] = _run_script(location, THREE_PAGE, "--restart")
-        records3 = _records(store, file_id)
-        step3["restart_stray_work_key_exists"] = store.exists(f"work/{file_id}/stray/marker.txt")
+        records3 = _records(store, work_id)
+        step3["restart_stray_work_key_exists"] = store.exists(f"work/{work_id}/stray/marker.txt")
         step3["restart_stray_out_key_exists"] = store.exists(f"out/{file_id}/stray.txt")
         step3["restart_attempts"] = {
             k.rpartition("/")[2]: records3[k]["attempt"] for k in sorted(records3)
@@ -312,11 +312,11 @@ def test_live_s3_store_and_pipeline(tmp_path: Path) -> None:
         assert not [k for k in step3["restart_keys"] if ".attempt-" in k]
 
         # ---- Step 4: the 107-page document -----------------------------------
-        large_id = file_id_for(LARGE)
-        step4: dict[str, Any] = {"file_id": large_id, "source_bytes": LARGE.stat().st_size}
+        large_id, large_work = file_id_for(LARGE), work_id_for(LARGE)
+        step4: dict[str, Any] = {"file_id": large_id, "work_id": large_work, "source_bytes": LARGE.stat().st_size}
         report["step4_107_pages"] = step4
         step4["run"] = _run_script(location, LARGE)
-        objects = _listing(client, f"{run_prefix}work/{large_id}/") + _listing(
+        objects = _listing(client, f"{run_prefix}work/{large_work}/") + _listing(
             client, f"{run_prefix}out/{large_id}/"
         )
         groups: dict[str, dict[str, int]] = {}
@@ -329,7 +329,7 @@ def test_live_s3_store_and_pipeline(tmp_path: Path) -> None:
             group = groups.setdefault(name, {"keys": 0, "bytes": 0})
             group["keys"] += 1
             group["bytes"] += obj["size"]
-        large_records = _records(store, large_id)
+        large_records = _records(store, large_work)
         step4["stored_keys"] = len(objects)
         step4["stored_bytes"] = sum(o["size"] for o in objects)
         step4["by_group"] = groups
@@ -345,12 +345,12 @@ def test_live_s3_store_and_pipeline(tmp_path: Path) -> None:
         # only the pages that are not ok.
         large_ok = sorted(k for k, r in large_records.items() if r["state"] == "ok")
         etags_before = {
-            o["key"]: o["etag"] for o in _listing(client, f"{run_prefix}work/{large_id}/results/")
+            o["key"]: o["etag"] for o in _listing(client, f"{run_prefix}work/{large_work}/results/")
         }
         step4["run2"] = _run_script(location, LARGE)
-        large_records2 = _records(store, large_id)
+        large_records2 = _records(store, large_work)
         etags_after = {
-            o["key"]: o["etag"] for o in _listing(client, f"{run_prefix}work/{large_id}/results/")
+            o["key"]: o["etag"] for o in _listing(client, f"{run_prefix}work/{large_work}/results/")
         }
         step4["run2_ok_pages_before"] = len(large_ok)
         step4["run2_ok_records_unchanged"] = all(

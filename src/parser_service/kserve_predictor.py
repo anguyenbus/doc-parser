@@ -6,8 +6,8 @@ store (``parse_pdf_pages_in_store(..., executor="kserve")`` does the split, the
 archive step, the status and the stitch):
 
     POST /v1/models/page-parser:predict
-    {"instances": [{"file_id": "...", "page": 7, "escalate": true, "max_attempts": 3}]}
-    -> {"predictions": [{"file_id": ..., "page": 7, "state": "ok", "attempt": 1, ...}]}
+    {"instances": [{"work_id": "<sha256>/<config hash>", "page": 7, "escalate": true, "max_attempts": 3}]}
+    -> {"predictions": [{"work_id": ..., "page": 7, "state": "ok", "attempt": 1, ...}]}
 
 The page's record is written to the store by this pod (first write wins), and the
 response only summarises it, so a repeated request is answered from the store.
@@ -19,7 +19,7 @@ response only summarises it, so a repeated request is answered from the store.
   never from a request, so a caller cannot make the service write elsewhere.
 - Readiness means the models are loaded: ``load()`` parses a bundled one-page PDF
   before the server reports the model ready.
-- A file split under another pipeline config (``PipelineConfigMismatch``) is
+- Work for another pipeline config (``PipelineConfigMismatch``) is
   refused with 409; a file or page the store does not have, with 400.
 
 Run (the container entrypoint):
@@ -32,6 +32,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 import threading
 from pathlib import Path
 from typing import Any
@@ -53,29 +54,33 @@ logger = logging.getLogger(__name__)
 
 WARMUP_PDF = Path(__file__).parent / "assets" / "warmup.pdf"
 _DEFAULT_GRACE_PERIOD = 170
+_WORK_ID_RE = re.compile(r"[0-9a-f]{64}/[0-9a-f]{12}")
 
 
 def parse_instance(payload: Any) -> tuple[str, int, bool, int]:
-    """``(file_id, page, escalate, max_attempts)`` from a V1 request, or ``InvalidInput``."""
+    """``(work_id, page, escalate, max_attempts)`` from a V1 request, or ``InvalidInput``.
+
+    The work id is ``<source sha256>/<config hash>`` (``work/<work id>/`` in the store).
+    """
     instances = payload.get("instances") if isinstance(payload, dict) else None
     if not isinstance(instances, list) or len(instances) != 1:
         raise InvalidInput('expected {"instances": [one page]}')
     instance = instances[0]
     if not isinstance(instance, dict):
         raise InvalidInput("the instance must be an object")
-    file_id = instance.get("file_id")
+    work_id = instance.get("work_id")
     page = instance.get("page")
     escalate = instance.get("escalate", True)
     max_attempts = instance.get("max_attempts")
-    if not isinstance(file_id, str) or not file_id or "/" in file_id or file_id.startswith("."):
-        raise InvalidInput(f"file_id must be a file id, got {file_id!r}")
+    if not isinstance(work_id, str) or not _WORK_ID_RE.fullmatch(work_id):
+        raise InvalidInput(f"work_id must be <sha256>/<config hash>, got {work_id!r}")
     if isinstance(page, bool) or not isinstance(page, int) or page < 1:
         raise InvalidInput(f"page must be a positive integer, got {page!r}")
     if not isinstance(escalate, bool):
         raise InvalidInput(f"escalate must be true or false, got {escalate!r}")
     if isinstance(max_attempts, bool) or not isinstance(max_attempts, int) or max_attempts < 1:
         raise InvalidInput(f"max_attempts must be a positive integer, got {max_attempts!r}")
-    return file_id, page, escalate, max_attempts
+    return work_id, page, escalate, max_attempts
 
 
 class PageParserModel(Model):  # type: ignore[misc]
@@ -100,12 +105,12 @@ class PageParserModel(Model):  # type: ignore[misc]
         headers: dict[str, str] | None = None,
         response_headers: dict[str, str] | None = None,
     ) -> dict[str, Any]:
-        file_id, page, escalate, max_attempts = parse_instance(payload)
+        work_id, page, escalate, max_attempts = parse_instance(payload)
         if not self._slot.acquire(blocking=False):
             raise HTTPException(status_code=429, detail="busy: this pod parses one page at a time")
         try:
             summary = await asyncio.to_thread(
-                process_page_request, self._store, file_id, page, escalate, max_attempts
+                process_page_request, self._store, work_id, page, escalate, max_attempts
             )
         except PipelineConfigMismatch as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc

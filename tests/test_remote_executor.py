@@ -32,10 +32,12 @@ from parser_service.page_pipeline import (
     kserve_predict_url,
     parse_pdf_pages_in_store,
     process_page_request,
+    work_id_for,
 )
 from parser_service.store import LocalStore
 
 FILE_ID = file_id_for(THREE_PAGE)
+WORK_ID = work_id_for(THREE_PAGE)
 
 # What the scripted server does with one request: serve it like the predictor,
 # answer with a status code, or count an attempt and drop the connection (a pod
@@ -55,6 +57,9 @@ class PageService:
         self.client_ports: list[int] = []
         self.connection_headers: list[str | None] = []
         self._lock = threading.Lock()
+        # One page parsed at a time, as on a real pod: the server answers on many
+        # threads, and pdfium (the blank-page probe) is not thread-safe.
+        self._parse_lock = threading.Lock()
 
     def handle(self, handler: BaseHTTPRequestHandler) -> None:
         length = int(handler.headers.get("Content-Length", 0))
@@ -67,8 +72,8 @@ class PageService:
             nth = sum(1 for r in self.requests if r["page"] == page)
         action = self.behaviour(page, nth)
         if action == CRASH:
-            attempts = page_pipeline._attempts_key(instance["file_id"], page)
-            current = page_pipeline._read_attempts(self.store, instance["file_id"], page)
+            attempts = page_pipeline._attempts_key(instance["work_id"], page)
+            current = page_pipeline._read_attempts(self.store, instance["work_id"], page)
             self.store.write(attempts, str(current + 1).encode())
             handler.close_connection = True
             handler.connection.shutdown(2)
@@ -77,9 +82,10 @@ class PageService:
             self._reply(handler, action, {"error": f"scripted {action}"})
             return
         try:
-            summary = process_page_request(
-                self.store, instance["file_id"], page, instance["escalate"], instance["max_attempts"]
-            )
+            with self._parse_lock:
+                summary = process_page_request(
+                    self.store, instance["work_id"], page, instance["escalate"], instance["max_attempts"]
+                )
         except PipelineConfigMismatch as exc:
             self._reply(handler, 409, {"error": str(exc)})
             return
@@ -167,9 +173,9 @@ def test_a_busy_refusal_costs_no_attempt(tmp_path: Path, fake_parse: list[int]) 
         result = _remote(tmp_path, endpoint, max_attempts=1)
 
     assert result["state"] == "complete"
-    record = json.loads((tmp_path / f"work/{FILE_ID}/results/0002.json").read_text())
+    record = json.loads((tmp_path / f"work/{WORK_ID}/results/0002.json").read_text())
     assert record["attempt"] == 1
-    assert (tmp_path / f"work/{FILE_ID}/attempts/0002").read_text() == "1"
+    assert (tmp_path / f"work/{WORK_ID}/attempts/0002").read_text() == "1"
 
 
 def test_a_page_whose_pod_died_is_sent_again(tmp_path: Path, fake_parse: list[int]) -> None:
@@ -180,7 +186,7 @@ def test_a_page_whose_pod_died_is_sent_again(tmp_path: Path, fake_parse: list[in
         result = _remote(tmp_path, endpoint, max_attempts=3)
 
     assert result["state"] == "complete"
-    record = json.loads((tmp_path / f"work/{FILE_ID}/results/0003.json").read_text())
+    record = json.loads((tmp_path / f"work/{WORK_ID}/results/0003.json").read_text())
     assert record["attempt"] == 2
 
 
@@ -241,14 +247,14 @@ def test_kserve_needs_an_endpoint(tmp_path: Path) -> None:
 
 def _split(tmp_path: Path) -> LocalStore:
     store = LocalStore(tmp_path)
-    page_pipeline._split(store, FILE_ID, THREE_PAGE)
+    page_pipeline._split(store, WORK_ID, THREE_PAGE)
     return store
 
 
 def test_page_request_is_idempotent(tmp_path: Path, fake_parse: list[int]) -> None:
     store = _split(tmp_path)
-    first = process_page_request(store, FILE_ID, 2, True, 3)
-    second = process_page_request(store, FILE_ID, 2, True, 3)
+    first = process_page_request(store, WORK_ID, 2, True, 3)
+    second = process_page_request(store, WORK_ID, 2, True, 3)
 
     assert first == second
     assert first["state"] == "ok" and first["page"] == 2 and first["attempt"] == 1
@@ -259,10 +265,10 @@ def test_page_request_is_idempotent(tmp_path: Path, fake_parse: list[int]) -> No
 def test_page_request_refuses_an_unknown_file_or_page(tmp_path: Path, fake_parse: list[int]) -> None:
     store = LocalStore(tmp_path)
     with pytest.raises(ValueError, match="no manifest"):
-        process_page_request(store, FILE_ID, 1, True, 3)
-    page_pipeline._split(store, FILE_ID, THREE_PAGE)
+        process_page_request(store, WORK_ID, 1, True, 3)
+    page_pipeline._split(store, WORK_ID, THREE_PAGE)
     with pytest.raises(ValueError, match="not page 4"):
-        process_page_request(store, FILE_ID, 4, True, 3)
+        process_page_request(store, WORK_ID, 4, True, 3)
     assert fake_parse == []
 
 
@@ -272,5 +278,5 @@ def test_page_request_refuses_another_pipeline_config(
     store = _split(tmp_path)
     monkeypatch.setenv("PARSER_ESCALATION_ENGINE", "textract")
     with pytest.raises(PipelineConfigMismatch):
-        process_page_request(store, FILE_ID, 1, True, 3)
+        process_page_request(store, WORK_ID, 1, True, 3)
     assert fake_parse == []

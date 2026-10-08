@@ -15,11 +15,23 @@ Usage:
     uv run python scripts/parse_pages.py --input-list <list.txt | s3://bucket/list.txt> \
         [--index N]   # default: $JOB_COMPLETION_INDEX
 
+    # One document of an inbox job (job.json; see parser_service/jobs.py), published:
+    uv run python scripts/parse_pages.py --job s3://bucket/parser/inbox/<system>/<job>/job.json \
+        [--index N] [--publish-partial]
+
+    # Publish a single file under a doc id (default: the file name, slugified):
+    uv run python scripts/parse_pages.py --input report.pdf --publish [--doc-id annual-report-2025]
+
 Everything is kept under one store location: PARSER_STORE_LOCATION (a local
 directory or s3://bucket[/prefix]), or --work-dir, which overrides it. Under it:
 
-    work/<file id>/   source.pdf, the one-page files, attempts and page results
-    out/<file id>/    status.json, and output.md + output.json when complete
+    work/<sha256>/<config hash>/   source.pdf, the one-page files, attempts and page
+                                   results (keyed by content and config: the same
+                                   bytes under any name share them)
+    out/<file id>/                 output.md + output.json when complete; status.json
+    published/v1/                  with --job or --publish: the versioned hand-off
+                                   (see parser_service/publish.py)
+    ops/jobs/<job id>/             with --job: per-document outcomes and the job status
 
 Pages are parsed by worker processes here (--executor local, the default) or by
 the page service (--executor kserve): each page is POSTed to the KServe
@@ -38,9 +50,13 @@ AWS setting at all.
 Re-running the same command resumes: pages already ok are skipped and the rest
 are retried until the attempt limit (PARSER_PAGE_MAX_ATTEMPTS, default 3).
 
-Exit codes: 0 every page ok and the document was stitched; 2 the file is not
-complete (see out/<file id>/status.json; its location is printed); 1 the input or
-the settings could not be used.
+With --job, a document whose action is "delete" publishes a deleted event and
+parses nothing. An incomplete document publishes a failed event, or a partial
+version with --publish-partial.
+
+Exit codes: 0 every page ok and the document was stitched (or deleted); 2 the
+file is not complete (see out/<file id>/status.json; its location is printed); 1
+the input or the settings could not be used.
 """
 
 from __future__ import annotations
@@ -62,12 +78,23 @@ logging.basicConfig(
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
 from parser_service import io_layer  # noqa: E402
+from parser_service.jobs import (  # noqa: E402
+    ACTION_DELETE,
+    DOC_DELETED,
+    Job,
+    JobDoc,
+    parse_job,
+    rebuild_job_status,
+    record_doc,
+    resolve_file,
+)
 from parser_service.page_pipeline import (  # noqa: E402
     FILE_COMPLETE,
     PipelineConfigMismatch,
     RemotePageError,
     parse_pdf_pages_in_store,
 )
+from parser_service.publish import PublishRequest, publish_deletion, slugify  # noqa: E402
 from parser_service.settings import SettingsError, load_settings  # noqa: E402
 from parser_service.store import open_store  # noqa: E402
 
@@ -100,19 +127,37 @@ def _fetch_s3_input(uri: str, region: str | None, directory: Path) -> Path:
     return target
 
 
+def _index(index: int | None, flag: str) -> int:
+    if index is not None:
+        return index
+    raw = os.environ.get("JOB_COMPLETION_INDEX")
+    if raw is None:
+        raise ValueError(f"{flag} needs --index or JOB_COMPLETION_INDEX")
+    return int(raw)
+
+
+def _read_text(uri: str, region: str | None) -> str:
+    """A small text file from a path or an s3:// URI."""
+    if uri.startswith("s3://"):
+        bucket, key = io_layer.parse_s3_uri(uri)
+        body = io_layer.s3_client(region).get_object(Bucket=bucket, Key=key)["Body"].read()
+        return body.decode("utf-8")
+    return Path(uri).read_text(encoding="utf-8")
+
+
+def _pick_from_job(job_uri: str, index: int | None, region: str | None) -> tuple[Job, JobDoc]:
+    """The job at ``job_uri`` and its ``index``-th document."""
+    index = _index(index, "--job")
+    job = parse_job(_read_text(job_uri, region), job_uri)
+    if not 0 <= index < len(job.docs):
+        raise ValueError(f"index {index} is outside {job_uri}, which lists {len(job.docs)} documents")
+    return job, job.docs[index]
+
+
 def _pick_from_list(list_uri: str, index: int | None, region: str | None) -> str:
     """The ``index``-th PDF named in the list at ``list_uri`` (a path or s3:// URI)."""
-    if index is None:
-        raw = os.environ.get("JOB_COMPLETION_INDEX")
-        if raw is None:
-            raise ValueError("--input-list needs --index or JOB_COMPLETION_INDEX")
-        index = int(raw)
-    if list_uri.startswith("s3://"):
-        bucket, key = io_layer.parse_s3_uri(list_uri)
-        body = io_layer.s3_client(region).get_object(Bucket=bucket, Key=key)["Body"].read()
-        text = body.decode("utf-8")
-    else:
-        text = Path(list_uri).read_text(encoding="utf-8")
+    index = _index(index, "--input-list")
+    text = _read_text(list_uri, region)
     inputs = [line.strip() for line in text.splitlines()]
     inputs = [line for line in inputs if line and not line.startswith("#")]
     if not 0 <= index < len(inputs):
@@ -127,11 +172,30 @@ def main() -> None:
     which.add_argument(
         "--input-list", help="A list of PDFs, one per line (a path or s3:// URI); see --index."
     )
+    which.add_argument(
+        "--job", help="An inbox job.json (a path or s3:// URI); see --index. Always publishes."
+    )
     parser.add_argument(
         "--index",
         type=int,
         default=None,
-        help="Which PDF of --input-list (0-based; default $JOB_COMPLETION_INDEX).",
+        help="Which PDF of --input-list or document of --job (0-based; default "
+        "$JOB_COMPLETION_INDEX).",
+    )
+    parser.add_argument(
+        "--publish",
+        action="store_true",
+        help="Publish the result to published/v1/ under --doc-id (implied by --job).",
+    )
+    parser.add_argument(
+        "--doc-id",
+        default=None,
+        help="The document id to publish under (default: the file name, slugified).",
+    )
+    parser.add_argument(
+        "--publish-partial",
+        action="store_true",
+        help="Publish an incomplete document as a partial version instead of a failed event.",
     )
     parser.add_argument(
         "--work-dir",
@@ -184,7 +248,9 @@ def main() -> None:
         "(default PARSER_KSERVE_CONCURRENCY, else --workers).",
     )
     args = parser.parse_args()
-    list_is_s3 = bool(args.input_list and args.input_list.startswith("s3://"))
+    list_is_s3 = any(u and u.startswith("s3://") for u in (args.input_list, args.job))
+    job: Job | None = None
+    doc: JobDoc | None = None
 
     try:
         settings = load_settings(
@@ -194,20 +260,39 @@ def main() -> None:
             executor=args.executor,
             kserve_url=args.endpoint,
         )
-        if args.input_list:
+        if args.job:
+            job, doc = _pick_from_job(args.job, args.index, settings.aws_region)
+            print(f"job: {job.job_id}, document: {doc.doc_id} ({doc.action})", file=sys.stderr)
+            if doc.action != ACTION_DELETE:
+                args.input = resolve_file(job, doc)
+        elif args.input_list:
             args.input = _pick_from_list(args.input_list, args.index, settings.aws_region)
+        if args.input and (args.job or args.input_list):
             print(f"input: {args.input}", file=sys.stderr)
             if args.input.startswith("s3://") and settings.aws_region is None:
                 raise SettingsError(["AWS_REGION is required (the input is s3://)"])
+        publish = None
+        if job is not None and doc is not None:
+            publish = PublishRequest(doc.doc_id, job.job_id, doc.metadata, args.publish_partial)
+        elif args.publish or args.doc_id:
+            doc_id = args.doc_id or slugify(Path(args.input).stem)
+            publish = PublishRequest(doc_id, None, {}, args.publish_partial)
     except (SettingsError, ValueError, OSError) as exc:
         print(f"Error: {exc}", file=sys.stderr)
         sys.exit(1)
-    input_is_s3 = args.input.startswith("s3://")
 
     location = settings.store_location
     if settings.store_kind == "local":
         location = str(Path(location).resolve())
     store = open_store(location, region=settings.aws_region)
+
+    if job is not None and doc is not None and doc.action == ACTION_DELETE:
+        key = publish_deletion(store, doc.doc_id, job.job_id)
+        record_doc(store, job, doc, {"state": DOC_DELETED, "event": store.location(key)})
+        rebuild_job_status(store, job)
+        print(f"DELETED: {doc.doc_id} — event {store.location(key)}", file=sys.stderr)
+        return
+    input_is_s3 = args.input.startswith("s3://")
 
     try:
         with contextlib.ExitStack() as stack:
@@ -230,10 +315,39 @@ def main() -> None:
                 executor=settings.executor,
                 endpoint=settings.kserve_url,
                 concurrency=args.concurrency or settings.kserve_concurrency,
+                publish=publish,
             )
     except (FileNotFoundError, ValueError, PipelineConfigMismatch, RemotePageError) as exc:
+        if job is not None and doc is not None:
+            record_doc(store, job, doc, {"state": "error", "error": str(exc)})
+            rebuild_job_status(store, job)
         print(f"Error: {exc}", file=sys.stderr)
         sys.exit(1)
+
+    published = result.get("published")
+    if job is not None and doc is not None:
+        counts = result["counts"]
+        record_doc(
+            store,
+            job,
+            doc,
+            {
+                "state": result["state"],
+                "file_id": result["file_id"],
+                "work_id": result["work_id"],
+                "page_count": result["page_count"],
+                "ok_pages": counts["ok"],
+                "not_ok_pages": [
+                    {"page": p["page"], "state": p["state"], "reason": p["reason"]}
+                    for p in result["not_ok_pages"]
+                ],
+                "published": published["type"] if published else None,
+                "version": published["version"] if published else None,
+                "status": result["status_path"],
+            },
+        )
+        job_status = rebuild_job_status(store, job)
+        print(f"job status: {job_status['state']} ({job_status['docs_by_state']})", file=sys.stderr)
 
     counts = result["counts"]
     print(
@@ -244,6 +358,9 @@ def main() -> None:
     )
     print(f"work dir: {result['work_dir']}", file=sys.stderr)
     print(f"status: {result['status_path']}", file=sys.stderr)
+    if published and published["type"]:
+        where = published["manifest_key"] or published["event_key"]
+        print(f"published: {published['type']} {published['version']} — {store.location(where)}", file=sys.stderr)
 
     if result["state"] != FILE_COMPLETE:
         for page in result["not_ok_pages"]:

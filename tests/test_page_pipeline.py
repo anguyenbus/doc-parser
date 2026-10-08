@@ -24,7 +24,6 @@ import pytest
 
 from parser_service import page_pipeline
 from parser_service.page_pipeline import (
-    PipelineConfigMismatch,
     classify_page_result,
     parse_pdf_pages,
     split_pdf,
@@ -114,13 +113,13 @@ def test_degraded_page_fails_the_file_and_writes_no_output(
     _install_fake(monkeypatch, by_page)
 
     result = parse_pdf_pages(THREE_PAGE, tmp_path, workers=0, partial=True)
-    work_dir = Path(result["work_dir"])
+    out_dir = Path(result["out_dir"])
 
     assert result["state"] == "failed"
     assert result["output_path"] is None
-    assert not (work_dir.parents[1] / "out" / work_dir.name / "output.md").exists()
+    assert not (out_dir / "output.md").exists()
     assert [(p["page"], p["state"]) for p in result["not_ok_pages"]] == [(2, "degraded")]
-    status = json.loads((work_dir.parents[1] / "out" / work_dir.name / "status.json").read_text())
+    status = json.loads((out_dir / "status.json").read_text())
     assert status["state"] == "failed"
 
     partial = Path(result["partial_path"]).read_text()
@@ -191,17 +190,23 @@ def test_page_with_no_result_after_all_attempts_is_failed(
     assert result["not_ok_pages"][0]["reason"].startswith("no_result_after_3_attempts")
 
 
-def test_changed_config_is_refused_until_restart(
+def test_changed_config_parses_into_its_own_work_dir(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    _install_fake(monkeypatch, lambda n: _result(f"p{n}"))
+    calls = _install_fake(monkeypatch, lambda n: _result(f"p{n}"))
     monkeypatch.setenv("PARSER_ESCALATION_ENGINE", "vlm")
-    parse_pdf_pages(THREE_PAGE, tmp_path, workers=0)
+    first = parse_pdf_pages(THREE_PAGE, tmp_path, workers=0)
 
     monkeypatch.setenv("PARSER_ESCALATION_ENGINE", "textract")
-    with pytest.raises(PipelineConfigMismatch):
-        parse_pdf_pages(THREE_PAGE, tmp_path, workers=0)
-    assert parse_pdf_pages(THREE_PAGE, tmp_path, workers=0, restart=True)["state"] == "complete"
+    second = parse_pdf_pages(THREE_PAGE, tmp_path, workers=0)
+
+    assert first["state"] == second["state"] == "complete"
+    assert sorted(calls) == [1, 1, 2, 2, 3, 3]  # nothing reused across configs
+    sha, _, config_a = first["work_id"].partition("/")
+    assert second["work_id"] == f"{sha}/{second['work_id'].rpartition('/')[2]}"
+    assert second["work_id"].rpartition("/")[2] != config_a
+    manifest = json.loads((tmp_path / "work" / first["work_id"] / "manifest.json").read_text())
+    assert manifest["config"]["escalation_engine"] == "vlm"  # the old work is untouched
 
 
 def test_blank_page_is_ok_without_parsing(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

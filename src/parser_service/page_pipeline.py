@@ -30,20 +30,27 @@ runs again. The attempt counter is written BEFORE each try, so a page that kills
 its worker (no exception, no record) still becomes ``failed`` once the limit is
 reached.
 
-Keys under the store location (file id = ``<stem>-<sha256[:16]>``). ``work/`` is
-the part a lifecycle rule may expire; ``out/`` is self-contained:
+Keys under the store location. ``work/`` is keyed by content and config (work id
+= ``<source sha256>/<config hash>``), so the same bytes under any name are split
+and parsed once per config, and a new config never mixes with an old one;
+``out/`` is keyed by the named file (file id = ``<stem>-<sha256[:16]>``), so each
+name gets its own status and output. ``work/`` is the part a lifecycle rule may
+expire; ``out/`` is self-contained. ``published/`` (``publish.py``) is the
+versioned hand-off to consumers:
 
-    work/<file id>/source.pdf                    copy of the original; written first
-    work/<file id>/pages/0001.pdf …              the one-page files (1-based)
-    work/<file id>/manifest.json                 written last by the split
-    work/<file id>/attempts/0001 …               attempt counter, written before each try
-    work/<file id>/results/0001.json             the page's record; exists = page finished
-    work/<file id>/results/0001.md               readable copy of the page's markdown
-    work/<file id>/results/0001.attempt-1.json   an archived non-ok record
-    out/<file id>/status.json                    summary rebuilt from the records
+    work/<work id>/source.pdf                    copy of the original; written first
+    work/<work id>/pages/0001.pdf …              the one-page files (1-based)
+    work/<work id>/manifest.json                 written last by the split
+    work/<work id>/attempts/0001 …               attempt counter, written before each try
+    work/<work id>/results/0001.json             the page's record; exists = page finished
+    work/<work id>/results/0001.md               readable copy of the page's markdown
+    work/<work id>/results/0001.attempt-1.json   an archived non-ok record
     out/<file id>/output.md                      only when every page is ok
     out/<file id>/output.json                    metadata for output.md
     out/<file id>/output.partial.md, .json       only on request, when not complete
+    out/<file id>/status.json                    summary rebuilt from the records; written
+                                                 LAST, after the outputs it reports
+    published/v1/...                             on request: see ``publish.py``
 
 PDF only: office, HTML and image inputs have no page split and stay on
 ``parse_to_markdown``.
@@ -74,6 +81,7 @@ from typing import Any
 
 from parser_service.markdown_pipeline import enable_converter_reuse, parse_to_markdown
 from parser_service.parser_service import PARSER_VERSION, _sha256_file
+from parser_service.publish import PublishRequest, publish_document
 from parser_service.render import render_page, text_layer_tokens
 from parser_service.route_stats import (
     ROUTE_DOCLING_KEPT,
@@ -152,6 +160,17 @@ def pipeline_config() -> dict[str, Any]:
     }
 
 
+def config_hash(config: dict[str, Any] | None = None) -> str:
+    """12 hex digits naming a pipeline config: the second level of ``work/``.
+
+    A change of model, engine or parser version gets a new hash, so its pages are
+    parsed into their own directory instead of mixing with (or being refused by)
+    the old ones.
+    """
+    canonical = json.dumps(pipeline_config() if config is None else config, sort_keys=True)
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:12]
+
+
 def strip_page_markers(markdown: str) -> str:
     """Remove the ``==== page N ===`` lines (evaluation gold has no markers)."""
     return _PAGE_MARKER_RE.sub("", markdown)
@@ -166,9 +185,9 @@ def _name(page_number: int) -> str:
     return f"{page_number:04d}"
 
 
-def _work_prefix(file_id: str) -> str:
+def _work_prefix(work_id: str) -> str:
     """Intermediates: the part of a file an S3 lifecycle rule may expire."""
-    return f"work/{file_id}"
+    return f"work/{work_id}"
 
 
 def _out_prefix(file_id: str) -> str:
@@ -176,36 +195,36 @@ def _out_prefix(file_id: str) -> str:
     return f"out/{file_id}"
 
 
-def _manifest_key(file_id: str) -> str:
-    return f"{_work_prefix(file_id)}/manifest.json"
+def _manifest_key(work_id: str) -> str:
+    return f"{_work_prefix(work_id)}/manifest.json"
 
 
-def _source_key(file_id: str) -> str:
-    return f"{_work_prefix(file_id)}/source.pdf"
+def _source_key(work_id: str) -> str:
+    return f"{_work_prefix(work_id)}/source.pdf"
 
 
-def _pages_prefix(file_id: str) -> str:
-    return f"{_work_prefix(file_id)}/pages/"
+def _pages_prefix(work_id: str) -> str:
+    return f"{_work_prefix(work_id)}/pages/"
 
 
-def _page_pdf_key(file_id: str, page_number: int) -> str:
-    return f"{_work_prefix(file_id)}/pages/{_name(page_number)}.pdf"
+def _page_pdf_key(work_id: str, page_number: int) -> str:
+    return f"{_work_prefix(work_id)}/pages/{_name(page_number)}.pdf"
 
 
-def _record_key(file_id: str, page_number: int) -> str:
-    return f"{_work_prefix(file_id)}/results/{_name(page_number)}.json"
+def _record_key(work_id: str, page_number: int) -> str:
+    return f"{_work_prefix(work_id)}/results/{_name(page_number)}.json"
 
 
-def _markdown_key(file_id: str, page_number: int) -> str:
-    return f"{_work_prefix(file_id)}/results/{_name(page_number)}.md"
+def _markdown_key(work_id: str, page_number: int) -> str:
+    return f"{_work_prefix(work_id)}/results/{_name(page_number)}.md"
 
 
-def _archive_prefix(file_id: str, page_number: int) -> str:
-    return f"{_work_prefix(file_id)}/results/{_name(page_number)}.attempt-"
+def _archive_prefix(work_id: str, page_number: int) -> str:
+    return f"{_work_prefix(work_id)}/results/{_name(page_number)}.attempt-"
 
 
-def _archive_key(file_id: str, page_number: int, k: int) -> str:
-    return f"{_archive_prefix(file_id, page_number)}{k}.json"
+def _archive_key(work_id: str, page_number: int, k: int) -> str:
+    return f"{_archive_prefix(work_id, page_number)}{k}.json"
 
 
 def _archive_number(key: str, page_number: int) -> int | None:
@@ -214,8 +233,8 @@ def _archive_number(key: str, page_number: int) -> int | None:
     return int(match.group(1)) if match else None
 
 
-def _attempts_key(file_id: str, page_number: int) -> str:
-    return f"{_work_prefix(file_id)}/attempts/{_name(page_number)}"
+def _attempts_key(work_id: str, page_number: int) -> str:
+    return f"{_work_prefix(work_id)}/attempts/{_name(page_number)}"
 
 
 def _status_key(file_id: str) -> str:
@@ -246,20 +265,20 @@ def _read_json(store: Store, key: str) -> Any:
         return None
 
 
-def _read_attempts(store: Store, file_id: str, page_number: int) -> int:
+def _read_attempts(store: Store, work_id: str, page_number: int) -> int:
     try:
-        return int(store.read(_attempts_key(file_id, page_number)).decode("utf-8").strip())
+        return int(store.read(_attempts_key(work_id, page_number)).decode("utf-8").strip())
     except (StoreNotFoundError, ValueError):
         return 0
 
 
-def _load_record(store: Store, file_id: str, page_number: int) -> dict[str, Any] | None:
-    record = _read_json(store, _record_key(file_id, page_number))
+def _load_record(store: Store, work_id: str, page_number: int) -> dict[str, Any] | None:
+    record = _read_json(store, _record_key(work_id, page_number))
     return record if isinstance(record, dict) else None
 
 
 def _read_record(
-    store: Store, file_id: str, page_number: int
+    store: Store, work_id: str, page_number: int
 ) -> tuple[bytes, dict[str, Any]] | None:
     """The page's record as stored bytes and parsed dict, or None when it has none.
 
@@ -267,7 +286,7 @@ def _read_record(
     it raises ``PageRecordError``, before any work is spent on a page whose result
     could never be written over it.
     """
-    key = _record_key(file_id, page_number)
+    key = _record_key(work_id, page_number)
     try:
         data = store.read(key)
     except StoreNotFoundError:
@@ -284,32 +303,50 @@ def _read_record(
     return data, record
 
 
-def _load_record_checked(store: Store, file_id: str, page_number: int) -> dict[str, Any] | None:
+def _load_record_checked(store: Store, work_id: str, page_number: int) -> dict[str, Any] | None:
     """``_read_record`` without the bytes: the record, None, or ``PageRecordError``."""
-    found = _read_record(store, file_id, page_number)
+    found = _read_record(store, work_id, page_number)
     return found[1] if found is not None else None
 
 
+def _file_id(stem: str, sha256: str) -> str:
+    return f"{stem}-{sha256[:16]}"
+
+
+def _work_id(sha256: str, config: str) -> str:
+    return f"{sha256}/{config}"
+
+
+def work_id_for(source: Path) -> str:
+    """The id of a source's work in the store: ``<sha256>/<config hash>``.
+
+    Keyed by content and config, never by name: the same bytes under any name are
+    split and parsed once per config; each name still gets its own
+    ``out/<file id>/``.
+    """
+    return _work_id(_sha256_file(source), config_hash())
+
+
 def file_id_for(source: Path) -> str:
-    """The id of a source file in the store: ``<stem>-<sha256[:16]>``."""
-    return f"{source.stem}-{_sha256_file(source)[:16]}"
+    """The id of a named source file's output in the store: ``<stem>-<sha256[:16]>``."""
+    return _file_id(source.stem, _sha256_file(source))
 
 
 def work_dir_for(source: Path, work_root: Path) -> Path:
-    """The work directory for a source file: ``work/<stem>-<sha256[:16]>`` under the root."""
-    return Path(work_root) / _work_prefix(file_id_for(source))
+    """The work directory for a source file: ``work/<sha256>/<config hash>`` under the root."""
+    return Path(work_root) / _work_prefix(work_id_for(source))
 
 
 def _local_store_for(work_dir: Path) -> tuple[LocalStore, str]:
-    """The local store and file id that ``work_dir_for`` built ``work_dir`` from."""
-    file_id = work_dir.name
-    root = work_dir.parent.parent
-    if work_dir != root / _work_prefix(file_id):
+    """The local store and work id that ``work_dir_for`` built ``work_dir`` from."""
+    work_id = f"{work_dir.parent.name}/{work_dir.name}"
+    root = work_dir.parents[2] if len(work_dir.parents) > 2 else work_dir.parent
+    if work_dir != root / _work_prefix(work_id):
         raise ValueError(
-            f"{work_dir} is not a work directory: expected <work_root>/{_work_prefix(file_id)} "
+            f"{work_dir} is not a work directory: expected <work_root>/{_work_prefix(work_id)} "
             "(see work_dir_for)"
         )
-    return LocalStore(root), file_id
+    return LocalStore(root), work_id
 
 
 # ---------------------------------------------------------------------------
@@ -333,7 +370,7 @@ def _page_bytes(reader: Any, page_number: int) -> bytes:
     return buf.getvalue()
 
 
-def _restore_expired(store: Store, file_id: str, source: Path, page_count: int) -> None:
+def _restore_expired(store: Store, work_id: str, source: Path, page_count: int) -> None:
     """Re-create page files (and ``source.pdf``) that are gone though the manifest is not.
 
     An S3 lifecycle rule expires objects one by one, by age, and the page files are
@@ -342,19 +379,19 @@ def _restore_expired(store: Store, file_id: str, source: Path, page_count: int) 
     """
     from pypdf import PdfReader
 
-    if not store.exists(_source_key(file_id)):
-        store.write(_source_key(file_id), _read_source(source))
-    present = set(store.list_keys(_pages_prefix(file_id)))
-    missing = [n for n in range(1, page_count + 1) if _page_pdf_key(file_id, n) not in present]
+    if not store.exists(_source_key(work_id)):
+        store.write(_source_key(work_id), _read_source(source))
+    present = set(store.list_keys(_pages_prefix(work_id)))
+    missing = [n for n in range(1, page_count + 1) if _page_pdf_key(work_id, n) not in present]
     if not missing:
         return
     logger.info("%s: re-creating %d missing page file(s): %s", source.name, len(missing), missing)
     reader = PdfReader(str(source))
     for page_number in missing:
-        store.write(_page_pdf_key(file_id, page_number), _page_bytes(reader, page_number))
+        store.write(_page_pdf_key(work_id, page_number), _page_bytes(reader, page_number))
 
 
-def _split(store: Store, file_id: str, source: Path) -> dict[str, Any]:
+def _split(store: Store, work_id: str, source: Path) -> dict[str, Any]:
     """Split ``source`` into one-page PDFs in the store and return the manifest.
 
     Order of writes: ``source.pdf`` (a copy of the original), the page files, then
@@ -367,15 +404,15 @@ def _split(store: Store, file_id: str, source: Path) -> dict[str, Any]:
     from pypdf import PdfReader  # local import; only needed for PDFs
 
     config = pipeline_config()
-    existing = _read_json(store, _manifest_key(file_id))
+    existing = _read_json(store, _manifest_key(work_id))
     if isinstance(existing, dict):
         if existing.get("config") != config:
             raise PipelineConfigMismatch(
-                f"{store.location(_work_prefix(file_id))} was started with config "
+                f"{store.location(_work_prefix(work_id))} was started with config "
                 f"{existing.get('config')} but the current config is {config}; finish it "
                 "under the original settings or restart it"
             )
-        _restore_expired(store, file_id, source, int(existing["page_count"]))
+        _restore_expired(store, work_id, source, int(existing["page_count"]))
         return existing
 
     reader = PdfReader(str(source))
@@ -385,9 +422,9 @@ def _split(store: Store, file_id: str, source: Path) -> dict[str, Any]:
     if page_count == 0:
         raise ValueError(f"{source.name} has no pages")
 
-    store.write(_source_key(file_id), _read_source(source))
+    store.write(_source_key(work_id), _read_source(source))
     for page_number in range(1, page_count + 1):
-        store.write(_page_pdf_key(file_id, page_number), _page_bytes(reader, page_number))
+        store.write(_page_pdf_key(work_id, page_number), _page_bytes(reader, page_number))
 
     manifest = {
         "source_name": source.name,
@@ -396,7 +433,7 @@ def _split(store: Store, file_id: str, source: Path) -> dict[str, Any]:
         "config": config,
         "created_at": datetime.now(tz=UTC).isoformat(),
     }
-    _put_json(store, _manifest_key(file_id), manifest)
+    _put_json(store, _manifest_key(work_id), manifest)
     return manifest
 
 
@@ -406,8 +443,8 @@ def split_pdf(source: Path, work_dir: Path) -> dict[str, Any]:
     A thin wrapper over a local store, for callers that hold a directory:
     ``work_dir`` must be the directory ``work_dir_for`` returns. See ``_split``.
     """
-    store, file_id = _local_store_for(Path(work_dir))
-    manifest = _split(store, file_id, Path(source))
+    store, work_id = _local_store_for(Path(work_dir))
+    manifest = _split(store, work_id, Path(source))
     # The one direct directory write: callers may put files here by hand afterwards.
     for sub in ("pages", "attempts", "results"):
         (Path(work_dir) / sub).mkdir(parents=True, exist_ok=True)
@@ -473,7 +510,7 @@ def classify_page_result(result: dict[str, Any]) -> tuple[str, str | None]:
 
 def _write_record(
     store: Store,
-    file_id: str,
+    work_id: str,
     page_number: int,
     state: str,
     reason: str | None,
@@ -488,7 +525,7 @@ def _write_record(
     record back and its own result is discarded, so one run's markdown is never
     left beside another run's record.
     """
-    markdown_key = _markdown_key(file_id, page_number)
+    markdown_key = _markdown_key(work_id, page_number)
     record: dict[str, Any] = {
         "page": page_number,
         "state": state,
@@ -505,16 +542,16 @@ def _write_record(
     }
     if extra:
         record.update(extra)
-    if store.write_if_absent(_record_key(file_id, page_number), _json_bytes(record)):
+    if store.write_if_absent(_record_key(work_id, page_number), _json_bytes(record)):
         _put_text(store, markdown_key, markdown)
         return record
-    stored = _load_record(store, file_id, page_number)
+    stored = _load_record(store, work_id, page_number)
     if stored is None:
         # The one place an unparseable record is not read as "no record": the
         # write was refused because of it, so it cannot be treated as absent.
         raise PageRecordError(
             f"page {page_number}: a result already exists at "
-            f"{store.location(_record_key(file_id, page_number))} but cannot be read as a record"
+            f"{store.location(_record_key(work_id, page_number))} but cannot be read as a record"
         )
     return stored
 
@@ -550,7 +587,7 @@ def _parse_page(
 
 
 def _process_page(
-    store: Store, file_id: str, page_number: int, escalate: bool, max_attempts: int
+    store: Store, work_id: str, page_number: int, escalate: bool, max_attempts: int
 ) -> dict[str, Any]:
     """Parse one page and write its record.
 
@@ -564,15 +601,15 @@ def _process_page(
     attempt counter or parsing: a stored result is never replaced by a page task. A
     stored record that cannot be read raises ``PageRecordError`` before any parse.
     """
-    existing = _load_record_checked(store, file_id, page_number)
+    existing = _load_record_checked(store, work_id, page_number)
     if existing is not None:
         return existing
-    attempt = _read_attempts(store, file_id, page_number) + 1
+    attempt = _read_attempts(store, work_id, page_number) + 1
     if attempt > max_attempts:
-        return _finalize_exhausted(store, file_id, page_number)
-    _put_text(store, _attempts_key(file_id, page_number), str(attempt))
+        return _finalize_exhausted(store, work_id, page_number)
+    _put_text(store, _attempts_key(work_id, page_number), str(attempt))
 
-    with store.local_file(_page_pdf_key(file_id, page_number)) as page_pdf:
+    with store.local_file(_page_pdf_key(work_id, page_number)) as page_pdf:
         started = time.perf_counter()
         try:
             state, reason, markdown, extra = _parse_page(page_pdf, page_number, escalate)
@@ -581,7 +618,7 @@ def _process_page(
             state, reason = STATE_FAILED, f"exception: {type(exc).__name__}: {exc}"
             markdown, extra = "", {}
         extra["elapsed_seconds"] = round(time.perf_counter() - started, 3)
-        return _write_record(store, file_id, page_number, state, reason, markdown, attempt, extra)
+        return _write_record(store, work_id, page_number, state, reason, markdown, attempt, extra)
 
 
 @dataclass(frozen=True)
@@ -598,7 +635,7 @@ class PageArchives:
     last_number: int = 0
 
 
-def page_archives(store: Store, file_id: str, page_number: int) -> PageArchives:
+def page_archives(store: Store, work_id: str, page_number: int) -> PageArchives:
     """The archived results of one page: ``results/NNNN.attempt-K.json``, by K.
 
     Each archive is one earlier non-ok result that a re-run replaced, so the count
@@ -606,14 +643,14 @@ def page_archives(store: Store, file_id: str, page_number: int) -> PageArchives:
     """
     numbered = sorted(
         (k, key)
-        for key in store.list_keys(_archive_prefix(file_id, page_number))
+        for key in store.list_keys(_archive_prefix(work_id, page_number))
         if (k := _archive_number(key, page_number)) is not None
     )
     keys = [key for _k, key in numbered]
     return PageArchives(keys, len(keys), numbered[-1][0] if numbered else 0)
 
 
-def _archive_for_retry(store: Store, file_id: str, page_number: int) -> bool:
+def _archive_for_retry(store: Store, work_id: str, page_number: int) -> bool:
     """Move a non-ok record aside so the page can run again; return whether it should.
 
     Copy to ``results/NNNN.attempt-K.json`` (write-if-absent), delete the ``.md``
@@ -622,23 +659,23 @@ def _archive_for_retry(store: Store, file_id: str, page_number: int) -> bool:
     record the copy is already done and no second archive is made.
 
     The record is re-read here and archived only while it is still not ok: the
-    caller decided from an earlier read, and another run of the same file may have
+    caller decided from an earlier read, and another run of the same content (under any name) may have
     written an ok result since. Returns False, archiving nothing, when the record
     is now ok or was replaced while being archived; True when the page needs a run
     (including when the record is already gone). The store has no conditional
     delete, so a replacement landing between the last check and the delete is not
-    caught: one writer per file is still assumed.
+    caught: one writer per work id (per content) is still assumed.
     """
-    record_key = _record_key(file_id, page_number)
-    found = _read_record(store, file_id, page_number)
+    record_key = _record_key(work_id, page_number)
+    found = _read_record(store, work_id, page_number)
     if found is None:
         return True
     data, record = found
     if record.get("state") == STATE_OK:
         return False
-    archives = page_archives(store, file_id, page_number)
+    archives = page_archives(store, work_id, page_number)
     if not archives.count or store.read(archives.keys[-1]) != data:
-        archive_key = _archive_key(file_id, page_number, archives.last_number + 1)
+        archive_key = _archive_key(work_id, page_number, archives.last_number + 1)
         if not store.write_if_absent(archive_key, data) and store.read(archive_key) != data:
             raise PageRecordError(
                 f"page {page_number}: {store.location(archive_key)} already holds a different "
@@ -649,20 +686,20 @@ def _archive_for_retry(store: Store, file_id: str, page_number: int) -> bool:
             return False
     except StoreNotFoundError:
         return True
-    store.delete(_markdown_key(file_id, page_number))
+    store.delete(_markdown_key(work_id, page_number))
     store.delete(record_key)
     return True
 
 
-def _finalize_exhausted(store: Store, file_id: str, page_number: int) -> dict[str, Any]:
+def _finalize_exhausted(store: Store, work_id: str, page_number: int) -> dict[str, Any]:
     """Record a page that used every attempt without producing a result."""
-    existing = _load_record_checked(store, file_id, page_number)
+    existing = _load_record_checked(store, work_id, page_number)
     if existing is not None:
         return existing
-    attempts = _read_attempts(store, file_id, page_number)
+    attempts = _read_attempts(store, work_id, page_number)
     return _write_record(
         store,
-        file_id,
+        work_id,
         page_number,
         STATE_FAILED,
         f"no_result_after_{attempts}_attempts: the worker died or was killed on this page",
@@ -689,7 +726,7 @@ _WORKER_STORES: dict[tuple[str, str | None], Store] = {}
 def _process_page_task(
     location: str,
     region: str | None,
-    file_id: str,
+    work_id: str,
     page_number: int,
     escalate: bool,
     max_attempts: int,
@@ -698,13 +735,13 @@ def _process_page_task(
     store = _WORKER_STORES.get((location, region))
     if store is None:
         store = _WORKER_STORES[(location, region)] = open_store(location, region=region)
-    return _process_page(store, file_id, page_number, escalate, max_attempts)
+    return _process_page(store, work_id, page_number, escalate, max_attempts)
 
 
 def _run_pool(
     location: str,
     region: str | None,
-    file_id: str,
+    work_id: str,
     pages: list[int],
     workers: int,
     escalate: bool,
@@ -725,7 +762,7 @@ def _run_pool(
         initargs=(threads,),
     ) as pool:
         futures = {
-            pool.submit(_process_page_task, location, region, file_id, n, escalate, max_attempts): n
+            pool.submit(_process_page_task, location, region, work_id, n, escalate, max_attempts): n
             for n in pages
         }
         for future in as_completed(futures):
@@ -752,7 +789,7 @@ def _run_pages(
     store: Store,
     location: str,
     region: str | None,
-    file_id: str,
+    work_id: str,
     pages: list[int],
     workers: int,
     escalate: bool,
@@ -769,18 +806,18 @@ def _run_pages(
     if workers <= 0:
         enable_converter_reuse()
         for page_number in pages:
-            _process_page(store, file_id, page_number, escalate, max_attempts)
+            _process_page(store, work_id, page_number, escalate, max_attempts)
         return
 
     remaining = list(pages)
     while remaining:
-        before = {n: _read_attempts(store, file_id, n) for n in remaining}
-        finished = _run_pool(location, region, file_id, remaining, workers, escalate, max_attempts)
+        before = {n: _read_attempts(store, work_id, n) for n in remaining}
+        finished = _run_pool(location, region, work_id, remaining, workers, escalate, max_attempts)
         remaining = [n for n in remaining if n not in finished]
         if not remaining:
             return
 
-        in_doubt = [n for n in remaining if _read_attempts(store, file_id, n) > before[n]]
+        in_doubt = [n for n in remaining if _read_attempts(store, work_id, n) > before[n]]
         logger.error(
             "a worker died; re-running %d in-flight page(s) in isolation: %s",
             len(in_doubt),
@@ -789,14 +826,14 @@ def _run_pages(
         if not in_doubt:
             raise RuntimeError(
                 f"worker pool broke before any page started in "
-                f"{store.location(_work_prefix(file_id))}"
+                f"{store.location(_work_prefix(work_id))}"
             )
         for page_number in in_doubt:
             while True:
-                if _read_attempts(store, file_id, page_number) >= max_attempts:
-                    _finalize_exhausted(store, file_id, page_number)
+                if _read_attempts(store, work_id, page_number) >= max_attempts:
+                    _finalize_exhausted(store, work_id, page_number)
                     break
-                if _run_pool(location, region, file_id, [page_number], 1, escalate, max_attempts):
+                if _run_pool(location, region, work_id, [page_number], 1, escalate, max_attempts):
                     break
         remaining = [n for n in remaining if n not in in_doubt]
 
@@ -830,7 +867,7 @@ def kserve_predict_url(endpoint: str) -> str:
 
 
 def process_page_request(
-    store: Store, file_id: str, page_number: int, escalate: bool, max_attempts: int
+    store: Store, work_id: str, page_number: int, escalate: bool, max_attempts: int
 ) -> dict[str, Any]:
     """Serve one page request: the page service's side of the remote executor.
 
@@ -843,19 +880,25 @@ def process_page_request(
 
     Returns a summary of the record; the record itself is in the store.
     """
-    manifest = _read_json(store, _manifest_key(file_id))
+    requested_config = work_id.rpartition("/")[2]
+    if requested_config != config_hash():
+        raise PipelineConfigMismatch(
+            f"{work_id} is work for config {requested_config} but this page service runs "
+            f"config {config_hash()} ({pipeline_config()})"
+        )
+    manifest = _read_json(store, _manifest_key(work_id))
     if not isinstance(manifest, dict):
-        raise ValueError(f"{store.location(_work_prefix(file_id))} has no manifest; split it first")
+        raise ValueError(f"{store.location(_work_prefix(work_id))} has no manifest; split it first")
     if manifest.get("config") != pipeline_config():
         raise PipelineConfigMismatch(
-            f"{file_id} was split with config {manifest.get('config')} but this page service "
+            f"{work_id} was split with config {manifest.get('config')} but this page service "
             f"runs {pipeline_config()}"
         )
     if not 1 <= page_number <= int(manifest["page_count"]):
-        raise ValueError(f"{file_id} has {manifest['page_count']} pages, not page {page_number}")
-    record = _process_page(store, file_id, page_number, escalate, max_attempts)
+        raise ValueError(f"{work_id} has {manifest['page_count']} pages, not page {page_number}")
+    record = _process_page(store, work_id, page_number, escalate, max_attempts)
     return {
-        "file_id": file_id,
+        "work_id": work_id,
         "page": page_number,
         "state": record.get("state"),
         "reason": record.get("reason"),
@@ -867,7 +910,7 @@ def process_page_request(
 
 
 def _post_page(
-    url: str, file_id: str, page_number: int, escalate: bool, max_attempts: int, timeout: float
+    url: str, work_id: str, page_number: int, escalate: bool, max_attempts: int, timeout: float
 ) -> tuple[int, dict[str, Any] | None, str]:
     """POST one page; return ``(status, body, error detail)``.
 
@@ -876,7 +919,7 @@ def _post_page(
     pages. A transport error (refused, reset, timeout) raises.
     """
     instance = {
-        "file_id": file_id,
+        "work_id": work_id,
         "page": page_number,
         "escalate": escalate,
         "max_attempts": max_attempts,
@@ -897,7 +940,7 @@ def _post_page(
 def _remote_page(
     store: Store,
     url: str,
-    file_id: str,
+    work_id: str,
     page_number: int,
     escalate: bool,
     max_attempts: int,
@@ -924,7 +967,7 @@ def _remote_page(
             raise RemotePageError(f"page {page_number}: stopped after another page failed")
         try:
             status, body, detail = _post_page(
-                url, file_id, page_number, escalate, max_attempts, timeout
+                url, work_id, page_number, escalate, max_attempts, timeout
             )
         except (OSError, http.client.HTTPException) as exc:  # URLError is an OSError
             status, body, detail = 0, None, f"{type(exc).__name__}: {exc}"
@@ -948,11 +991,11 @@ def _remote_page(
         busy_since, backoff = None, 0.5
         errors += 1
         logger.warning("page %d: request failed (%s); checking the store", page_number, detail or status)
-        record = _load_record_checked(store, file_id, page_number)
+        record = _load_record_checked(store, work_id, page_number)
         if record is not None:
             return record
-        if _read_attempts(store, file_id, page_number) >= max_attempts:
-            return _finalize_exhausted(store, file_id, page_number)
+        if _read_attempts(store, work_id, page_number) >= max_attempts:
+            return _finalize_exhausted(store, work_id, page_number)
         if errors > max_attempts + _REMOTE_EXTRA_ERRORS:
             raise RemotePageError(
                 f"page {page_number}: {errors} requests failed without the page starting; "
@@ -964,7 +1007,7 @@ def _remote_page(
 def _run_pages_remote(
     store: Store,
     endpoint: str,
-    file_id: str,
+    work_id: str,
     pages: list[int],
     concurrency: int,
     escalate: bool,
@@ -982,7 +1025,7 @@ def _run_pages_remote(
     with ThreadPoolExecutor(max_workers=max(1, min(concurrency, len(pages)))) as pool:
         futures = {
             pool.submit(
-                _remote_page, store, url, file_id, n, escalate, max_attempts, stop
+                _remote_page, store, url, work_id, n, escalate, max_attempts, stop
             ): n
             for n in pages
         }
@@ -1010,13 +1053,31 @@ def _run_pages_remote(
 
 
 def build_status(
-    store: Store, file_id: str, manifest: dict[str, Any], max_attempts: int
+    store: Store,
+    work_id: str,
+    file_id: str,
+    manifest: dict[str, Any],
+    max_attempts: int,
+    source_name: str | None = None,
+    *,
+    records: dict[int, dict[str, Any] | None] | None = None,
+    write: bool = True,
 ) -> dict[str, Any]:
-    """Rebuild ``status.json`` from the page records and return it."""
+    """Rebuild ``out/<file_id>/status.json`` from the page records under ``work/<work_id>``.
+
+    ``records`` are the page records already read (default: read them here);
+    ``write=False`` returns the status without storing it, for a caller that
+    writes it last.
+
+    ``source_name`` is the name of the file being run (default: the name the
+    content was first split under, from the manifest).
+    """
     pages: list[dict[str, Any]] = []
     for page_number in range(1, int(manifest["page_count"]) + 1):
-        record = _load_record(store, file_id, page_number)
-        attempts = _read_attempts(store, file_id, page_number)
+        record = (records or {}).get(page_number) if records is not None else _load_record(
+            store, work_id, page_number
+        )
+        attempts = _read_attempts(store, work_id, page_number)
         state = record["state"] if record is not None else STATE_PENDING
         pages.append(
             {
@@ -1042,20 +1103,25 @@ def build_status(
 
     status = {
         "state": file_state,
-        "source_name": manifest["source_name"],
+        "source_name": source_name or manifest["source_name"],
         "source_sha256": manifest["source_sha256"],
+        "work_id": work_id,
         "page_count": manifest["page_count"],
         "counts": counts,
         "not_ok_pages": [p for p in pages if p["state"] != STATE_OK],
         "pages": pages,
         "updated_at": datetime.now(tz=UTC).isoformat(),
     }
-    _put_json(store, _status_key(file_id), status)
+    if write:
+        _put_json(store, _status_key(file_id), status)
     return status
 
 
 def _stitch_markdown(
-    store: Store, file_id: str, status: dict[str, Any]
+    store: Store,
+    work_id: str,
+    status: dict[str, Any],
+    records: dict[int, dict[str, Any] | None] | None = None,
 ) -> tuple[str, list[dict[str, Any]]]:
     """Join the page markdown in page order, a marker line before each page.
 
@@ -1068,7 +1134,9 @@ def _stitch_markdown(
     offset = 0
     for page in status["pages"]:
         page_number = page["page"]
-        record = _load_record(store, file_id, page_number) or {}
+        record = (
+            records.get(page_number) if records is not None else _load_record(store, work_id, page_number)
+        ) or {}
         if page["state"] == STATE_OK:
             marker = PAGE_MARKER.format(number=page_number)
             body = str(record.get("markdown", "")).strip()
@@ -1097,12 +1165,14 @@ def _stitch_markdown(
 
 def stitch(
     store: Store,
+    work_id: str,
     file_id: str,
     manifest: dict[str, Any],
     status: dict[str, Any],
     partial: bool = False,
+    records: dict[int, dict[str, Any] | None] | None = None,
 ) -> dict[str, str | None]:
-    """Write ``output.md`` iff every page is ok; optionally a partial document.
+    """Write ``out/<file_id>/output.md`` iff every page is ok; optionally a partial document.
 
     Returns the store keys written: ``{"output": key or None, "partial": key or None}``.
 
@@ -1115,16 +1185,19 @@ def stitch(
     if not complete and not partial:
         return keys
 
-    markdown, pages_meta = _stitch_markdown(store, file_id, status)
+    markdown, pages_meta = _stitch_markdown(store, work_id, status, records)
     call_counts: dict[str, int] = {}
     for page in status["pages"]:
-        record = _load_record(store, file_id, page["page"]) or {}
+        record = (
+            records.get(page["page"]) if records is not None else _load_record(store, work_id, page["page"])
+        ) or {}
         for engine, count in (record.get("call_counts") or {}).items():
             call_counts[engine] = call_counts.get(engine, 0) + int(count)
     metadata = {
         "state": status["state"],
-        "source_name": manifest["source_name"],
+        "source_name": status["source_name"],
         "source_sha256": manifest["source_sha256"],
+        "work_id": work_id,
         "page_count": manifest["page_count"],
         "config": manifest["config"],
         "counts": status["counts"],
@@ -1158,6 +1231,7 @@ def parse_pdf_pages_in_store(
     executor: str = EXECUTOR_LOCAL,
     endpoint: str | None = None,
     concurrency: int | None = None,
+    publish: PublishRequest | None = None,
 ) -> dict[str, Any]:
     """Split a PDF, parse its pages in parallel, and stitch when every page is ok.
 
@@ -1180,13 +1254,16 @@ def parse_pdf_pages_in_store(
             the same store. Split, archive, status and stitch stay here either way.
         endpoint: The page service base URL (``http://host[:port]``), for kserve.
         concurrency: Page requests in flight, for kserve (default ``workers``).
+        publish: Also publish the result to ``published/`` under this doc id
+            (``publish.py``): a complete file as a version, an incomplete one as a
+            ``partial`` version when the request allows it, else a ``failed`` event.
 
     Returns:
-        ``{"state", "file_id", "work_dir", "out_dir", "page_count", "counts",
+        ``{"state", "file_id", "work_id", "work_dir", "out_dir", "page_count", "counts",
         "not_ok_pages", "pages", "status_path", "output_path", "partial_path",
-        "output_key", "partial_key", "elapsed_seconds"}``. ``state`` is ``complete``
+        "output_key", "partial_key", "published", "elapsed_seconds"}``. ``state`` is ``complete``
         only when every page is ok; ``output_path`` is None otherwise. ``work_dir``
-        (the ``work/<file id>`` prefix), ``out_dir`` and the ``*_path`` values come
+        (the ``work/<work id>`` prefix, shared by every name with the same bytes), ``out_dir`` and the ``*_path`` values come
         from the store's ``location`` (a local path or an ``s3://`` URI); the
         ``*_key`` values are store keys.
 
@@ -1209,25 +1286,27 @@ def parse_pdf_pages_in_store(
         store = open_store(location, region=region)
 
     started = time.perf_counter()
-    file_id = file_id_for(source)
+    sha256 = _sha256_file(source)
+    work_id, file_id = _work_id(sha256, config_hash()), _file_id(source.stem, sha256)
     if restart:
-        store.delete_prefix(f"{_work_prefix(file_id)}/")
+        # The work is shared by every name with these bytes: they all start again.
+        store.delete_prefix(f"{_work_prefix(work_id)}/")
         store.delete_prefix(f"{_out_prefix(file_id)}/")
-    manifest = _split(store, file_id, source)
+    manifest = _split(store, work_id, source)
 
     todo: list[int] = []
     for page_number in range(1, int(manifest["page_count"]) + 1):
         # An unparseable record raises here, before any page is parsed.
-        record = _load_record_checked(store, file_id, page_number)
+        record = _load_record_checked(store, work_id, page_number)
         if record is not None and record.get("state") == STATE_OK:
             continue
-        if _read_attempts(store, file_id, page_number) >= max_attempts:
-            _finalize_exhausted(store, file_id, page_number)
+        if _read_attempts(store, work_id, page_number) >= max_attempts:
+            _finalize_exhausted(store, work_id, page_number)
             continue
         # failed or degraded, under the limit: archive it so the page's next result
         # is again the first write. Done here, never in a page task. The step says
         # no when the page turned ok in the meantime.
-        if record is not None and not _archive_for_retry(store, file_id, page_number):
+        if record is not None and not _archive_for_retry(store, work_id, page_number):
             continue
         todo.append(page_number)
 
@@ -1244,12 +1323,39 @@ def parse_pdf_pages_in_store(
     )
     if todo and remote:
         assert endpoint is not None
-        _run_pages_remote(store, endpoint, file_id, todo, in_flight, escalate, max_attempts)
+        _run_pages_remote(store, endpoint, work_id, todo, in_flight, escalate, max_attempts)
     elif todo:
-        _run_pages(store, location, region, file_id, todo, workers, escalate, max_attempts)
+        _run_pages(store, location, region, work_id, todo, workers, escalate, max_attempts)
 
-    status = build_status(store, file_id, manifest, max_attempts)
-    keys = stitch(store, file_id, manifest, status, partial=partial)
+    # Records are read once and shared by the status, the stitch and the publish.
+    # status.json is written LAST, so it never says complete before the outputs exist.
+    records = {n: _load_record(store, work_id, n) for n in range(1, int(manifest["page_count"]) + 1)}
+    status = build_status(
+        store, work_id, file_id, manifest, max_attempts, source.name, records=records, write=False
+    )
+    keys = stitch(store, work_id, file_id, manifest, status, partial=partial, records=records)
+    published = None
+    if publish is not None:
+        markdown, pages_meta = _stitch_markdown(store, work_id, status, records)
+        published = publish_document(
+            store,
+            publish,
+            state=status["state"],
+            source_name=source.name,
+            source_sha256=manifest["source_sha256"],
+            work_id=work_id,
+            config=manifest["config"],
+            config_hash=config_hash(manifest["config"]),
+            page_count=int(manifest["page_count"]),
+            markdown=markdown,
+            pages_meta=pages_meta,
+            page_texts={
+                n: str(r.get("markdown", ""))
+                for n, r in records.items()
+                if r is not None and r.get("state") == STATE_OK
+            },
+        )
+    _put_json(store, _status_key(file_id), status)
     if status["state"] != FILE_COMPLETE:
         logger.error(
             "%s: %s — pages not ok: %s",
@@ -1260,7 +1366,8 @@ def parse_pdf_pages_in_store(
     return {
         "state": status["state"],
         "file_id": file_id,
-        "work_dir": store.location(_work_prefix(file_id)),
+        "work_id": work_id,
+        "work_dir": store.location(_work_prefix(work_id)),
         "out_dir": store.location(_out_prefix(file_id)),
         "page_count": manifest["page_count"],
         "counts": status["counts"],
@@ -1271,6 +1378,7 @@ def parse_pdf_pages_in_store(
         "partial_path": store.location(keys["partial"]) if keys["partial"] else None,
         "output_key": keys["output"],
         "partial_key": keys["partial"],
+        "published": published,
         "elapsed_seconds": round(time.perf_counter() - started, 3),
     }
 
@@ -1287,7 +1395,7 @@ def parse_pdf_pages(
     """``parse_pdf_pages_in_store`` on a local directory.
 
     A thin wrapper for callers that hold a ``Path``: ``work_root`` is the store
-    location, holding ``work/<file id>/`` and ``out/<file id>/`` per source file.
+    location, holding ``work/<work id>/`` per content and ``out/<file id>/`` per source file.
     """
     return parse_pdf_pages_in_store(
         source,

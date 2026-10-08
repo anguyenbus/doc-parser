@@ -28,14 +28,14 @@ from kserve.errors import InvalidInput  # noqa: E402
 
 from parser_service import kserve_predictor, page_pipeline  # noqa: E402
 from parser_service.kserve_predictor import PageParserModel, parse_instance  # noqa: E402
-from parser_service.page_pipeline import KSERVE_MODEL_NAME, file_id_for  # noqa: E402
+from parser_service.page_pipeline import KSERVE_MODEL_NAME, work_id_for  # noqa: E402
 from parser_service.store import LocalStore  # noqa: E402
 
-FILE_ID = file_id_for(THREE_PAGE)
+WORK_ID = work_id_for(THREE_PAGE)
 
 
 def _payload(**overrides: Any) -> dict[str, Any]:
-    instance = {"file_id": FILE_ID, "page": 1, "escalate": True, "max_attempts": 3}
+    instance = {"work_id": WORK_ID, "page": 1, "escalate": True, "max_attempts": 3}
     instance.update(overrides)
     return {"instances": [instance]}
 
@@ -44,7 +44,7 @@ def _payload(**overrides: Any) -> dict[str, Any]:
 def store(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> LocalStore:
     _install_fake(monkeypatch, lambda n: _result(f"Page {n} text."))
     store = LocalStore(tmp_path)
-    page_pipeline._split(store, FILE_ID, THREE_PAGE)
+    page_pipeline._split(store, WORK_ID, THREE_PAGE)
     return store
 
 
@@ -54,8 +54,10 @@ def store(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> LocalStore:
         {},
         {"instances": []},
         {"instances": [{}, {}]},
-        _payload(file_id="../etc"),
-        _payload(file_id=""),
+        _payload(work_id="../etc"),
+        _payload(work_id=""),
+        _payload(work_id="three_page-0123456789abcdef"),  # a file id, not a work id
+        _payload(work_id="A" * 64),
         _payload(page=0),
         _payload(page=True),
         _payload(page="1"),
@@ -69,7 +71,7 @@ def test_bad_requests_are_invalid_input(payload: dict[str, Any]) -> None:
 
 
 def test_parse_instance_reads_one_page() -> None:
-    assert parse_instance(_payload(page=7, escalate=False)) == (FILE_ID, 7, False, 3)
+    assert parse_instance(_payload(page=7, escalate=False)) == (WORK_ID, 7, False, 3)
 
 
 def test_predict_parses_the_page_into_the_store(store: LocalStore, tmp_path: Path) -> None:
@@ -79,7 +81,7 @@ def test_predict_parses_the_page_into_the_store(store: LocalStore, tmp_path: Pat
 
     [summary] = response["predictions"]
     assert summary["state"] == "ok" and summary["page"] == 2 and summary["attempt"] == 1
-    assert (tmp_path / f"work/{FILE_ID}/results/0002.json").exists()
+    assert (tmp_path / f"work/{WORK_ID}/results/0002.json").exists()
 
 
 def test_a_second_page_while_busy_is_refused_with_429(store: LocalStore) -> None:
@@ -91,7 +93,7 @@ def test_a_second_page_while_busy_is_refused_with_429(store: LocalStore) -> None
         assert raised.value.status_code == 429
     finally:
         model._slot.release()
-    assert not store.exists(f"work/{FILE_ID}/attempts/0001")
+    assert not store.exists(f"work/{WORK_ID}/attempts/0001")
 
 
 def test_load_warms_the_converter(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:

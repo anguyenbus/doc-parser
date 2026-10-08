@@ -27,11 +27,12 @@ from test_page_pipeline import THREE_PAGE, _install_fake, _result
 from test_scripts_rewiring import _load_script
 
 from parser_service import io_layer
-from parser_service.page_pipeline import file_id_for
+from parser_service.page_pipeline import file_id_for, work_id_for
 from parser_service.store import S3Store
 
 REGION = "ap-southeast-2"
 FILE_ID = file_id_for(THREE_PAGE)
+WORK_ID = work_id_for(THREE_PAGE)
 _ENV = (
     "PARSER_STORE_LOCATION",
     "AWS_REGION",
@@ -105,10 +106,10 @@ def test_location_from_the_environment_runs_end_to_end(
     assert code == 0
     err = capsys.readouterr().err
     assert "COMPLETE: 3 pages — 3 ok, 0 degraded, 0 failed, 0 pending" in err
-    assert f"work dir: {location / 'work' / FILE_ID}\n" in err
+    assert f"work dir: {location / 'work' / WORK_ID}\n" in err
     assert f"status: {location / 'out' / FILE_ID / 'status.json'}\n" in err
     assert f"document: {location / 'out' / FILE_ID / 'output.md'}\n" in err
-    assert (location / "work" / FILE_ID / "source.pdf").read_bytes() == THREE_PAGE.read_bytes()
+    assert (location / "work" / WORK_ID / "source.pdf").read_bytes() == THREE_PAGE.read_bytes()
     # --output is read through the store and written to the local path given.
     assert copy.read_bytes() == (location / "out" / FILE_ID / "output.md").read_bytes()
     assert copy.read_text().startswith("==== page 1 ===\n\ntext of page 1")
@@ -175,9 +176,11 @@ def test_exit_codes_and_partial_and_restart_on_a_local_location(
     assert sorted(calls) == [1, 2, 3]
     assert not (location / "out" / FILE_ID / "output.partial.md").exists()  # out/ went too
 
-    monkeypatch.setenv("PARSER_ESCALATION_ENGINE", "textract")  # a changed pinned config
-    assert _main(script, monkeypatch, *args) == 1
-    assert "was started with config" in capsys.readouterr().err
+    calls.clear()
+    monkeypatch.setenv("PARSER_ESCALATION_ENGINE", "textract")  # a changed config: own work dir
+    assert _main(script, monkeypatch, *args) == 0
+    assert sorted(calls) == [1, 2, 3]
+    assert len(list((location / "work" / WORK_ID.partition("/")[0]).iterdir())) == 2
     monkeypatch.delenv("PARSER_ESCALATION_ENGINE")
     assert _main(script, monkeypatch, "--input", str(tmp_path / "no.pdf"), *args[2:]) == 1
     assert _main(script, monkeypatch, "--input", str(tmp_path / "x.docx"), *args[2:]) == 1
@@ -214,7 +217,7 @@ def test_s3_input_is_downloaded_under_its_base_name_and_cleaned_up(
 
     assert regions == [REGION]  # the region comes from settings, explicitly
     file_id = f"renamed-{FILE_ID.rpartition('-')[2]}"  # key stem + content hash
-    assert (tmp_path / "work" / file_id / "source.pdf").read_bytes() == THREE_PAGE.read_bytes()
+    assert (tmp_path / "work" / WORK_ID / "source.pdf").read_bytes() == THREE_PAGE.read_bytes()
     assert (tmp_path / "out" / file_id / "output.md").is_file()
     assert sources[0].name == "renamed.pdf" and not sources[0].parent.exists()
 
@@ -273,7 +276,8 @@ def test_s3_location_reaches_the_store_and_locations_print_as_uris(
         return {
             "state": "complete" if complete else "failed",
             "file_id": FILE_ID,
-            "work_dir": store.location(f"work/{FILE_ID}"),
+            "work_id": WORK_ID,
+            "work_dir": store.location(f"work/{WORK_ID}"),
             "out_dir": store.location(f"out/{FILE_ID}"),
             "page_count": 3,
             "counts": {"ok": 3 if complete else 2, "degraded": 0, "failed": 0, "pending": 0},
@@ -306,7 +310,7 @@ def test_s3_location_reaches_the_store_and_locations_print_as_uris(
     assert (seen["workers"], seen["escalate"], seen["restart"]) == (2, False, True)
     base = "s3://store-bucket/parser"
     err = capsys.readouterr().err
-    assert f"work dir: {base}/work/{FILE_ID}\n" in err
+    assert f"work dir: {base}/work/{WORK_ID}\n" in err
     assert f"status: {base}/out/{FILE_ID}/status.json\n" in err
     assert f"document: {base}/out/{FILE_ID}/output.md\n" in err
     assert copy.read_bytes() == b"stitched"  # --output: read through the store
