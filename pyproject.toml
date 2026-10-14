@@ -4,8 +4,8 @@ version = "0.1.0"
 description = "Document parsing service: Docling + AWS Bedrock Claude Sonnet hybrid pipeline"
 requires-python = ">=3.11"
 dependencies = [
-    # tested with 2.x.x — pin exact version after first successful run
-    "docling>=2.0",
+    # exact version is pinned by uv.lock; it is part of the page-pipeline config hash
+    "docling>=2.138,<3",
     "pypdfium2>=4.30",
     "Pillow>=10.0",
     "boto3>=1.35.2",

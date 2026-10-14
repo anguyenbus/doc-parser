@@ -252,6 +252,14 @@ def test_classify_page_result(result: dict[str, Any], state: str) -> None:
     assert classify_page_result(result)[0] == state
 
 
+def test_docling_version_is_part_of_the_config_hash(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A Docling upgrade gets a new work dir instead of resuming onto old pages."""
+    before = page_pipeline.config_hash()
+    assert page_pipeline.pipeline_config()["docling_version"] == page_pipeline.DOCLING_VERSION
+    monkeypatch.setattr(page_pipeline, "DOCLING_VERSION", "0.0.0-other")
+    assert page_pipeline.config_hash() != before
+
+
 def test_non_pdf_input_is_refused(tmp_path: Path) -> None:
     with pytest.raises(ValueError, match="PDFs only"):
         parse_pdf_pages(FIXTURES / "doc.docx", tmp_path)

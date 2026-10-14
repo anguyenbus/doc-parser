@@ -60,6 +60,7 @@ from __future__ import annotations
 
 import hashlib
 import http.client
+import importlib.metadata
 import io
 import json
 import logging
@@ -149,10 +150,16 @@ def default_workers() -> int:
     return max(1, min(4, (os.cpu_count() or 2) // 2))
 
 
+# Docling decides the text of every docling-kept page, so its version is part of the
+# config: an upgrade must not resume onto pages parsed by the old version.
+DOCLING_VERSION: str = importlib.metadata.version("docling")
+
+
 def pipeline_config() -> dict[str, Any]:
     """The settings that change page output. Pinned in the manifest at intake."""
     return {
         "parser_version": PARSER_VERSION,
+        "docling_version": DOCLING_VERSION,
         "escalation_engine": os.environ.get("PARSER_ESCALATION_ENGINE", "vlm"),
         "vlm_model": os.environ.get("BEDROCK_VLM_MODEL", ""),
         "scan_fastpath": os.environ.get("PARSER_SCAN_FASTPATH", "").lower() in ("1", "true"),

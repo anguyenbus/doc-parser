@@ -14,13 +14,28 @@ import pytest
 FIXTURES = Path(__file__).parent / "fixtures"
 
 
+@pytest.fixture
+def force_promote(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Make the quality gate promote the page, so these tests exercise the VLM branch.
+
+    Whether Docling's OCR on screenshot.png passes the gate depends on the Docling and
+    OCR model versions (2.138 grades it GOOD and keeps it), not on the code under test.
+    """
+    from parser_service.quality_gate import Decision
+
+    monkeypatch.setattr(
+        "parser_service.quality_gate.evaluate_page",
+        lambda *_args, **_kwargs: Decision("promote_to_vlm", "forced by test", 1),
+    )
+
+
 # ---------------------------------------------------------------------------
 # Test 3 (Phase 3f): parse(screenshot.png) with mock_vlm_page
 #   — all elements have vlm_p0_ IDs
 # ---------------------------------------------------------------------------
 
 
-def test_image_all_elements_have_vlm_p0_ids(mock_vlm_page: None) -> None:
+def test_image_all_elements_have_vlm_p0_ids(mock_vlm_page: None, force_promote: None) -> None:
     """parse(screenshot.png) with mocked VLM — all element IDs start with vlm_p0_."""
     from parser_service.parser_service import parse
 
@@ -45,7 +60,9 @@ def test_image_all_elements_have_vlm_p0_ids(mock_vlm_page: None) -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_image_vlm_error_produces_image_unparseable_warning(mock_vlm_error: None) -> None:
+def test_image_vlm_error_produces_image_unparseable_warning(
+    mock_vlm_error: None, force_promote: None
+) -> None:
     """parse(screenshot.png) with mocked VLM error → image_unparseable warning."""
     from parser_service.parser_service import parse
 
@@ -85,7 +102,9 @@ def test_unsupported_type_warning(tmp_path: Path) -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_image_vlm_invalid_shape_warning(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_image_vlm_invalid_shape_warning(
+    monkeypatch: pytest.MonkeyPatch, force_promote: None
+) -> None:
     """parse(screenshot.png) with VLM returning non-list elements → vlm_invalid_shape."""
     from parser_service.parser_service import parse
 
