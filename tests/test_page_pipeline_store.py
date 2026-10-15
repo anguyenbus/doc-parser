@@ -27,9 +27,12 @@ import pytest
 from test_page_pipeline import THREE_PAGE, _install_fake, _result
 from test_store_contract import CONTRACT_CASES
 
-from parser_service import page_pipeline
 from parser_service.formats import pdf
-from parser_service.page_pipeline import file_id_for, parse_pdf_pages_in_store, work_id_for
+from parser_service.pipeline import config, intake, layout, local_runner, units
+from parser_service.pipeline import status as pipeline_status
+from parser_service.pipeline.api import parse_pdf_pages_in_store
+from parser_service.pipeline.intake import work_id_for
+from parser_service.pipeline.layout import file_id_for
 from parser_service.storage.store import (
     LocalStore,
     Store,
@@ -114,13 +117,13 @@ def _run(store: Store, **kwargs: Any) -> dict[str, Any]:
 
 
 def _record(store: Store, page_number: int) -> dict[str, Any]:
-    record = json.loads(store.read(page_pipeline._record_key(WORK_ID, page_number)))
+    record = json.loads(store.read(layout._record_key(WORK_ID, page_number)))
     assert isinstance(record, dict)
     return record
 
 
 def _manifest(store: Store) -> dict[str, Any]:
-    manifest = json.loads(store.read(page_pipeline._manifest_key(WORK_ID)))
+    manifest = json.loads(store.read(layout._manifest_key(WORK_ID)))
     assert isinstance(manifest, dict)
     return manifest
 
@@ -198,8 +201,8 @@ def test_store_error_fetching_a_page_propagates_and_leaves_it_pending(
             _run(store)
 
     assert calls == [1]
-    assert not store.exists(page_pipeline._record_key(WORK_ID, 2))  # no ``failed`` record
-    status = page_pipeline.build_status(store, WORK_ID, FILE_ID, _manifest(store), 3)
+    assert not store.exists(layout._record_key(WORK_ID, 2))  # no ``failed`` record
+    status = pipeline_status.build_status(store, WORK_ID, FILE_ID, _manifest(store), 3)
     assert [(p["page"], p["state"], p["attempts"]) for p in status["pages"]] == [
         (1, "ok", 1),
         (2, "pending", 1),  # the attempt was counted before the fetch
@@ -237,10 +240,10 @@ def test_record_holds_the_markdown_and_stitch_does_not_read_the_md_copies(
     assert record["markdown"] == "text of page 2"
     assert record["parser_version"] == PARSER_VERSION
     assert (record["markdown_file"], record["n_chars"], record["attempt"]) == ("0002.md", 14, 1)
-    assert store.read(page_pipeline._markdown_key(WORK_ID, 2)) == b"text of page 2"
+    assert store.read(layout._markdown_key(WORK_ID, 2)) == b"text of page 2"
 
     for page_number in (1, 2, 3):
-        store.delete(page_pipeline._markdown_key(WORK_ID, page_number))
+        store.delete(layout._markdown_key(WORK_ID, page_number))
     store.delete(first["output_key"])
     calls.clear()
     second = _run(store)
@@ -254,11 +257,11 @@ def test_duplicate_final_write_changes_nothing_and_returns_the_stored_record(
 ) -> None:
     _install_fake(monkeypatch, lambda n: _result(f"text of page {n}"))
     _run(store)
-    record_key = page_pipeline._record_key(WORK_ID, 1)
-    markdown_key = page_pipeline._markdown_key(WORK_ID, 1)
+    record_key = layout._record_key(WORK_ID, 1)
+    markdown_key = layout._markdown_key(WORK_ID, 1)
     stored_record, stored_markdown = store.read(record_key), store.read(markdown_key)
 
-    returned = page_pipeline._write_record(store, WORK_ID, 1, "failed", "late", "OTHER RUN", 2)
+    returned = units._write_record(store, WORK_ID, 1, "failed", "late", "OTHER RUN", 2)
 
     assert returned == json.loads(stored_record)  # the caller's result is discarded
     assert store.read(record_key) == stored_record
@@ -266,13 +269,13 @@ def test_duplicate_final_write_changes_nothing_and_returns_the_stored_record(
 
 
 def test_refused_write_over_an_unparseable_record_raises(store: Store) -> None:
-    store.write(page_pipeline._record_key(WORK_ID, 1), b"{ not json")
-    assert page_pipeline._load_record(store, WORK_ID, 1) is None  # a plain read: "no record"
+    store.write(layout._record_key(WORK_ID, 1), b"{ not json")
+    assert layout._load_record(store, WORK_ID, 1) is None  # a plain read: "no record"
 
-    with pytest.raises(page_pipeline.PageRecordError, match="cannot be read"):
-        page_pipeline._write_record(store, WORK_ID, 1, "ok", None, "text", 1)
-    assert store.read(page_pipeline._record_key(WORK_ID, 1)) == b"{ not json"
-    assert not store.exists(page_pipeline._markdown_key(WORK_ID, 1))
+    with pytest.raises(config.PageRecordError, match="cannot be read"):
+        units._write_record(store, WORK_ID, 1, "ok", None, "text", 1)
+    assert store.read(layout._record_key(WORK_ID, 1)) == b"{ not json"
+    assert not store.exists(layout._markdown_key(WORK_ID, 1))
 
 
 def test_page_task_with_a_stored_record_returns_it_without_working(
@@ -282,11 +285,11 @@ def test_page_task_with_a_stored_record_returns_it_without_working(
     _run(store)
     calls.clear()
 
-    returned = page_pipeline._process_page(store, WORK_ID, 1, True, 3)
+    returned = units._process_page(store, WORK_ID, 1, True, 3)
 
     assert returned == _record(store, 1)
     assert calls == []
-    assert page_pipeline._read_attempts(store, WORK_ID, 1) == 1
+    assert layout._read_attempts(store, WORK_ID, 1) == 1
 
 
 def test_rerun_archives_a_failed_record_and_runs_the_page_again(
@@ -295,7 +298,7 @@ def test_rerun_archives_a_failed_record_and_runs_the_page_again(
     healthy = {"now": False}
     calls = _install_fake(monkeypatch, _fail_page_2_until(healthy))
     assert _run(store)["state"] == "failed"
-    failed_record = store.read(page_pipeline._record_key(WORK_ID, 2))
+    failed_record = store.read(layout._record_key(WORK_ID, 2))
     assert json.loads(failed_record)["state"] == "failed"
 
     calls.clear()
@@ -303,11 +306,11 @@ def test_rerun_archives_a_failed_record_and_runs_the_page_again(
     assert _run(store)["state"] == "complete"
 
     assert calls == [2]
-    archive = page_pipeline._archive_key(WORK_ID, 2, 1)
+    archive = layout._archive_key(WORK_ID, 2, 1)
     assert archive.endswith("results/0002.attempt-1.json")
     assert store.read(archive) == failed_record
     assert _record(store, 2)["state"] == "ok" and _record(store, 2)["attempt"] == 2
-    assert store.read(page_pipeline._markdown_key(WORK_ID, 2)) == b"text of page 2"
+    assert store.read(layout._markdown_key(WORK_ID, 2)) == b"text of page 2"
 
 
 def test_archive_step_resumes_after_a_crash_without_a_duplicate_archive(
@@ -316,25 +319,25 @@ def test_archive_step_resumes_after_a_crash_without_a_duplicate_archive(
     healthy = {"now": False}
     _install_fake(monkeypatch, _fail_page_2_until(healthy))
     _run(store)
-    record_key = page_pipeline._record_key(WORK_ID, 2)
+    record_key = layout._record_key(WORK_ID, 2)
     first_failure = store.read(record_key)
 
     # A crash between the copy and the deletes: the archive exists, so do the record
     # and its .md copy. Running the step again finishes it and adds no archive.
-    assert store.write_if_absent(page_pipeline._archive_key(WORK_ID, 2, 1), first_failure)
+    assert store.write_if_absent(layout._archive_key(WORK_ID, 2, 1), first_failure)
     _run(store)  # page 2 fails again: a second, different record
 
-    archives = page_pipeline.page_archives(store, WORK_ID, 2)
-    assert archives.keys == [page_pipeline._archive_key(WORK_ID, 2, 1)]
+    archives = units.page_archives(store, WORK_ID, 2)
+    assert archives.keys == [layout._archive_key(WORK_ID, 2, 1)]
     assert store.read(archives.keys[0]) == first_failure
     second_failure = store.read(record_key)
     assert second_failure != first_failure and json.loads(second_failure)["attempt"] == 2
 
     # The step alone, run twice in a row, is complete after the first.
-    page_pipeline._archive_for_retry(store, WORK_ID, 2)
+    units._archive_for_retry(store, WORK_ID, 2)
     assert not store.exists(record_key)
-    assert not store.exists(page_pipeline._markdown_key(WORK_ID, 2))
-    archives = page_pipeline.page_archives(store, WORK_ID, 2)
+    assert not store.exists(layout._markdown_key(WORK_ID, 2))
+    archives = units.page_archives(store, WORK_ID, 2)
     assert archives.count == 2 and store.read(archives.keys[1]) == second_failure
 
 
@@ -345,14 +348,14 @@ def test_ok_pages_and_pages_at_the_attempt_limit_are_neither_archived_nor_retrie
         monkeypatch, lambda n: _result("", route="vlm") if n == 3 else _result(f"p{n}")
     )
     _run(store, max_attempts=1)
-    records = {n: store.read(page_pipeline._record_key(WORK_ID, n)) for n in (1, 2, 3)}
+    records = {n: store.read(layout._record_key(WORK_ID, n)) for n in (1, 2, 3)}
 
     calls.clear()
     result = _run(store, max_attempts=1)
 
     assert calls == [] and result["state"] == "failed"
-    assert {n: store.read(page_pipeline._record_key(WORK_ID, n)) for n in (1, 2, 3)} == records
-    assert all(page_pipeline.page_archives(store, WORK_ID, n).count == 0 for n in (1, 2, 3))
+    assert {n: store.read(layout._record_key(WORK_ID, n)) for n in (1, 2, 3)} == records
+    assert all(units.page_archives(store, WORK_ID, n).count == 0 for n in (1, 2, 3))
 
 
 def test_archive_step_leaves_an_ok_record_alone(
@@ -360,13 +363,13 @@ def test_archive_step_leaves_an_ok_record_alone(
 ) -> None:
     _install_fake(monkeypatch, lambda n: _result(f"text of page {n}"))
     _run(store)
-    record_key = page_pipeline._record_key(WORK_ID, 1)
+    record_key = layout._record_key(WORK_ID, 1)
     stored = store.read(record_key)
 
-    assert page_pipeline._archive_for_retry(store, WORK_ID, 1) is False
+    assert units._archive_for_retry(store, WORK_ID, 1) is False
     assert store.read(record_key) == stored
-    assert store.exists(page_pipeline._markdown_key(WORK_ID, 1))
-    assert page_pipeline.page_archives(store, WORK_ID, 1).count == 0
+    assert store.exists(layout._markdown_key(WORK_ID, 1))
+    assert units.page_archives(store, WORK_ID, 1).count == 0
 
 
 def test_rerun_does_not_archive_a_page_that_turned_ok_after_it_was_read(
@@ -378,24 +381,24 @@ def test_rerun_does_not_archive_a_page_that_turned_ok_after_it_was_read(
     calls = _install_fake(monkeypatch, _fail_page_2_until(healthy))
     _run(store)
     ok_record = json.dumps({"page": 2, "state": "ok", "markdown": "from the other run"})
-    real_load = page_pipeline._load_record_checked
+    real_load = layout._load_record_checked
 
     def load_then_other_run_finishes(s: Store, file_id: str, n: int) -> dict[str, Any] | None:
         record = real_load(s, file_id, n)
         if n == 2 and record is not None and record["state"] == "failed":
-            s.delete(page_pipeline._record_key(file_id, 2))
-            s.write(page_pipeline._record_key(file_id, 2), ok_record.encode())
+            s.delete(layout._record_key(file_id, 2))
+            s.write(layout._record_key(file_id, 2), ok_record.encode())
         return record
 
-    monkeypatch.setattr(page_pipeline, "_load_record_checked", load_then_other_run_finishes)
+    monkeypatch.setattr(layout, "_load_record_checked", load_then_other_run_finishes)
     calls.clear()
     healthy["now"] = True
     result = _run(store)
 
     assert calls == []
     assert result["state"] == "complete"
-    assert store.read(page_pipeline._record_key(WORK_ID, 2)) == ok_record.encode()
-    assert page_pipeline.page_archives(store, WORK_ID, 2).count == 0
+    assert store.read(layout._record_key(WORK_ID, 2)) == ok_record.encode()
+    assert units.page_archives(store, WORK_ID, 2).count == 0
 
 
 def test_archive_numbering_continues_after_an_older_archive_expired(
@@ -404,15 +407,15 @@ def test_archive_numbering_continues_after_an_older_archive_expired(
     healthy = {"now": False}
     _install_fake(monkeypatch, _fail_page_2_until(healthy))
     _run(store)
-    failed_record = store.read(page_pipeline._record_key(WORK_ID, 2))
+    failed_record = store.read(layout._record_key(WORK_ID, 2))
     # attempt-1 has expired; attempt-2, a different earlier result, is still there.
-    store.write(page_pipeline._archive_key(WORK_ID, 2, 2), b'{"state": "failed", "older": 1}')
+    store.write(layout._archive_key(WORK_ID, 2, 2), b'{"state": "failed", "older": 1}')
 
     healthy["now"] = True
     assert _run(store)["state"] == "complete"
 
-    archives = page_pipeline.page_archives(store, WORK_ID, 2)
-    assert archives.keys == [page_pipeline._archive_key(WORK_ID, 2, k) for k in (2, 3)]
+    archives = units.page_archives(store, WORK_ID, 2)
+    assert archives.keys == [layout._archive_key(WORK_ID, 2, k) for k in (2, 3)]
     assert (archives.count, archives.last_number) == (2, 3)
     assert store.read(archives.keys[-1]) == failed_record
 
@@ -422,18 +425,18 @@ def test_unparseable_record_is_refused_before_any_page_is_parsed(
 ) -> None:
     calls = _install_fake(monkeypatch, lambda n: _result(f"text of page {n}"))
     _run(store)
-    store.write(page_pipeline._record_key(WORK_ID, 2), b"{ not json")
-    attempts = page_pipeline._read_attempts(store, WORK_ID, 2)
+    store.write(layout._record_key(WORK_ID, 2), b"{ not json")
+    attempts = layout._read_attempts(store, WORK_ID, 2)
     calls.clear()
 
-    with pytest.raises(page_pipeline.PageRecordError, match="cannot be read"):
+    with pytest.raises(config.PageRecordError, match="cannot be read"):
         _run(store)
-    with pytest.raises(page_pipeline.PageRecordError, match="cannot be read"):
-        page_pipeline._process_page(store, WORK_ID, 2, True, 3)
+    with pytest.raises(config.PageRecordError, match="cannot be read"):
+        units._process_page(store, WORK_ID, 2, True, 3)
 
     assert calls == []
-    assert page_pipeline._read_attempts(store, WORK_ID, 2) == attempts
-    assert store.read(page_pipeline._record_key(WORK_ID, 2)) == b"{ not json"
+    assert layout._read_attempts(store, WORK_ID, 2) == attempts
+    assert store.read(layout._record_key(WORK_ID, 2)) == b"{ not json"
 
 
 def test_archive_helper_returns_keys_and_count_and_an_archive_is_not_a_record(
@@ -443,18 +446,18 @@ def test_archive_helper_returns_keys_and_count_and_an_archive_is_not_a_record(
     _run(store)
     manifest = _manifest(store)
     for k in (2, 10, 1):  # ordered by K as a number, not as text
-        store.write(page_pipeline._archive_key(WORK_ID, 2, k), b"{}")
-    store.write(page_pipeline._archive_key(WORK_ID, 2, 3).replace("-3.json", "-x.json"), b"{}")
-    store.delete(page_pipeline._record_key(WORK_ID, 2))
+        store.write(layout._archive_key(WORK_ID, 2, k), b"{}")
+    store.write(layout._archive_key(WORK_ID, 2, 3).replace("-3.json", "-x.json"), b"{}")
+    store.delete(layout._record_key(WORK_ID, 2))
 
-    archives = page_pipeline.page_archives(store, WORK_ID, 2)
+    archives = units.page_archives(store, WORK_ID, 2)
     assert archives.count == 3
-    assert archives.keys == [page_pipeline._archive_key(WORK_ID, 2, k) for k in (1, 2, 10)]
-    assert page_pipeline.page_archives(store, WORK_ID, 1) == page_pipeline.PageArchives([], 0)
+    assert archives.keys == [layout._archive_key(WORK_ID, 2, k) for k in (1, 2, 10)]
+    assert units.page_archives(store, WORK_ID, 1) == units.PageArchives([], 0)
 
     # Page 2 has archives and no record: it is pending, not finished.
-    assert page_pipeline._load_record(store, WORK_ID, 2) is None
-    status = page_pipeline.build_status(store, WORK_ID, FILE_ID, manifest, 3)
+    assert layout._load_record(store, WORK_ID, 2) is None
+    status = pipeline_status.build_status(store, WORK_ID, FILE_ID, manifest, 3)
     assert [p["state"] for p in status["pages"]] == ["ok", "pending", "ok"]
 
 
@@ -516,7 +519,7 @@ def test_split_stores_the_original_first_and_the_manifest_last(
 ) -> None:
     written = _record_writes(store, monkeypatch)
 
-    manifest = page_pipeline._split(store, WORK_ID, THREE_PAGE)
+    manifest = intake._split(store, WORK_ID, THREE_PAGE)
 
     assert written == [
         f"{WORK}/source.pdf",
@@ -655,7 +658,7 @@ def test_unknown_keys_under_work_do_not_break_a_run(
     assert _run(store)["state"] == "complete"
 
     assert store.read(f"{WORK}/candidates/0001.json") == b"{}"
-    assert page_pipeline.page_archives(store, WORK_ID, 2).count == 1
+    assert units.page_archives(store, WORK_ID, 2).count == 1
 
 
 # ---------------------------------------------------------------------------
@@ -692,29 +695,29 @@ def test_worker_task_opens_its_own_store_from_the_location_string(
 ) -> None:
     """What a pool worker runs, called here in-process: location, region, file id."""
     calls = _install_fake(monkeypatch, lambda n: _result(f"text of page {n}"))
-    monkeypatch.setattr(page_pipeline, "_WORKER_STORES", {})
+    monkeypatch.setattr(local_runner, "_WORKER_STORES", {})
     location = str(tmp_path / "location")
     local = LocalStore(location)
-    page_pipeline._split(local, WORK_ID, THREE_PAGE)
+    intake._split(local, WORK_ID, THREE_PAGE)
 
-    record = page_pipeline._process_page_task(location, None, WORK_ID, 2, True, 3)
+    record = local_runner._process_page_task(location, None, WORK_ID, 2, True, 3)
 
     assert calls == [2] and record["state"] == "ok"
     assert _record(local, 2) == record
-    assert list(page_pipeline._WORKER_STORES) == [(location, None)]  # opened once, then reused
-    page_pipeline._process_page_task(location, None, WORK_ID, 3, True, 3)
-    assert len(page_pipeline._WORKER_STORES) == 1
+    assert list(local_runner._WORKER_STORES) == [(location, None)]  # opened once, then reused
+    local_runner._process_page_task(location, None, WORK_ID, 3, True, 3)
+    assert len(local_runner._WORKER_STORES) == 1
 
 
 def test_path_split_accepts_only_the_directory_work_dir_for_returns(tmp_path: Path) -> None:
-    work_dir = page_pipeline.work_dir_for(THREE_PAGE, tmp_path)
+    work_dir = intake.work_dir_for(THREE_PAGE, tmp_path)
     assert work_dir == tmp_path / "work" / WORK_ID
 
     with pytest.raises(ValueError, match="not a work directory"):
-        page_pipeline.split_pdf(THREE_PAGE, tmp_path / FILE_ID)  # the old flat layout
+        intake.split_pdf(THREE_PAGE, tmp_path / FILE_ID)  # the old flat layout
     assert list(tmp_path.iterdir()) == []
 
-    page_pipeline.split_pdf(THREE_PAGE, work_dir)
+    intake.split_pdf(THREE_PAGE, work_dir)
     assert sorted(p.name for p in work_dir.iterdir()) == [
         "attempts",
         "manifest.json",

@@ -26,7 +26,8 @@ from botocore.stub import Stubber
 from test_page_pipeline import THREE_PAGE, _install_fake, _result
 from test_scripts_rewiring import _load_script
 
-from parser_service.page_pipeline import file_id_for, work_id_for
+from parser_service.pipeline.intake import work_id_for
+from parser_service.pipeline.layout import file_id_for
 from parser_service.storage import aws
 from parser_service.storage.store import S3Store
 

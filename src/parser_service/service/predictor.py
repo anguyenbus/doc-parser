@@ -65,14 +65,9 @@ from parser_service.observability import (
     service_metrics,
     truncate,
 )
-from parser_service.page_pipeline import (
-    KSERVE_MODEL_NAME,
-    KindNotEnabled,
-    ParseRunner,
-    PipelineConfigMismatch,
-    deadline_for,
-    process_page_request,
-)
+from parser_service.pipeline.config import KindNotEnabled, PipelineConfigMismatch, deadline_for
+from parser_service.pipeline.remote_runner import KSERVE_MODEL_NAME, process_page_request
+from parser_service.pipeline.units import ParseRunner
 from parser_service.service.worker import (
     ParseWorker,
     WorkerDied,

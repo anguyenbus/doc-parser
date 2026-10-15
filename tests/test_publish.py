@@ -21,7 +21,8 @@ from test_page_pipeline_store import WORK_ID, MemoryStore, _fail_page_2_until
 
 from parser_service.delivery import publish
 from parser_service.delivery.publish import PublishRequest, check_id, slugify
-from parser_service.page_pipeline import file_id_for, parse_pdf_pages_in_store
+from parser_service.pipeline.api import parse_pdf_pages_in_store
+from parser_service.pipeline.layout import file_id_for
 
 FILE_ID = file_id_for(THREE_PAGE)
 DOC = "three-page"

@@ -43,7 +43,8 @@ from typing import Any
 
 import pytest
 
-from parser_service.page_pipeline import file_id_for, work_id_for
+from parser_service.pipeline.intake import work_id_for
+from parser_service.pipeline.layout import file_id_for
 from parser_service.storage import aws
 from parser_service.storage.store import Store, StoreNotFoundError, open_store
 

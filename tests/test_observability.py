@@ -24,10 +24,12 @@ from typing import Any
 import pytest
 from test_page_pipeline import THREE_PAGE, XLSX, _enable_test_kind, _install_fake, _result
 
-from parser_service import observability, page_pipeline
+from parser_service import observability
 from parser_service.delivery.publish import PublishRequest
 from parser_service.formats.result import Reply
 from parser_service.formats.sniff import KINDS
+from parser_service.pipeline import api, remote_runner
+from parser_service.pipeline import intake as pipeline_intake
 from parser_service.service.worker import Request
 from parser_service.storage.store import LocalStore
 
@@ -91,15 +93,15 @@ def test_metrics_and_events_emitted_per_kind(
     # --- the page service: one PDF page, two txt documents (one over its output cap)
     _enable_test_kind(monkeypatch, "txt")
     store = LocalStore(tmp_path / "service")
-    pdf_id = page_pipeline.work_id_for(THREE_PAGE)
-    page_pipeline._intake(store, pdf_id, THREE_PAGE, "pdf")
+    pdf_id = pipeline_intake.work_id_for(THREE_PAGE)
+    pipeline_intake._intake(store, pdf_id, THREE_PAGE, "pdf")
     txt_ids = []
     for name in ("short", "huge"):
         source = tmp_path / "in" / f"{name}.txt"
         source.parent.mkdir(exist_ok=True)
         source.write_text(f"{name}\nbody\n")
-        work_id = page_pipeline.work_id_for(source, "txt")
-        page_pipeline._intake(store, work_id, source, "txt")
+        work_id = pipeline_intake.work_id_for(source, "txt")
+        pipeline_intake._intake(store, work_id, source, "txt")
         txt_ids.append(work_id)
     runner = ScriptedRunner(
         {
@@ -127,9 +129,9 @@ def test_metrics_and_events_emitted_per_kind(
         "output": _sample("parser_output_bytes_sum", kind="pdf"),
     }
     with caplog.at_level(logging.INFO):
-        page_pipeline.process_page_request(store, pdf_id, 1, False, 3, runner=runner)
+        remote_runner.process_page_request(store, pdf_id, 1, False, 3, runner=runner)
         for work_id in txt_ids:
-            page_pipeline.process_page_request(store, work_id, 1, False, 3, runner=runner)
+            remote_runner.process_page_request(store, work_id, 1, False, 3, runner=runner)
 
     after = {
         "pdf_ok": _sample("parser_units_total", kind="pdf", state="ok", reason_code="none"),
@@ -176,7 +178,7 @@ def test_metrics_and_events_emitted_per_kind(
     sources = [renamed, odd, XLSX, big]
     with caplog.at_level(logging.INFO):
         results = [
-            page_pipeline.parse_file_in_store(
+            api.parse_file_in_store(
                 source, str(tmp_path / "store"), workers=0, publish=PublishRequest("doc-1", "job-1")
             )
             for source in sources
@@ -274,15 +276,15 @@ def test_logs_carry_no_document_text(
     store_root = tmp_path / "store"
     with caplog.at_level(logging.DEBUG):
         results = [
-            page_pipeline.parse_file_in_store(
+            api.parse_file_in_store(
                 source, str(store_root), workers=0, publish=PublishRequest(source.stem, "job-1")
             )
             for source in (pdf, mail, bad)
         ]
         # The page service path too, from a fresh store.
         service = LocalStore(tmp_path / "service")
-        work_id = page_pipeline.work_id_for(mail, "eml")
-        page_pipeline._intake(service, work_id, mail, "eml")
+        work_id = pipeline_intake.work_id_for(mail, "eml")
+        pipeline_intake._intake(service, work_id, mail, "eml")
 
         class Runner:
             pid = 7
@@ -290,7 +292,7 @@ def test_logs_carry_no_document_text(
             def run(self, request: Request, deadline_s: float) -> Reply:
                 return handler(Path(request[1]), request[2], request[3])
 
-        page_pipeline.process_page_request(service, work_id, 1, False, 3, runner=Runner())
+        remote_runner.process_page_request(service, work_id, 1, False, 3, runner=Runner())
 
     assert [r["state"] for r in results] == ["complete", "complete", "failed"]
     # The marker did reach the outputs, so its absence from the logs means something.

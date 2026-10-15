@@ -44,11 +44,12 @@ from docx.oxml.ns import qn
 from markdown_it import MarkdownIt
 from PIL import Image
 
-from parser_service import page_pipeline
 from parser_service.formats.guards import check_docx
 from parser_service.formats.handlers import HANDLER_VERSIONS, parse_unit
 from parser_service.parsing import document as markdown_pipeline
 from parser_service.parsing.document import _separate_lists_from_tables, parse_to_markdown
+from parser_service.pipeline import api
+from parser_service.pipeline import config as config_module
 
 GOLDEN_DIR = Path(__file__).parent / "fixtures" / "golden"
 _W_NS = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
@@ -307,7 +308,7 @@ def test_entity_expansion_docx_stays_harmless(tmp_path: Path) -> None:
     with zipfile.ZipFile(bomb, "w", zipfile.ZIP_DEFLATED) as target:
         for name, data in parts.items():
             target.writestr(name, data)
-    assert check_docx(bomb, page_pipeline.docx_guard_limits()) is None  # the guard lets it by
+    assert check_docx(bomb, config_module.docx_guard_limits()) is None  # the guard lets it by
 
     done = subprocess.run(
         [sys.executable, "-c", _ENTITY_CHILD, str(plain), str(bomb)],
@@ -430,9 +431,7 @@ def test_images_not_ocrd_flag_keeps_the_unit_ok(
     # Through the page pipeline (docx enabled as Group 8 will do it): the record and
     # the file status carry the flag, the unit is ok and the file complete.
     monkeypatch.setenv("PARSER_ENABLED_KINDS", "pdf,docx")
-    result = page_pipeline.parse_pdf_pages(
-        cases[0][1], tmp_path / "store", workers=0, escalate=False
-    )
+    result = api.parse_pdf_pages(cases[0][1], tmp_path / "store", workers=0, escalate=False)
     assert (result["state"], result["kind"], result["flags"]) == (
         "complete",
         "docx",
@@ -472,10 +471,10 @@ def test_large_docx_timing(tmp_path: Path, request: pytest.FixtureRequest) -> No
             doc.paragraphs[-1].add_run().add_break(WD_BREAK.PAGE)
 
     path = _docx(tmp_path, _build, "large.docx")
-    assert check_docx(path, page_pipeline.docx_guard_limits()) is None
+    assert check_docx(path, config_module.docx_guard_limits()) is None
     started = time.perf_counter()
     state, reason, _code, markdown, extra = parse_unit("docx", path, 1, False)
     elapsed = time.perf_counter() - started
     assert (state, reason, extra["route"]) == ("ok", None, "docling-kept")
     assert "Paragraph 19 of page 600." in markdown
-    assert elapsed < page_pipeline.deadline_for("docx"), elapsed
+    assert elapsed < config_module.deadline_for("docx"), elapsed

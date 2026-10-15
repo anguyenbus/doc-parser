@@ -30,7 +30,7 @@ from xml.etree import ElementTree
 import docx
 import pytest
 
-from parser_service import page_pipeline, settings
+from parser_service import settings
 from parser_service.formats import handlers as unit_handlers
 from parser_service.formats.guards import (
     ELEMENT_START,
@@ -40,6 +40,7 @@ from parser_service.formats.guards import (
     docx_stats,
 )
 from parser_service.formats.result import Reply
+from parser_service.pipeline import config, intake, layout, units
 from parser_service.service.worker import Request
 from parser_service.storage.store import LocalStore
 
@@ -372,8 +373,8 @@ class _StubRunner:
 
 
 def _store_unit(store: LocalStore, source: Path) -> str:
-    work_id = page_pipeline.work_id_for(source, "docx")
-    page_pipeline._intake(store, work_id, source, "docx")
+    work_id = intake.work_id_for(source, "docx")
+    intake._intake(store, work_id, source, "docx")
     return work_id
 
 
@@ -402,48 +403,48 @@ def test_guard_rejection_never_starts_docling(
     caplog.set_level(logging.INFO, logger="parser_service.events")
     work_id = _store_unit(store, bombs["part"])
     started = time.perf_counter()
-    record = page_pipeline._process_page(store, work_id, 1, False, 3, runner=runner, kind="docx")
+    record = units._process_page(store, work_id, 1, False, 3, runner=runner, kind="docx")
     seconds = time.perf_counter() - started
     assert runner.requests == [] and seconds < _REJECT_BUDGET_S
     assert (record["state"], record["reason_code"], record["attempt"]) == ("failed", "zip_bomb", 1)
     assert record["reason"].startswith("zip_bomb: expanded 4")
     assert record["limits"] == LIMITS.zip_limits()
     assert (record["parse_worker_pid"], record["markdown"], record["kind"]) == (None, "", "docx")
-    assert page_pipeline._read_attempts(store, work_id, 1) == 1
+    assert layout._read_attempts(store, work_id, 1) == 1
     events = [
         json.loads(r.getMessage()) for r in caplog.records if r.name == "parser_service.events"
     ]
     assert any(e["event"] == "guard_reject" and e["reason_code"] == "zip_bomb" for e in events)
 
     # Final under unchanged limits (D5); a raised limit releases it.
-    limits_now = page_pipeline.current_limits("docx")
+    limits_now = config.current_limits("docx")
     assert {
         **LIMITS.zip_limits(),
         **LIMITS.count_limits(),
         "deadline_s": 60,
     }.items() <= limits_now.items()
-    assert page_pipeline._is_final(record, limits_now)
+    assert config._is_final(record, limits_now)
     monkeypatch.setenv("PARSER_DOCX_MAX_EXPANDED_MB", "500")
-    assert not page_pipeline._is_final(record, page_pipeline.current_limits("docx"))
+    assert not config._is_final(record, config.current_limits("docx"))
     monkeypatch.delenv("PARSER_DOCX_MAX_EXPANDED_MB")
 
     # Local executor: too_complex, and the stub handler is never called.
     work_id = _store_unit(store, bombs["elements"])
-    record = page_pipeline._process_page(store, work_id, 1, False, 3, kind="docx")
+    record = units._process_page(store, work_id, 1, False, 3, kind="docx")
     assert (record["reason_code"], record["limits"], handled) == (
         "too_complex",
         LIMITS.count_limits(),
         [],
     )
-    assert page_pipeline._is_final(record, page_pipeline.current_limits("docx"))
+    assert config._is_final(record, config.current_limits("docx"))
     monkeypatch.setenv("PARSER_DOCX_MAX_PARAGRAPHS", "60000")
-    assert not page_pipeline._is_final(record, page_pipeline.current_limits("docx"))
+    assert not config._is_final(record, config.current_limits("docx"))
     monkeypatch.delenv("PARSER_DOCX_MAX_PARAGRAPHS")
 
     # A normal DOCX passes the guard and is parsed, on both paths.
     assert check_docx(bombs["normal"], LIMITS) is None
     work_id = _store_unit(store, bombs["normal"])
-    record = page_pipeline._process_page(store, work_id, 1, False, 3, runner=runner, kind="docx")
+    record = units._process_page(store, work_id, 1, False, 3, runner=runner, kind="docx")
     assert (record["state"], record["markdown"], record["parse_worker_pid"]) == (
         "ok",
         "# parsed",
@@ -452,7 +453,7 @@ def test_guard_rejection_never_starts_docling(
     assert [request[0] for request in runner.requests] == ["docx"]
     local_store = LocalStore(tmp_path / "local")
     work_id = _store_unit(local_store, bombs["normal"])
-    record = page_pipeline._process_page(local_store, work_id, 1, False, 3, kind="docx")
+    record = units._process_page(local_store, work_id, 1, False, 3, kind="docx")
     assert record["state"] == "ok" and len(handled) == 1
 
     # The guard alone, in a fresh interpreter: no Docling (or torch) is imported.

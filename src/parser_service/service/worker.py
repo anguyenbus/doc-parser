@@ -26,11 +26,11 @@ past its deadline can be killed without killing the service:
 - The worker enforces the output cap before it replies, so an oversized text
   never crosses the pipe. PDF pages have no output cap.
 - The worker never writes to the store: only the service writes records, so a
-  timed-out unit gets exactly one record (``page_pipeline._process_page``).
+  timed-out unit gets exactly one record (``units._process_page``).
 - ``start()`` kills and reaps the previous worker before it spawns the next, so a
   pod never holds two working sets.
 
-``ParseWorker`` is the ``runner`` that ``page_pipeline._process_page`` accepts.
+``ParseWorker`` is the ``runner`` that ``units._process_page`` accepts.
 The parse target and the warm-up are module-level functions (``spawn`` pickles
 them by reference); tests pass their own sleeping or crashing targets.
 """

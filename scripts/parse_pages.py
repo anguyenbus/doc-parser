@@ -91,12 +91,9 @@ from parser_service.delivery.jobs import (  # noqa: E402
 )
 from parser_service.delivery.publish import PublishRequest, publish_deletion, slugify  # noqa: E402
 from parser_service.observability import truncate  # noqa: E402
-from parser_service.page_pipeline import (  # noqa: E402
-    FILE_COMPLETE,
-    PipelineConfigMismatch,
-    RemotePageError,
-    parse_pdf_pages_in_store,
-)
+from parser_service.pipeline.api import parse_pdf_pages_in_store  # noqa: E402
+from parser_service.pipeline.config import FILE_COMPLETE, PipelineConfigMismatch  # noqa: E402
+from parser_service.pipeline.remote_runner import RemotePageError  # noqa: E402
 from parser_service.settings import SettingsError, load_settings  # noqa: E402
 from parser_service.storage import aws  # noqa: E402
 from parser_service.storage.store import open_store  # noqa: E402

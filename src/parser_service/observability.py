@@ -259,7 +259,7 @@ def observe_unit(
 ) -> None:
     """Count one parsed unit and log ``unit_done`` (and ``guard_reject`` for a guard code).
 
-    ``record`` is the unit's record as written (``page_pipeline._write_record``).
+    ``record`` is the unit's record as written (``pipeline_units._write_record``).
     """
     kind = str(record.get("kind") or "pdf")
     state = str(record.get("state"))

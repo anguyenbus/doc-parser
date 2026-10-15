@@ -43,10 +43,11 @@ from fastapi import HTTPException  # noqa: E402
 from kserve.errors import InvalidInput  # noqa: E402
 from prometheus_client import REGISTRY  # noqa: E402
 
-from parser_service import page_pipeline  # noqa: E402
 from parser_service.formats import pdf  # noqa: E402
 from parser_service.formats.result import Reply, exception_reply  # noqa: E402
-from parser_service.page_pipeline import KSERVE_MODEL_NAME, work_id_for  # noqa: E402
+from parser_service.pipeline import config, intake, layout  # noqa: E402
+from parser_service.pipeline.intake import work_id_for  # noqa: E402
+from parser_service.pipeline.remote_runner import KSERVE_MODEL_NAME  # noqa: E402
 from parser_service.service import worker as page_worker  # noqa: E402
 from parser_service.service.predictor import PageParserModel, parse_instance  # noqa: E402
 from parser_service.service.worker import ParseWorker, Request, WorkerNotReady  # noqa: E402
@@ -225,7 +226,7 @@ def _payload(**overrides: Any) -> dict[str, Any]:
 def store(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> LocalStore:
     _install_fake(monkeypatch, lambda n: _result(f"Page {n} text."))
     store = LocalStore(tmp_path)
-    page_pipeline._split(store, WORK_ID, THREE_PAGE)
+    intake._split(store, WORK_ID, THREE_PAGE)
     return store
 
 
@@ -351,11 +352,11 @@ def test_one_page_at_a_time_under_concurrent_requests(
 
 
 def _record(store: LocalStore, page: int) -> Path:
-    return store.root / page_pipeline._record_key(WORK_ID, page)
+    return store.root / layout._record_key(WORK_ID, page)
 
 
 def _attempts(store: LocalStore, page: int) -> int:
-    return page_pipeline._read_attempts(store, WORK_ID, page)
+    return layout._read_attempts(store, WORK_ID, page)
 
 
 def test_timeout_returns_200_with_a_failed_summary(
@@ -505,15 +506,18 @@ _SERVICE_SCRIPT = r"""
 import asyncio, json, sys
 from pathlib import Path
 
-from parser_service import page_pipeline
+from parser_service.pipeline import config
+from parser_service.pipeline import intake
+from parser_service.pipeline import layout
 from parser_service.service.predictor import PageParserModel
-from parser_service.page_pipeline import KSERVE_MODEL_NAME, work_id_for
+from parser_service.pipeline.intake import work_id_for
+from parser_service.pipeline.remote_runner import KSERVE_MODEL_NAME
 from parser_service.storage.store import LocalStore
 
 source, root = Path(sys.argv[1]), Path(sys.argv[2])
 store = LocalStore(root)
 work_id = work_id_for(source)
-page_pipeline._split(store, work_id, source)
+intake._split(store, work_id, source)
 model = PageParserModel(KSERVE_MODEL_NAME, store, terminate=lambda: sys.exit("terminate"))
 try:
     assert model.load(), "the worker did not get ready"
@@ -555,9 +559,9 @@ def test_disabled_kind_gives_409_and_page_over_count_gives_400(
     and a page past the manifest's page_count with 400; neither counts an attempt."""
     monkeypatch.setenv("PARSER_ENABLED_KINDS", "pdf")  # docx switched off on this pod
     docx = Path(__file__).parent / "fixtures" / "doc.docx"
-    docx_work = page_pipeline.work_id_for(docx)
-    assert docx_work.endswith(page_pipeline.config_hash(page_pipeline.pipeline_config("docx")))
-    page_pipeline._intake(store, docx_work, docx, "docx")
+    docx_work = intake.work_id_for(docx)
+    assert docx_work.endswith(config.config_hash(config.pipeline_config("docx")))
+    intake._intake(store, docx_work, docx, "docx")
     model = _in_process_model(store)
     assert model.load()
 

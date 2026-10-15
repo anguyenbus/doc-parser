@@ -24,15 +24,15 @@ from typing import Any
 import pytest
 from test_page_pipeline import THREE_PAGE, _install_fake, _result
 
-from parser_service import page_pipeline
-from parser_service.page_pipeline import (
-    PipelineConfigMismatch,
+from parser_service.pipeline import intake, layout, remote_runner
+from parser_service.pipeline.api import parse_pdf_pages_in_store
+from parser_service.pipeline.config import PipelineConfigMismatch
+from parser_service.pipeline.intake import work_id_for
+from parser_service.pipeline.layout import file_id_for
+from parser_service.pipeline.remote_runner import (
     RemotePageError,
-    file_id_for,
     kserve_predict_url,
-    parse_pdf_pages_in_store,
     process_page_request,
-    work_id_for,
 )
 from parser_service.storage.store import LocalStore
 
@@ -74,8 +74,8 @@ class PageService:
             nth = sum(1 for r in self.requests if r["page"] == page)
         action = self.behaviour(page, nth)
         if action in (CRASH, DIED):
-            attempts = page_pipeline._attempts_key(instance["work_id"], page)
-            current = page_pipeline._read_attempts(self.store, instance["work_id"], page)
+            attempts = layout._attempts_key(instance["work_id"], page)
+            current = layout._read_attempts(self.store, instance["work_id"], page)
             self.store.write(attempts, str(current + 1).encode())
         if action == DIED:
             self._reply(handler, 500, {"error": "parse worker 123 died during the parse"})
@@ -131,7 +131,7 @@ def running(service: PageService) -> Iterator[str]:
 
 @pytest.fixture(autouse=True)
 def _no_sleep(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(page_pipeline, "_sleep", lambda seconds: None)
+    monkeypatch.setattr(remote_runner, "_sleep", lambda seconds: None)
 
 
 @pytest.fixture
@@ -247,13 +247,13 @@ def test_errors_that_never_start_the_page_are_bounded(
     service = PageService(LocalStore(tmp_path), lambda page, n: 500 if page == 1 else SERVE)
     with running(service) as endpoint, pytest.raises(RemotePageError, match="without the page"):
         _remote(tmp_path, endpoint, max_attempts=2, concurrency=1)
-    assert [r["page"] for r in service.requests].count(1) == 2 + page_pipeline._REMOTE_EXTRA_ERRORS + 1
+    assert [r["page"] for r in service.requests].count(1) == 2 + remote_runner._REMOTE_EXTRA_ERRORS + 1
 
 
 def test_endless_busy_refusals_hit_the_deadline(
     tmp_path: Path, fake_parse: list[int], monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr(page_pipeline, "_REMOTE_BUSY_DEADLINE", 0.2)
+    monkeypatch.setattr(remote_runner, "_REMOTE_BUSY_DEADLINE", 0.2)
     service = PageService(LocalStore(tmp_path), lambda page, n: 503)
     with running(service) as endpoint, pytest.raises(RemotePageError, match="refused it for"):
         _remote(tmp_path, endpoint)
@@ -276,7 +276,7 @@ def test_kserve_needs_an_endpoint(tmp_path: Path) -> None:
 
 def _split(tmp_path: Path) -> LocalStore:
     store = LocalStore(tmp_path)
-    page_pipeline._split(store, WORK_ID, THREE_PAGE)
+    intake._split(store, WORK_ID, THREE_PAGE)
     return store
 
 
@@ -295,7 +295,7 @@ def test_page_request_refuses_an_unknown_file_or_page(tmp_path: Path, fake_parse
     store = LocalStore(tmp_path)
     with pytest.raises(ValueError, match="no manifest"):
         process_page_request(store, WORK_ID, 1, True, 3)
-    page_pipeline._split(store, WORK_ID, THREE_PAGE)
+    intake._split(store, WORK_ID, THREE_PAGE)
     with pytest.raises(ValueError, match="not page 4"):
         process_page_request(store, WORK_ID, 4, True, 3)
     assert fake_parse == []

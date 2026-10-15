@@ -26,9 +26,9 @@ from typing import Any
 
 import pytest
 
-from parser_service import page_pipeline
 from parser_service.formats.result import Reply
-from parser_service.page_pipeline import split_pdf, work_dir_for, work_id_for
+from parser_service.pipeline import config, layout, units
+from parser_service.pipeline.intake import split_pdf, work_dir_for, work_id_for
 from parser_service.service.worker import ParseWorker, WorkerDied, WorkerTimeout
 from parser_service.storage.store import LocalStore
 
@@ -129,11 +129,11 @@ def _wait_gone(pid: int, seconds: float = 3.0) -> bool:
 
 
 def _record_file(store: LocalStore, work_id: str, page_number: int) -> Path:
-    return store.root / page_pipeline._record_key(work_id, page_number)
+    return store.root / layout._record_key(work_id, page_number)
 
 
 def _attempts(store: LocalStore, work_id: str, page_number: int) -> int:
-    return page_pipeline._read_attempts(store, work_id, page_number)
+    return layout._read_attempts(store, work_id, page_number)
 
 
 # ---------------------------------------------------------------------------
@@ -149,7 +149,7 @@ def test_deadline_kills_worker_and_writes_timeout_record(
     pid = worker.start()
 
     started = time.monotonic()
-    record = page_pipeline._process_page(store, work_id, 2, False, 3, runner=worker)
+    record = units._process_page(store, work_id, 2, False, 3, runner=worker)
     elapsed = time.monotonic() - started
 
     assert DEADLINE_S <= elapsed < DEADLINE_S + 5
@@ -166,7 +166,7 @@ def test_deadline_kills_worker_and_writes_timeout_record(
     assert not worker.ready and worker.pid is None
     assert not Path(f"/proc/{pid}").exists()
     # Final under the same deadline (D5): a re-run would not archive it.
-    assert page_pipeline._is_final(record, page_pipeline.current_limits("pdf"))
+    assert config._is_final(record, config.current_limits("pdf"))
 
 
 def test_next_request_after_timeout_succeeds_on_a_new_worker(
@@ -176,12 +176,12 @@ def test_next_request_after_timeout_succeeds_on_a_new_worker(
     lost: list[str] = []
     worker = make_worker(_scripted_target, on_lost=lost.append)
     first = worker.start()
-    timed_out = page_pipeline._process_page(store, work_id, 2, False, 3, runner=worker)
+    timed_out = units._process_page(store, work_id, 2, False, 3, runner=worker)
     assert timed_out["reason_code"] == "timeout"
     assert lost == ["timeout"]
 
     second = worker.start()  # what the page service's respawn does
-    record = page_pipeline._process_page(store, work_id, 1, False, 3, runner=worker)
+    record = units._process_page(store, work_id, 1, False, 3, runner=worker)
 
     assert second != first
     assert record["state"] == "ok"
@@ -259,18 +259,18 @@ def test_timeout_record_loses_to_an_existing_record(
     worker.start()
 
     def other_pod_writes() -> None:
-        page_pipeline._write_record(store, work_id, 2, "ok", None, "from another pod", 1)
+        units._write_record(store, work_id, 2, "ok", None, "from another pod", 1)
 
     writer = threading.Timer(0.3, other_pod_writes)
     writer.start()
     try:
-        record = page_pipeline._process_page(store, work_id, 2, False, 3, runner=worker)
+        record = units._process_page(store, work_id, 2, False, 3, runner=worker)
     finally:
         writer.join()
 
     assert record["state"] == "ok" and record["markdown"] == "from another pod"
     assert "reason_code" in record and record["reason_code"] is None
-    stored = page_pipeline._load_record(store, work_id, 2)
+    stored = layout._load_record(store, work_id, 2)
     assert stored == record  # first write wins; the timeout was discarded
     assert not worker.ready  # the worker was still killed at the deadline
 
@@ -282,14 +282,14 @@ def test_worker_exception_becomes_a_failed_reply_and_the_worker_lives(
     worker = make_worker(_scripted_target)
     pid = worker.start()
 
-    failed = page_pipeline._process_page(store, work_id, 3, False, 3, runner=worker)
+    failed = units._process_page(store, work_id, 3, False, 3, runner=worker)
     assert failed["state"] == "failed"
     assert failed["reason_code"] == "exception"
     assert failed["reason"] == "exception: RuntimeError: boom on page 3"
     assert failed["parse_worker_pid"] == pid
     assert "limits" not in failed
 
-    ok = page_pipeline._process_page(store, work_id, 1, False, 3, runner=worker)
+    ok = units._process_page(store, work_id, 1, False, 3, runner=worker)
     assert ok["state"] == "ok" and ok["parse_worker_pid"] == pid
     assert worker.ready and worker.pid == pid
 
@@ -303,7 +303,7 @@ def test_worker_death_raises_worker_died_and_writes_no_record(
     pid = worker.start()
 
     with pytest.raises(WorkerDied) as died:
-        page_pipeline._process_page(store, work_id, 1, False, 3, runner=worker)
+        units._process_page(store, work_id, 1, False, 3, runner=worker)
 
     assert died.value.pid == pid and died.value.exitcode == 3
     assert not _record_file(store, work_id, 1).exists()

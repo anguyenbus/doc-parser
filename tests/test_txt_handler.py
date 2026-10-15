@@ -19,10 +19,10 @@ from pathlib import Path
 import pytest
 from test_parse_pages_script import _main, script  # noqa: F401  (fixture)
 
-from parser_service import page_pipeline
 from parser_service.delivery.jobs import job_status_key
 from parser_service.formats.handlers import parse_unit
 from parser_service.formats.result import Reply
+from parser_service.pipeline import api, config, intake, layout, remote_runner, units
 from parser_service.service.worker import ParseWorker, parse_request
 from parser_service.storage.store import LocalStore
 
@@ -85,15 +85,15 @@ def test_nul_heavy_input_is_rejected(tmp_path: Path) -> None:
     source = tmp_path / "in" / "nul.txt"
     source.parent.mkdir()
     source.write_bytes(text + b"\x00" * 11)
-    work_id = page_pipeline.work_id_for(source, "txt")
-    page_pipeline._intake(store, work_id, source, "txt")
-    record = page_pipeline._process_page(store, work_id, 1, False, 3, kind="txt")
+    work_id = intake.work_id_for(source, "txt")
+    intake._intake(store, work_id, source, "txt")
+    record = units._process_page(store, work_id, 1, False, 3, kind="txt")
     assert (record["state"], record["reason_code"], record["limits"]) == (
         "failed",
         "unsupported_type",
         {},
     )
-    assert page_pipeline._is_final(record, page_pipeline.current_limits("txt"))
+    assert config._is_final(record, config.current_limits("txt"))
 
 
 def test_binary_input_is_rejected(tmp_path: Path) -> None:
@@ -114,7 +114,7 @@ def test_empty_file_is_ok_with_empty_document_route(tmp_path: Path, txt_enabled:
     source = tmp_path / "in" / "empty.txt"
     source.parent.mkdir()
     source.write_bytes(b"")
-    result = page_pipeline.parse_pdf_pages(source, tmp_path / "store", workers=0, escalate=False)
+    result = api.parse_pdf_pages(source, tmp_path / "store", workers=0, escalate=False)
     assert (result["state"], result["kind"]) == ("complete", "txt")
     status = json.loads(Path(result["status_path"]).read_text())
     assert status["unit"] == "document"
@@ -162,8 +162,8 @@ def test_output_over_cap_fails_with_output_too_large(
     source = tmp_path / "in" / "long.txt"
     source.parent.mkdir()
     source.write_bytes(b"0123456789abcdef\n" * 70_000)  # 1.19 MB of text
-    work_id = page_pipeline.work_id_for(source, "txt")
-    page_pipeline._intake(store, work_id, source, "txt")
+    work_id = intake.work_id_for(source, "txt")
+    intake._intake(store, work_id, source, "txt")
 
     worker = ParseWorker(parse_request, None, start_timeout_s=60)
     try:
@@ -177,10 +177,10 @@ def test_output_over_cap_fails_with_output_too_large(
             "",
         )
         # The page service path: the cap comes from PARSER_MAX_OUTPUT_MB.
-        page_pipeline.process_page_request(store, work_id, 1, False, 3, runner=worker)
+        remote_runner.process_page_request(store, work_id, 1, False, 3, runner=worker)
     finally:
         worker.kill()
-    record = page_pipeline._load_record(store, work_id, 1)
+    record = layout._load_record(store, work_id, 1)
     assert record is not None
     assert (record["state"], record["reason_code"], record["markdown"]) == (
         "failed",
@@ -188,12 +188,12 @@ def test_output_over_cap_fails_with_output_too_large(
         "",
     )
     assert record["limits"] == {"max_output_mb": 1}
-    assert page_pipeline._is_final(record, page_pipeline.current_limits("txt"))
+    assert config._is_final(record, config.current_limits("txt"))
     # Raising the cap releases the record (D5).
     monkeypatch.setenv("PARSER_MAX_OUTPUT_MB", "2")
-    assert not page_pipeline._is_final(record, page_pipeline.current_limits("txt"))
+    assert not config._is_final(record, config.current_limits("txt"))
     # PDF pages still get no cap.
-    assert page_pipeline.output_cap_bytes("pdf") is None
+    assert config.output_cap_bytes("pdf") is None
 
 
 def test_txt_never_calls_docling(tmp_path: Path) -> None:

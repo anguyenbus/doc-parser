@@ -22,16 +22,14 @@ from typing import Any
 
 import pytest
 
-from parser_service import page_pipeline
 from parser_service.formats import pdf
 from parser_service.formats.pdf import classify_page_result
 from parser_service.formats.result import Reply
-from parser_service.page_pipeline import (
-    parse_pdf_pages,
-    split_pdf,
-    strip_page_markers,
-    work_dir_for,
-)
+from parser_service.pipeline import api, intake, layout, remote_runner, units
+from parser_service.pipeline import config as config_module
+from parser_service.pipeline.api import parse_pdf_pages
+from parser_service.pipeline.config import strip_page_markers
+from parser_service.pipeline.intake import split_pdf, work_dir_for
 from parser_service.service.worker import Request
 
 FIXTURES = Path(__file__).parent / "fixtures"
@@ -257,10 +255,10 @@ def test_classify_page_result(result: dict[str, Any], state: str) -> None:
 
 def test_docling_version_is_part_of_the_config_hash(monkeypatch: pytest.MonkeyPatch) -> None:
     """A Docling upgrade gets a new work dir instead of resuming onto old pages."""
-    before = page_pipeline.config_hash()
-    assert page_pipeline.pipeline_config()["docling_version"] == page_pipeline.DOCLING_VERSION
-    monkeypatch.setattr(page_pipeline, "DOCLING_VERSION", "0.0.0-other")
-    assert page_pipeline.config_hash() != before
+    before = config_module.config_hash()
+    assert config_module.pipeline_config()["docling_version"] == config_module.DOCLING_VERSION
+    monkeypatch.setattr(config_module, "DOCLING_VERSION", "0.0.0-other")
+    assert config_module.config_hash() != before
 
 
 def test_non_pdf_input_is_refused(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -320,9 +318,9 @@ def _store_timeout_record(tmp_path: Path, page_number: int, deadline: int) -> di
     work_dir.mkdir(parents=True)
     split_pdf(THREE_PAGE, work_dir)
     store = LocalStore(tmp_path)
-    work_id = page_pipeline.work_id_for(THREE_PAGE)
-    page_pipeline._put_text(store, page_pipeline._attempts_key(work_id, page_number), "1")
-    return page_pipeline._write_record(
+    work_id = intake.work_id_for(THREE_PAGE)
+    layout._put_text(store, layout._attempts_key(work_id, page_number), "1")
+    return units._write_record(
         store,
         work_id,
         page_number,
@@ -437,7 +435,7 @@ def test_new_records_carry_reason_code(tmp_path: Path, monkeypatch: pytest.Monke
     )
     del old["reason_code"]
     _record_path(tmp_path, 1).write_text(json.dumps(old))
-    assert not page_pipeline._is_final(old, page_pipeline.current_limits())
+    assert not config_module._is_final(old, config_module.current_limits())
     calls = _install_fake(monkeypatch, lambda n: _result(f"p{n}"))
     result = parse_pdf_pages(THREE_PAGE, tmp_path, workers=0)
     assert sorted(calls) == [1, 2]
@@ -445,16 +443,16 @@ def test_new_records_carry_reason_code(tmp_path: Path, monkeypatch: pytest.Monke
 
 
 def test_deadline_is_not_in_the_config_hash(monkeypatch: pytest.MonkeyPatch) -> None:
-    before_config, before_hash = page_pipeline.pipeline_config(), page_pipeline.config_hash()
+    before_config, before_hash = config_module.pipeline_config(), config_module.config_hash()
 
     monkeypatch.setenv("PARSER_DEADLINE_PDF_PAGE_S", "5")
     monkeypatch.setenv("PARSER_REMOTE_REQUEST_TIMEOUT_S", "125")
     monkeypatch.setenv("PARSER_WORKER_START_TIMEOUT_S", "7")
 
-    assert page_pipeline.deadline_for("pdf") == 5
-    assert page_pipeline.current_limits() == {"deadline_s": 5}
-    assert page_pipeline.pipeline_config() == before_config
-    assert page_pipeline.config_hash() == before_hash
+    assert config_module.deadline_for("pdf") == 5
+    assert config_module.current_limits() == {"deadline_s": 5}
+    assert config_module.pipeline_config() == before_config
+    assert config_module.config_hash() == before_hash
     assert not {"deadline_s", "deadline_pdf_page_s", "request_timeout"} & set(before_config)
 
 
@@ -502,10 +500,10 @@ def test_config_hash_changes_with_handler_version(monkeypatch: pytest.MonkeyPatc
     from parser_service.formats import handlers as unit_handlers
     from parser_service.formats.sniff import KINDS
 
-    configs = {kind: page_pipeline.pipeline_config(kind) for kind in KINDS}
-    hashes = {kind: page_pipeline.config_hash(config) for kind, config in configs.items()}
+    configs = {kind: config_module.pipeline_config(kind) for kind in KINDS}
+    hashes = {kind: config_module.config_hash(config) for kind, config in configs.items()}
     assert len(set(hashes.values())) == len(KINDS)  # every kind has its own hash
-    assert page_pipeline.config_hash() == hashes["pdf"]  # the default is the PDF's
+    assert config_module.config_hash() == hashes["pdf"]  # the default is the PDF's
     escalation = {"escalation_engine", "vlm_model", "scan_fastpath", "arbitration"}
     assert escalation <= set(configs["pdf"])
     for kind, config in configs.items():
@@ -516,8 +514,8 @@ def test_config_hash_changes_with_handler_version(monkeypatch: pytest.MonkeyPatc
 
     # A VLM model change re-parses PDFs only.
     monkeypatch.setenv("BEDROCK_VLM_MODEL", "another-model")
-    assert page_pipeline.config_hash(page_pipeline.pipeline_config("pdf")) != hashes["pdf"]
-    assert page_pipeline.config_hash(page_pipeline.pipeline_config("docx")) == hashes["docx"]
+    assert config_module.config_hash(config_module.pipeline_config("pdf")) != hashes["pdf"]
+    assert config_module.config_hash(config_module.pipeline_config("docx")) == hashes["docx"]
     monkeypatch.delenv("BEDROCK_VLM_MODEL")
 
     # A handler bump changes its own kinds' hashes and no other (email: eml and msg).
@@ -527,7 +525,7 @@ def test_config_hash_changes_with_handler_version(monkeypatch: pytest.MonkeyPatc
             changed = {
                 kind
                 for kind in KINDS
-                if page_pipeline.config_hash(page_pipeline.pipeline_config(kind)) != hashes[kind]
+                if config_module.config_hash(config_module.pipeline_config(kind)) != hashes[kind]
             }
         assert changed == bumped, handler
 
@@ -607,12 +605,12 @@ def test_routing_uses_manifest_kind_not_extension(
 
     assert (result["state"], result["kind"], result["unit"]) == ("complete", "docx", "document")
     work_id = result["work_id"]
-    assert work_id == page_pipeline.work_id_for(renamed)
-    assert work_id.endswith(page_pipeline.config_hash(page_pipeline.pipeline_config("docx")))
+    assert work_id == intake.work_id_for(renamed)
+    assert work_id.endswith(config_module.config_hash(config_module.pipeline_config("docx")))
     store = LocalStore(tmp_path / "store")
-    manifest = page_pipeline._read_json(store, page_pipeline._manifest_key(work_id))
+    manifest = layout._read_json(store, layout._manifest_key(work_id))
     assert (manifest["kind"], manifest["unit"], manifest["page_count"]) == ("docx", "document", 1)
-    assert manifest["config"] == page_pipeline.pipeline_config("docx")
+    assert manifest["config"] == config_module.pipeline_config("docx")
     assert _work_keys(tmp_path / "store") == sorted(
         f"work/{work_id}/{name}"
         for name in (
@@ -636,8 +634,8 @@ def test_routing_uses_manifest_kind_not_extension(
             return "ok", None, None, "worker text", {}
 
     other = LocalStore(tmp_path / "service")
-    page_pipeline._intake(other, work_id, renamed, "docx")
-    summary = page_pipeline.process_page_request(other, work_id, 1, False, 3, runner=Recorder())
+    intake._intake(other, work_id, renamed, "docx")
+    summary = remote_runner.process_page_request(other, work_id, 1, False, 3, runner=Recorder())
     assert (summary["state"], summary["kind"]) == ("ok", "docx")
     [(kind, unit_path, page, _escalate, _cap)] = requests
     assert (kind, Path(unit_path).name, page) == ("docx", "source.docx", 1)
@@ -656,7 +654,7 @@ def test_binary_kind_mismatch_is_counted_not_failed(
         result = parse_pdf_pages(renamed, tmp_path / "store", workers=0)
 
     assert (result["state"], result["kind"], result["detected_type"]) == ("complete", "pdf", "pdf")
-    assert result["work_id"] == page_pipeline.work_id_for(THREE_PAGE)  # same bytes, same work
+    assert result["work_id"] == intake.work_id_for(THREE_PAGE)  # same bytes, same work
     assert sorted(calls) == [1, 2, 3]
     assert any("disagrees with the content" in r.getMessage() for r in caplog.records)
 
@@ -672,13 +670,13 @@ def test_manifest_without_kind_resumes_as_pdf(
     assert (manifest["kind"], manifest["unit"]) == ("pdf", "page")
     old = {k: v for k, v in manifest.items() if k not in ("kind", "unit")}
     (work_dir / "manifest.json").write_text(json.dumps(old))
-    assert page_pipeline.manifest_kind(old) == "pdf"
-    work_id = page_pipeline.work_id_for(THREE_PAGE)
-    assert page_pipeline._unit_key(work_id, old, 2) == f"work/{work_id}/pages/0002.pdf"
+    assert config_module.manifest_kind(old) == "pdf"
+    work_id = intake.work_id_for(THREE_PAGE)
+    assert layout._unit_key(work_id, old, 2) == f"work/{work_id}/pages/0002.pdf"
 
     calls = _install_fake(monkeypatch, lambda n: _result(f"p{n}"))
     store = LocalStore(tmp_path)
-    summary = page_pipeline.process_page_request(store, work_id, 1, False, 3)
+    summary = remote_runner.process_page_request(store, work_id, 1, False, 3)
     assert (summary["state"], summary["kind"]) == ("ok", "pdf")
     result = parse_pdf_pages(THREE_PAGE, tmp_path, workers=0)
 
@@ -706,7 +704,7 @@ def test_intake_rejection_writes_status_and_one_failed_event(
     def events() -> list[Path]:
         return sorted((root / "published/v1/events").rglob("*.json"))
 
-    result = page_pipeline.parse_file_in_store(
+    result = api.parse_file_in_store(
         XLSX, str(root), workers=0, publish=PublishRequest("sheet", "job-1")
     )
 
@@ -734,7 +732,7 @@ def test_intake_rejection_writes_status_and_one_failed_event(
     [event_path] = events()
     event = json.loads(event_path.read_text())
     sha256 = status["source_sha256"]
-    intake_hash = page_pipeline.config_hash({"intake": "unsupported_type", "kind": None})
+    intake_hash = config_module.config_hash({"intake": "unsupported_type", "kind": None})
     assert event["version"] == version_for(sha256, intake_hash, "failed", 0)
     assert result["published"]["version"] == event["version"]
     assert (event["type"], event["doc_id"], event["job_id"]) == ("failed", "sheet", "job-1")
@@ -770,7 +768,7 @@ def test_intake_rejection_writes_status_and_one_failed_event(
         script.main()
     assert exit_info.value.code == 2
     assert events() == [event_path] and event_path.read_bytes() == before
-    again = page_pipeline.parse_file_in_store(
+    again = api.parse_file_in_store(
         XLSX, str(root), workers=0, publish=PublishRequest("sheet", "job-1")
     )
     assert again["published"] == result["published"]

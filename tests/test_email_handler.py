@@ -31,10 +31,10 @@ import pytest
 from PIL import Image
 from test_page_pipeline_store import MemoryStore
 
-from parser_service import page_pipeline
 from parser_service.delivery.publish import PublishRequest
 from parser_service.formats.handlers import parse_unit
 from parser_service.parsing import document as markdown_pipeline
+from parser_service.pipeline import api, intake, layout, remote_runner
 from parser_service.service.worker import ParseWorker, parse_request
 from parser_service.storage.store import LocalStore
 
@@ -279,13 +279,13 @@ def test_malformed_mime_gives_a_record_not_a_dead_worker(
         # The page service path writes one record for a malformed EML.
         store = LocalStore(tmp_path / "store")
         source = tmp_path / "unterminated.eml"
-        work_id = page_pipeline.work_id_for(source, "eml")
-        page_pipeline._intake(store, work_id, source, "eml")
-        page_pipeline.process_page_request(store, work_id, 1, False, 3, runner=worker)
+        work_id = intake.work_id_for(source, "eml")
+        intake._intake(store, work_id, source, "eml")
+        remote_runner.process_page_request(store, work_id, 1, False, 3, runner=worker)
         assert worker.pid == pid
     finally:
         worker.kill()
-    record = page_pipeline._load_record(store, work_id, 1)
+    record = layout._load_record(store, work_id, 1)
     assert record is not None
     assert (record["state"], record["kind"], record["unit"]) == ("ok", "eml", "document")
     assert record["parse_worker_pid"] == pid
@@ -350,7 +350,7 @@ def test_attachments_are_listed_and_not_parsed(
     source = _write(tmp_path, message.as_bytes(), "mail.eml")
 
     store = MemoryStore()
-    result = page_pipeline.parse_pdf_pages_in_store(
+    result = api.parse_pdf_pages_in_store(
         source, "unused", store=store, workers=0, publish=PublishRequest("mail")
     )
 
@@ -514,7 +514,7 @@ def test_headers_in_document_json_not_in_event(
 
     for doc_id, source in (("mail", eml), ("outlook", msg)):
         store = MemoryStore()
-        result = page_pipeline.parse_pdf_pages_in_store(
+        result = api.parse_pdf_pages_in_store(
             source, "unused", store=store, workers=0, publish=PublishRequest(doc_id)
         )
         published = result["published"]
