@@ -1,5 +1,5 @@
 """
-kserve_predictor.py — the page pipeline's page step as a KServe custom predictor.
+predictor.py — the page pipeline's page step as a KServe custom predictor.
 
 One request is one page of a file that the caller has already split into the
 store (``parse_file_in_store(..., executor="kserve")`` does the intake, the
@@ -17,7 +17,7 @@ response only summarises it, so a repeated request is answered from the store.
   in the caller, and the pod's CPU is an honest autoscaling signal.
 - The store location comes from this pod's settings (``PARSER_STORE_LOCATION``),
   never from a request, so a caller cannot make the service write elsewhere.
-- The parse runs in one long-lived worker process (``page_worker.ParseWorker``,
+- The parse runs in one long-lived worker process (``worker.ParseWorker``,
   spec D4), never in this process: Docling and torch are only imported there.
   ``load()`` starts the worker and waits until it has parsed the bundled warm-up
   page, so ready means the models are loaded.
@@ -92,7 +92,7 @@ service_metrics()
 
 
 class ManagedWorker(ParseRunner, Protocol):
-    """What the model needs of its parse worker (``page_worker.ParseWorker``)."""
+    """What the model needs of its parse worker (``worker.ParseWorker``)."""
 
     @property
     def ready(self) -> bool: ...

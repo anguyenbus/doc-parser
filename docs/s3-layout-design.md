@@ -416,7 +416,7 @@ The `published` event:
 
 | Piece | File |
 |---|---|
-| `work/` and `out/` layout, split, page records, status, stitch | `src/parser_service/page_pipeline.py` |
+| `work/` and `out/` layout, split, page records, status, stitch | `src/parser_service/pipeline/` (`layout.py`, `intake.py`, `units.py`, `status.py`) |
 | `published/` versions, manifest, events, ids | `src/parser_service/delivery/publish.py` |
 | `job.json` and `ops/jobs/` | `src/parser_service/delivery/jobs.py` |
 | The driver CLI (`--job`, `--publish`, `--publish-partial`, `--doc-id`) | `scripts/parse_pages.py` |

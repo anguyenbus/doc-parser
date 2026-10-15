@@ -1,5 +1,5 @@
 """
-markdown_pipeline.py — the markdown-first parsing path (roadmap item 26).
+document.py — the markdown-first parsing path (roadmap item 26).
 
 ``parse_to_markdown(file_path)`` produces one clean, RAG-ready Markdown string
 per document via a per-page-gated pipeline, plus routing telemetry. It mirrors
@@ -37,7 +37,7 @@ a schema-``1.0.0``-valid prediction so the doc-bench wheel can grade it.
 
 This module reuses (does NOT reimplement): ``quality_gate.evaluate_page`` /
 ``quality_gate._measure_text_quality``, ``render.render_page`` /
-``render.text_layer_tokens``, ``vlm_client.call_vlm`` (+ call-count helpers), and
+``render.text_layer_tokens``, ``engines.vlm.call_vlm`` (+ call-count helpers), and
 ``markdown.render_markdown``. ``parse()`` and ``render_markdown()`` are untouched
 and stay importable — and ``render_markdown`` + the element layer are now
 load-bearing (they ARE the better renderer), so they must not be modified.
@@ -99,7 +99,7 @@ _ROUTE_TEXTRACT_REJECTED = "textract-rejected-kept-docling"  # Textract output r
 
 
 # Process-wide converter reuse (OPT-IN, default OFF). The per-page pipeline
-# (``page_pipeline``) converts many one-page files in one worker process; building
+# (the page pipeline) converts many one-page files in one worker process; building
 # a fresh converter for each would reload Docling's models per page. With the flag
 # OFF ``_document_converter`` returns a fresh converter exactly as before.
 _reuse_converter = False
@@ -625,8 +625,8 @@ def _vlm_page_markdown(
 
     The escalation engine is chosen by ``PARSER_ESCALATION_ENGINE`` (``vlm`` default
     | ``textract``), read here — this is the single escalation seam (``_image_to_markdown``
-    inherits it for free). ``vlm`` calls ``vlm_client.call_vlm``; ``textract`` calls
-    ``textract_client.analyze_page``. Both return the SAME element-JSON shape, so the
+    inherits it for free). ``vlm`` calls ``engines.vlm.call_vlm``; ``textract`` calls
+    ``engines.textract.analyze_page``. Both return the SAME element-JSON shape, so the
     ``emit_vlm_elements`` → ``render_markdown`` conversion below is reused unchanged.
 
     Records the route in ``page_routes`` (``vlm`` / ``textract`` on success, or the

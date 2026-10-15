@@ -85,8 +85,8 @@ No new dependency. Works for both engines (shared seam).
 `429/408/425/5xx`, but fails **immediately** on auth/permanent 4xx
 (`is_transient()`).
 
-**Our gap:** `textract_client.analyze_page` (`textract_client.py:100-111`) and
-`vlm_client.call_vlm` make **one** call; on *any* exception they return
+**Our gap:** `analyze_page` (`parsing/engines/textract.py`; was `textract_client.py:100-111`) and
+`call_vlm` (`parsing/engines/vlm.py`) make **one** call; on *any* exception they return
 `{"error": ...}` → silent fallback to Docling. On batch runs, Bedrock
 `ThrottlingException` and Textract `ProvisioningThroughputExceeded` /
 `ThrottlingException` are routine and transient. Today every throttled page
@@ -97,7 +97,7 @@ quality. Directly relevant since `run_model_compare.sh` runs at concurrency.
 `Retry-After`, classify boto3 error codes: retry `Throttling*` /
 `ProvisioningThroughputExceeded` / `ServiceUnavailable` / 5xx; do **not** retry
 `AccessDenied*` / `ValidationException` / `InvalidParameter*`). Apply in both
-`textract_client` and `vlm_client`. Keep the never-raises contract — exhausting
+the Textract and VLM engine clients (`parsing/engines/`). Keep the never-raises contract — exhausting
 retries still returns `{"error": ...}`.
 
 **Adversarial caveat:** bound total wait so a throttled batch doesn't stall for

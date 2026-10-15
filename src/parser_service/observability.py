@@ -46,7 +46,7 @@ Events and their fields:
     file_done     driver, once per file: job_id, doc_id, file_id, work_id, kind,
                   detected_type, extension, mismatch, unit, state, reason_code,
                   flags, input_bytes, output_chars, elapsed_seconds
-    unit_timeout, worker_restart   service (``kserve_predictor``)
+    unit_timeout, worker_restart   service (``service.predictor``)
 
 ``kind`` in events and labels is the routed kind, or ``unsupported`` for a file
 no kind handles. ``unit`` is the unit number (1-based) in unit-level events

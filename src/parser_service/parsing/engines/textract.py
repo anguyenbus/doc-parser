@@ -1,8 +1,8 @@
 """
-textract_client.py
+textract.py
 
 All AWS Textract API communication for the parser service — the Textract twin of
-``vlm_client.py``. Textract is a SELECTABLE escalation engine (behind
+``vlm.py``. Textract is a SELECTABLE escalation engine (behind
 ``PARSER_ESCALATION_ENGINE``) that replaces the Bedrock VLM on gate-promoted pages
 only; it emits the SAME element-JSON shape the VLM emits, so the downstream
 ``emit_vlm_elements`` -> ``render_markdown`` path is reused unchanged.
@@ -34,7 +34,7 @@ logger = logging.getLogger(__name__)
 # Each LAYOUT_* block maps to an element ``type`` the existing renderer
 # (``parsing.elements.emit_vlm_elements`` + ``markdown.render_markdown``) already
 # consumes. Headings additionally carry a ``level``; tables carry a structured
-# ``table`` object. This mirrors the shape ``vlm_client.PAGE_PROMPT`` defines.
+# ``table`` object. This mirrors the shape ``vlm.PAGE_PROMPT`` defines.
 _LAYOUT_TYPE_MAP: dict[str, str] = {
     "LAYOUT_TITLE": "heading",
     "LAYOUT_SECTION_HEADER": "heading",
@@ -52,10 +52,10 @@ _HEADING_LEVELS: dict[str, int] = {
 }
 
 # -------------------------------------------------------------------------
-# Textract call counter (per-worker-thread) — parity with vlm_client
+# Textract call counter (per-worker-thread) — parity with the VLM client
 # -------------------------------------------------------------------------
 # Backed by threading.local() so reset / increment / read are isolated per
-# worker thread (same rationale as vlm_client: one parse per pool thread, no
+# worker thread (same rationale as the VLM client: one parse per pool thread, no
 # threads/asyncio spawned inside parse_to_markdown). The public get_/reset_
 # API shape is unchanged; single-threaded main-thread callers are unaffected.
 _textract_counter = threading.local()
@@ -84,7 +84,7 @@ def _increment_textract_call_count() -> None:
 def analyze_page(image_bytes: bytes) -> dict[str, Any]:
     """Send a single page image to AWS Textract and return parsed element-JSON.
 
-    Mirrors ``vlm_client.call_vlm``'s contract: never raises; returns
+    Mirrors ``vlm.call_vlm``'s contract: never raises; returns
     ``{"error": "<reason>"}`` on any failure; returns ``{"elements": [...]}`` on
     success (the SAME shape the VLM returns, so the renderer is reused unchanged).
 
@@ -136,7 +136,7 @@ def analyze_page(image_bytes: bytes) -> dict[str, Any]:
 def _blocks_to_elements(blocks: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Map a Textract ``AnalyzeDocument`` block graph to the element-JSON list.
 
-    Pure, side-effect-free function (parallel to ``vlm_client._build_bedrock_request``):
+    Pure, side-effect-free function (parallel to ``vlm._build_bedrock_request``):
     accepts the ``Blocks`` list from an ``AnalyzeDocument`` (LAYOUT + TABLES) response
     and returns the ``elements`` list in the EXACT shape ``parsing.elements.emit_vlm_elements``
     + ``markdown.render_markdown`` already consume — no schema change, no renderer change.
@@ -461,7 +461,7 @@ def _make_table_element(
     repo-root prior-art scripts) and converts Textract's 1-indexed positions to the
     schema's 0-indexed ``row``/``col``. Carries ``row_span``/``col_span`` (default 1)
     and counts header rows from cells tagged ``COLUMN_HEADER``. Emits the exact table
-    object ``vlm_client.TABLE_PROMPT`` defines and ``emit_vlm_elements`` consumes.
+    object ``vlm.TABLE_PROMPT`` defines and ``emit_vlm_elements`` consumes.
     """
     cells_blocks = [
         c for c in _child_blocks(table_block, by_id) if c.get("BlockType") == "CELL"

@@ -1,5 +1,5 @@
 """
-page_worker.py — the page service's long-lived parse worker process (spec D4, Option A).
+worker.py — the page service's long-lived parse worker process (spec D4, Option A).
 
 The page service keeps the store I/O, the attempt counter, the guards and the
 record write. One worker process per pod does the parsing, so a parse that runs

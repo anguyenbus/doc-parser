@@ -92,7 +92,7 @@ def pipeline_config(kind: str = "pdf") -> dict[str, Any]:
     other kind leaves the escalation settings out (a VLM model change does not
     re-parse a DOCX), and txt, which never runs Docling, leaves Docling out too.
     Each config names its kind and the kind's handler version
-    (``unit_handlers.HANDLER_VERSIONS``), so every kind gets its own hash and a
+    (``handlers.HANDLER_VERSIONS``), so every kind gets its own hash and a
     handler bump changes only its own kind's.
     """
     if kind not in KIND_EXTENSIONS:

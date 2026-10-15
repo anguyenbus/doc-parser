@@ -123,7 +123,7 @@ def _write_record(
 
 
 class ParseRunner(Protocol):
-    """Runs one parse out of process under a deadline (``page_worker.ParseWorker``).
+    """Runs one parse out of process under a deadline (``service.worker.ParseWorker``).
 
     ``run`` returns the worker's reply, or raises ``WorkerTimeout`` (the worker
     was killed and reaped) or ``WorkerDied`` (it died on its own).

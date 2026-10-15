@@ -1,5 +1,5 @@
 """
-vlm_client.py
+vlm.py
 
 All AWS Bedrock API communication for the parser service.
 

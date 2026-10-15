@@ -1,9 +1,9 @@
 """
-unit_handlers.py — parse one unit of a routed kind, and the handler versions (spec D3, D6).
+handlers.py — parse one unit of a routed kind, and the handler versions (spec D3, D6).
 
 A unit is one page of a PDF or one whole single-unit file (txt, docx, html, eml,
 msg). ``parse_unit`` dispatches on the kind read from the manifest, never on the
-file name, and runs in the page service's parse worker (``page_worker``) or, for
+file name, and runs in the page service's parse worker (``service.worker``) or, for
 the local executor, in the page pipeline's own process.
 
 Registry. ``HANDLERS`` maps each kind this image can parse to its handler; a kind
@@ -269,7 +269,7 @@ def _image_bytes_pixels(data: bytes) -> int | None:
 def _html_image_pixels(path: Path) -> list[int]:
     """The pixel count of every ``<img>`` embedded as a ``data:`` URI in an HTML file.
 
-    Docling never fetches an HTML image (see ``markdown_pipeline``), so its
+    Docling never fetches an HTML image (see ``parsing.document``), so its
     pictures carry no data; embedded images are read from the source instead.
     Remote, local and ``cid:`` sources do not count.
     """
@@ -300,13 +300,11 @@ def _parse_whole_doc(kind: str, path: Path) -> Reply:
     changes the state. An email (``eml``, ``msg``) also gets ``extra.email``, its
     headers and attachment list read from the message itself (``_email_facts``).
     """
-    from parser_service.parsing import (
-        document as markdown_pipeline,  # Docling is imported lazily there
-    )
+    from parser_service.parsing import document  # Docling is imported lazily there
 
     container: dict[str, Any] = {"warnings": [], "elements": []}
     page_routes: list[dict[str, Any]] = []
-    markdown, doc = markdown_pipeline._convert_whole_doc(path, container, page_routes, kind)
+    markdown, doc = document._convert_whole_doc(path, container, page_routes, kind)
     warnings = list(container["warnings"])
     if doc is None:
         detail = next(

@@ -3,7 +3,7 @@ parse_batch.py
 
 Batch document parsing script using asyncio + ThreadPoolExecutor.
 
-Runs the markdown-first pipeline (``markdown_pipeline.parse_to_markdown``): it
+Runs the markdown-first pipeline (``parsing.document.parse_to_markdown``): it
 ALWAYS writes one ``.md`` per document. When ``--emit-test-json`` is passed it
 ALSO writes a schema-valid wrapped prediction ``.json`` (via
 ``wrap_md_as_prediction``) so the doc-bench wheel can grade the markdown — that
@@ -209,7 +209,7 @@ def _parse_file_sync(ref: InputRef, escalate: bool = True) -> dict[str, Any]:
     (``{"markdown", "page_routes", "warnings"}``).
 
     NOTE: transient-throttle retry now lives INSIDE the escalation clients
-    (``vlm_client.call_vlm`` / ``textract_client.analyze_page`` wrap their inner
+    (``engines.vlm.call_vlm`` / ``engines.textract.analyze_page`` wrap their inner
     AWS call in bounded exponential backoff). The old batch-layer
     ``ThrottlingException``-on-``parse_to_markdown`` retry loop is gone — the
     clients swallow the exception and return ``{"error": ...}`` (never re-raising
@@ -538,7 +538,7 @@ def main() -> None:
         help=(
             "DEPRECATED no-op (accepted for one release). Transient-throttle "
             "retry now lives inside the escalation clients (bounded exponential "
-            "backoff in vlm_client/textract_client); an exhausted throttle is "
+            "backoff in the VLM and Textract engine clients); an exhausted throttle is "
             "recorded as a distinct `throttled` route reason. This flag no longer "
             "has any effect."
         ),

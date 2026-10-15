@@ -55,10 +55,10 @@ _SCORE_ERROR = 0.15  # no Docling and no engine output — empty/unparseable pag
 LOW_CONFIDENCE_THRESHOLD = (_SCORE_ENGINE_FAILING_KEPT + _SCORE_REJECTED_KEPT_DOCLING) / 2  # 0.65
 
 # Route vocabulary — sourced from ``route_stats`` (the single source of truth,
-# itself cross-checked byte-for-byte against ``markdown_pipeline._ROUTE_*`` in
+# itself cross-checked byte-for-byte against ``parsing.document._ROUTE_*`` in
 # tests). Importing rather than re-declaring the literals means a route rename
 # can never silently mis-tier a page here. ``route_stats`` imports nothing from
-# this package, so there is no import cycle (``markdown_pipeline`` is the module
+# this package, so there is no import cycle (``parsing.document`` is the module
 # that imports us, not ``route_stats``).
 _DOCLING_KEPT = ROUTE_DOCLING_KEPT
 _ENGINE_ROUTES = {ROUTE_VLM, ROUTE_TEXTRACT}

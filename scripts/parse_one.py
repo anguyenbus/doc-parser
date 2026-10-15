@@ -11,7 +11,7 @@ If --output is omitted, output is printed to stdout.
 --format json (default) emits the LEGACY element JSON via ``parse()`` (kept for
 A/B comparison and rollback during the markdown-first transition — roadmap
 item 26). --format md emits the markdown-first output via
-``markdown_pipeline.parse_to_markdown``. --format both writes legacy JSON + md.
+``parsing.document.parse_to_markdown``. --format both writes legacy JSON + md.
 The wrapped 1-paragraph prediction is NOT a user-facing format; it is test
 plumbing emitted only by the eval path (``parse_batch.py --emit-test-json``).
 """

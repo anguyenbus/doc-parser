@@ -2,11 +2,11 @@
 route_stats.py
 
 Derive per-document routing telemetry from the markdown-first pipeline's
-``page_routes`` (``markdown_pipeline.parse_to_markdown`` output).
+``page_routes`` (``parsing.document.parse_to_markdown`` output).
 
 Each ``parse_to_markdown`` result carries a ``page_routes`` list — one entry per
 logical page — of the form ``{page_index, route, reason, ...}``. The ``route``
-vocabulary is EXACTLY what ``markdown_pipeline`` emits:
+vocabulary is EXACTLY what ``parsing.document`` emits:
 
   - "docling-kept"         the gate kept Docling's page markdown (no VLM)
   - "vlm"                  VLM markdown replaced this page's slice
@@ -42,7 +42,7 @@ import csv
 from pathlib import Path
 from typing import Any
 
-# The exact per-page ``route`` vocabulary emitted by ``markdown_pipeline``.
+# The exact per-page ``route`` vocabulary emitted by ``parsing.document``.
 # There are two escalation engines (selected by ``PARSER_ESCALATION_ENGINE``); a
 # single run uses exactly one of them, so a page is escalated via either the VLM
 # or Textract, never both.
@@ -101,7 +101,7 @@ def route_record(page_routes: list[dict[str, Any]], doc_id: str) -> dict[str, An
 
     # INVARIANT: every page's route is one of the known vocabulary values, so the
     # counts (both escalation engines + Docling) must sum to the page count. If this
-    # fires, the route vocabulary emitted by markdown_pipeline drifted from what we
+    # fires, the route vocabulary emitted by parsing.document drifted from what we
     # count here.
     counted = (
         docling_kept
