@@ -2,66 +2,34 @@
 
 How the code in `src/parser_service/` is organised: the layers and what each module
 owns, how one file and one page move through it, and the rules that keep the import
-graph clean. Edges were traced from the actual imports; the package has no import
-cycles.
+graph clean. The dependencies below were computed from the actual imports: there are
+no import cycles between modules or between packages.
 
 ## 1. Layers
 
-Each layer imports only from the layers below it.
+A package imports only from the layers below it (not only the next one down).
 
 ```mermaid
-graph TD
-    subgraph svc["service/ — the KServe page service"]
-        PRED["predictor.py<br/><i>KServe model: one unit per request</i>"]
-        WORK["worker.py<br/><i>long-lived, killable parse process</i>"]
-    end
-    subgraph pipe["pipeline/ — split-first page pipeline"]
-        API["api.py<br/><i>parse_file_in_store, parse_pdf_pages</i>"]
-        RUN["local_runner.py · remote_runner.py<br/><i>the two executors</i>"]
-        STAT["status.py<br/><i>status.json, fail-closed stitch</i>"]
-        UNITS["units.py<br/><i>process a unit, write its record</i>"]
-        INTAKE["intake.py<br/><i>sniff, refuse, split, manifest</i>"]
-        LAYOUT["layout.py<br/><i>store keys, record I/O</i>"]
-        CONF["config.py<br/><i>config hash, limits, final rule</i>"]
-    end
-    subgraph fmt["formats/ — what a file is and how to parse it"]
-        SNIFF["sniff.py · guards.py"]
-        HAND["handlers.py · pdf.py · result.py"]
-    end
-    subgraph prs["parsing/ — parse one unit"]
-        DOC["document.py<br/><i>parse_to_markdown: Docling, gate, escalation</i>"]
-        GATE["quality_gate.py · render.py · markdown.py<br/>elements.py · confidence.py · route_stats.py"]
-        ENG["engines/ vlm.py · textract.py · retry.py"]
-    end
-    subgraph low["storage/ · delivery/ · settings · observability · version"]
-        STORE["storage/store.py · storage/aws.py"]
-        DEL["delivery/publish.py · delivery/jobs.py"]
-    end
+%%{init: {"flowchart": {"wrappingWidth": 560}}}%%
+flowchart TB
+    L1["<b>1 · service/</b> — the KServe page service<br/>predictor.py · worker.py"]
+    L2["<b>2 · pipeline/</b> — split-first page pipeline<br/>api.py · local_runner.py · remote_runner.py · status.py<br/>units.py · intake.py · runner.py · layout.py · config.py"]
+    L3["<b>3 · settings.py</b> — start-up validation"]
+    L4["<b>4 · formats/</b> — what a file is, how to parse it<br/>sniff.py · guards.py · handlers.py · pdf.py · result.py"]
+    L5["<b>5 · parsing/</b> — parse one unit<br/>document.py · quality_gate.py · render.py · markdown.py<br/>elements.py · confidence.py · route_stats.py<br/>engines/ vlm.py · textract.py · retry.py"]
+    L6["<b>6 · foundation</b><br/>storage/ store.py · aws.py — delivery/ publish.py · jobs.py<br/>observability.py · version.py"]
+    LEG["<b>legacy/</b><br/>element_json.py · batch_io.py"]
 
-    PRED --> WORK
-    PRED --> RUN
-    WORK --> HAND
-    API --> RUN
-    API --> STAT
-    API --> INTAKE
-    RUN --> UNITS
-    UNITS --> HAND
-    UNITS --> LAYOUT
-    INTAKE --> SNIFF
-    INTAKE --> LAYOUT
-    STAT --> LAYOUT
-    LAYOUT --> CONF
-    HAND --> DOC
-    DOC --> GATE
-    DOC --> ENG
-    API --> DEL
-    LAYOUT --> STORE
-    DEL --> STORE
+    L1 --> L2 --> L3 --> L4 --> L5 --> L6
+    LEG -.-> L5
+    LEG -.-> L6
 ```
 
-`legacy/` sits beside these layers: the element-JSON `parse()` for the eval harness
-(`legacy/element_json.py`, exposed as `parser_service.parse` and imported only when first
-used) and the single-node batch script's I/O (`legacy/batch_io.py`).
+`legacy/` sits beside the layers: the element-JSON `parse()` for the eval harness
+(`legacy/element_json.py`, exposed as `parser_service.parse` and imported only when
+first used) and the single-node batch script's I/O (`legacy/batch_io.py`). Inside
+`pipeline/` the modules follow the same rule: `config` ← `layout`, `runner` ← `intake`,
+`units` ← the runners and `status` ← `api`.
 
 ## 2. Modules
 
@@ -72,11 +40,13 @@ used) and the single-node batch script's I/O (`legacy/batch_io.py`).
 | `pipeline/` | `api.py` | `parse_file_in_store` (old name `parse_pdf_pages_in_store`) and `parse_pdf_pages` |
 | | `local_runner.py` | The `local` executor: a process pool on one machine |
 | | `remote_runner.py` | The `kserve` executor: the driver's client, and the service's side of a request |
-| | `units.py` | Process one unit, write its record (first write wins), archive a failed attempt for a retry |
 | | `status.py` | Rebuild `status.json` from the records; stitch `output.md` only when every unit is ok |
+| | `units.py` | Process one unit, write its record (first write wins), archive a failed attempt for a retry |
 | | `intake.py` | Sniff a file's kind, refuse it (`unsupported_type`, `too_large`), split a PDF, write the manifest |
+| | `runner.py` | The contract between the pipeline and a parse runner: `Request`, `ParseRunner`, the worker errors |
 | | `layout.py` | Every key under `work/` and `out/`, and the record / attempt / JSON helpers |
 | | `config.py` | Unit and file states, the per-kind pipeline config and its hash, enabled kinds, caps, deadlines, the final-failure rule |
+| top level | `settings.py` | Start-up validation of the environment for the scripts and the service |
 | `formats/` | `sniff.py` | A file's kind from its bytes (and the extension for txt and html) |
 | | `guards.py` | The DOCX cost guards: ZIP index and streamed element count |
 | | `handlers.py` | One handler per kind (pdf, docx, html, txt, eml, msg) and their versions |
@@ -91,23 +61,33 @@ used) and the single-node batch script's I/O (`legacy/batch_io.py`).
 | | `engines/vlm.py`, `engines/textract.py`, `engines/retry.py` | The escalation engines (Bedrock Claude, Textract) and their bounded retry |
 | `storage/` | `store.py`, `aws.py` | The store interface (local folder or S3 prefix); the S3 URI parser and client factory |
 | `delivery/` | `publish.py`, `jobs.py` | Versioned `published/` documents and events; inbox jobs (`job.json`) |
-| top level | `settings.py`, `observability.py`, `version.py` | Start-up validation of the environment; metrics and structured events; the package version |
+| top level | `observability.py`, `version.py` | Metrics and structured events; the package version |
 
 ## 3. Runtime flow: one file
 
+The driver pod (`scripts/parse_pages.py`, one per file) does intake and bookkeeping;
+the page-service pods do all parsing and write each unit's record.
+
 ```mermaid
-flowchart LR
-    F["file + job.json"] --> D["driver: pipeline/api.py"]
-    D --> I["intake.py<br/>sniff kind, caps, split"]
-    I -- "unsupported / too large" --> X["status failed<br/>failed event"]
-    I --> M["manifest + units in work/"]
-    M --> R["remote_runner.py<br/>one request per unit"]
-    R --> P["service/predictor.py"]
-    P --> W["service/worker.py<br/>(deadline)"]
-    W --> H["formats/handlers.py<br/>pdf / docx / html / txt / email"]
-    H --> REC["units.py writes the record"]
-    REC --> S["status.py<br/>status.json; stitch if all ok"]
-    S --> PUB["delivery/publish.py<br/>document.md, document.json, event"]
+flowchart TB
+    subgraph DRV["driver pod · scripts/parse_pages.py"]
+        direction TB
+        A["pipeline/api.py<br/>parse_file_in_store"] --> I["pipeline/intake.py<br/>sniff kind, caps, split"]
+        I -- "unsupported or too large" --> X["status.json failed<br/>failed event"]
+        I --> M["manifest and units<br/>in work/"]
+        M --> R["pipeline/remote_runner.py<br/>send each unit not yet ok"]
+        S["pipeline/status.py<br/>status.json; stitch if all ok"] --> P["delivery/publish.py<br/>document.md, document.json, event"]
+    end
+    subgraph SVC["page-service pod"]
+        direction TB
+        PR["service/predictor.py"] --> PPR["remote_runner.process_page_request<br/>config and kind checks"]
+        PPR --> U["pipeline/units.py<br/>attempt counter, DOCX guards"]
+        U --> W["service/worker.py<br/>parse under the deadline"]
+        W --> H["formats/handlers.py<br/>pdf, docx, html, txt, eml, msg"]
+        U --> REC["record in work/results/"]
+    end
+    R -- "POST /v1/models/page-parser:predict" --> PR
+    REC -. "read back" .-> S
 ```
 
 ## 4. Runtime flow: one PDF page
@@ -133,16 +113,20 @@ flowchart TD
 
 ## 5. Rules that keep the structure
 
-- **Imports point down the layers**, and the package has no import cycles.
+- **Imports point down the layers**, between packages and between modules. There are
+  no import cycles at either level.
+- **Contracts live with the layer that uses them.** The pipeline defines what it
+  needs from a parse runner (`pipeline/runner.py`); the service implements it. The
+  unit result contract (`formats/result.py`) sits below both.
 - **Function-level imports are deliberate and few.** `parser_service.parse` loads the
   legacy parser on first use. The worker and the handlers import the Docling path
   only when they parse, so the page service's own process stays light (a test checks
   that it never loads Docling or torch). The legacy parser keeps its own.
 - **Shared code has one public home.** A name used across packages is public (no
   leading underscore) and lives in the module that owns it: `formats/result.py`,
-  `parsing/elements.py`, `storage/aws.py`, `version.py`. Inside `pipeline/`, the
-  modules also share package-private helpers (`_run_pages`, `_stitch_markdown`, ...),
-  which nothing outside the package should import.
+  `pipeline/runner.py`, `parsing/elements.py`, `storage/aws.py`, `version.py`. Inside
+  `pipeline/`, the modules also share package-private helpers (`_run_pages`,
+  `_stitch_markdown`, ...), which nothing outside the package imports.
 - **Tests patch a name where it is looked up.** Patch the module that defines it. The
   one name patched across modules, `pipeline.layout._load_record_checked`, is called as
   `layout._load_record_checked` from the other pipeline modules, so the patch reaches
