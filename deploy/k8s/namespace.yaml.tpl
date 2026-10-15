@@ -47,6 +47,9 @@ data:
   PARSER_DEADLINE_HTML_S: "300"
   PARSER_MAX_DOCX_MB: "100"
   PARSER_MAX_HTML_MB: "50"
+  # The same for one whole XLSX workbook. Provisional.
+  PARSER_DEADLINE_XLSX_S: "300"
+  PARSER_MAX_XLSX_MB: "50"
   # The same for one whole email: one deadline and one raw cap shared by eml and
   # msg (the email handler). Provisional until the corpus inventory; read only once
   # the kind is in PARSER_ENABLED_KINDS (code complete, not enabled).
@@ -83,6 +86,18 @@ data:
   PARSER_DOCX_MAX_ENTRIES: "10000"
   PARSER_DOCX_MAX_PARAGRAPHS: "50000"
   PARSER_DOCX_MAX_TABLE_CELLS: "100000"
+  # XLSX cost guard, checked by the page service before an XLSX reaches the parse
+  # worker (no Docling): the same four ZIP limits as a DOCX (`zip_bomb`), then one
+  # streamed pass over the worksheets. More cells, or a summed used-range area
+  # (rows x columns of each sheet) over the grid limit, is a final `too_complex`.
+  # Docling loads the whole workbook: ~2.7 KB per cell and ~0.2 KB per used-range
+  # cell; two cells at A1 and XFD1048576 never finish. Provisional.
+  PARSER_XLSX_MAX_EXPANDED_MB: "300"
+  PARSER_XLSX_MAX_PART_MB: "200"
+  PARSER_XLSX_MAX_RATIO: "100"
+  PARSER_XLSX_MAX_ENTRIES: "10000"
+  PARSER_XLSX_MAX_CELLS: "500000"
+  PARSER_XLSX_MAX_GRID_CELLS: "5000000"
   # The driver's timeout for one page request. Both sides refuse to start unless
   # it is at least the largest parse deadline + 120 s (download, kill, record).
   PARSER_REMOTE_REQUEST_TIMEOUT_S: "900"

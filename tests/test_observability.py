@@ -22,7 +22,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from test_page_pipeline import THREE_PAGE, XLSX, _enable_test_kind, _install_fake, _result
+from test_page_pipeline import PPTX, THREE_PAGE, _enable_test_kind, _install_fake, _result
 
 from parser_service import observability
 from parser_service.delivery.publish import PublishRequest
@@ -175,7 +175,7 @@ def test_metrics_and_events_emitted_per_kind(
     odd.write_bytes(THREE_PAGE.read_bytes() + b"\n")
     big = inputs / "notes.txt"
     big.write_bytes(b"plain text line\n" * 70_000)  # 1.12 MB, over the 1 MB cap
-    sources = [renamed, odd, XLSX, big]
+    sources = [renamed, odd, PPTX, big]
     with caplog.at_level(logging.INFO):
         results = [
             api.parse_file_in_store(
@@ -190,7 +190,7 @@ def test_metrics_and_events_emitted_per_kind(
     assert [(e["kind"], e["detected_type"], e["extension"], e["mismatch"]) for e in intake] == [
         ("pdf", "pdf", "docx", True),
         ("pdf", "pdf", "other", True),
-        ("unsupported", "xlsx", "xlsx", False),
+        ("unsupported", "pptx", "pptx", False),
         ("txt", "text", "txt", False),
     ]
     assert [e["reason_code"] for e in intake] == [None, None, "unsupported_type", "too_large"]
@@ -215,7 +215,7 @@ def test_metrics_and_events_emitted_per_kind(
     counters = observability.driver_counters(_events(caplog))
     assert counters["parser_files_total"] == {("pdf",): 2, ("unsupported",): 1, ("txt",): 1}
     assert counters["parser_sniff_mismatch_total"] == {("pdf", "docx"): 1, ("pdf", "other"): 1}
-    assert counters["parser_unsupported_total"] == {("xlsx",): 1}
+    assert counters["parser_unsupported_total"] == {("pptx",): 1}
     assert counters["parser_guard_rejections_total"] == {("txt", "too_large"): 1}
 
 

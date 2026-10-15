@@ -17,12 +17,12 @@ import json
 import struct
 import sys
 import time
-import zipfile
 from email.message import EmailMessage
 from pathlib import Path
 from typing import Any
 
 import docx
+import openpyxl
 import pytest
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -65,8 +65,9 @@ def _corpus(root: Path) -> None:
     table.cell(0, 0).text = MARKER
     document.save(str(root / "letter.docx"))
     document.save(str(root / "renamed.pdf"))  # a DOCX named .pdf: a mismatch
-    with zipfile.ZipFile(root / "sheet.xlsx", "w") as archive:
-        archive.writestr("xl/workbook.xml", "<workbook/>")
+    workbook = openpyxl.Workbook()
+    workbook.active.append([1, 2, "=A1+B1"])  # never calculated: the formula has no value
+    workbook.save(str(root / "sheet.xlsx"))
     (root / "report.pdf").write_bytes(b"%PDF-1.7\n" + MARKER.encode() + b"\n%%EOF\n")
     (root / "notes.txt").write_text(f"{MARKER}\nsecond line\n")
     (root / "sub").mkdir()
@@ -126,7 +127,8 @@ def test_inventory_on_a_local_folder(tmp_path: Path, monkeypatch: pytest.MonkeyP
         "eml": 1,
         "msg": 1,
         "png": 1,
-        "none": 2,
+        "xlsx": 1,
+        "none": 1,
     }
     size_docx = report["size_bytes_by_kind"]["docx"]
     letter_size = (corpus / "letter.docx").stat().st_size
@@ -139,8 +141,12 @@ def test_inventory_on_a_local_folder(tmp_path: Path, monkeypatch: pytest.MonkeyP
         "eml",
         "msg",
         "png",
+        "xlsx",
         "none",
     }
+    assert report["xlsx"]["files"] == 1
+    assert report["xlsx"]["files_with_uncalculated_formulas"] == 1
+    assert (report["xlsx"]["cells"]["max"], report["xlsx"]["grid_cells"]["max"]) == (3, 3)
     assert report["images"]["files"] == 1 and report["images"]["unreadable_header_files"] == 0
     assert report["images"]["megapixels"]["max"] == 2.0
     assert report["docx"]["files"] == 2

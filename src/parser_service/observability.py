@@ -108,7 +108,7 @@ EVENT_FIELDS = frozenset(
 KNOWN_EXTENSIONS = frozenset(
     {
         "pdf", "docx", "txt", "html", "htm", "eml", "msg",
-        "doc", "xls", "xlsx", "ppt", "pptx", "zip", "rtf",
+        "doc", "xls", "xlsx", "xlsm", "ppt", "pptx", "zip", "rtf",
         "png", "jpg", "jpeg", "gif", "tif", "tiff", "webp",
         "csv", "json", "xml", "md", "log",
     }

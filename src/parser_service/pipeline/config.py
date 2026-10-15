@@ -16,7 +16,14 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
-from parser_service.formats.guards import DocxLimits, GuardRejection, check_docx, check_image
+from parser_service.formats.guards import (
+    DocxLimits,
+    GuardRejection,
+    XlsxLimits,
+    check_docx,
+    check_image,
+    check_xlsx,
+)
 from parser_service.formats.handlers import IMAGE_KINDS, handler_version
 from parser_service.formats.result import (
     STATE_OK,
@@ -33,6 +40,7 @@ from parser_service.settings import (
     MAX_OUTPUT_ENV,
     RAW_CAP_ENV,
     REMOTE_REQUEST_TIMEOUT_ENV,
+    XLSX_GUARD_ENV,
     split_kinds,
 )
 from parser_service.version import PARSER_VERSION
@@ -216,6 +224,19 @@ def docx_guard_limits() -> DocxLimits:
     return DocxLimits(**values)
 
 
+def xlsx_guard_limits() -> XlsxLimits:
+    """The XLSX cost guard's thresholds (``XLSX_GUARD_ENV``). Read at call time.
+
+    Like the DOCX thresholds, not part of ``pipeline_config``: a changed value only
+    releases the ``zip_bomb`` and ``too_complex`` records stored under another value.
+    """
+    values = {
+        key: int(os.environ.get(name, str(default)))
+        for key, (name, default) in XLSX_GUARD_ENV.items()
+    }
+    return XlsxLimits(**values)
+
+
 def image_max_megapixels() -> int:
     """The image cost guard's threshold (``PARSER_IMAGE_MAX_MEGAPIXELS``). Read at call time.
 
@@ -231,7 +252,7 @@ def current_limits(kind: str = "pdf") -> dict[str, Any]:
     Read from the environment at call time, like ``pipeline_config``. A stored
     record's ``limits`` are compared with these values by ``_is_final``. A
     single-unit kind also has the output cap (``output_too_large``), and a DOCX
-    the six guard thresholds (``zip_bomb``, ``too_complex``), an image the
+    the six guard thresholds (``zip_bomb``, ``too_complex``), an XLSX its six, an image the
     megapixel threshold (``too_complex``). A kind whose
     handler has not shipped yet may have no deadline: it then has no
     ``deadline_s`` (no ``timeout`` record of it can exist).
@@ -243,6 +264,8 @@ def current_limits(kind: str = "pdf") -> dict[str, Any]:
         limits["max_output_mb"] = max_output_mb()
     if kind == "docx":
         limits.update(asdict(docx_guard_limits()))
+    if kind == "xlsx":
+        limits.update(asdict(xlsx_guard_limits()))
     if kind in IMAGE_KINDS:
         limits["image_max_megapixels"] = image_max_megapixels()
     return limits
@@ -251,10 +274,12 @@ def current_limits(kind: str = "pdf") -> dict[str, Any]:
 def _guard_rejection(kind: str, unit_path: Path) -> GuardRejection | None:
     """The service-side cost guard of one unit (spec D7): a rejection, or None to parse.
 
-    DOCX and images only; every other kind is bounded by its raw cap and deadline.
+    DOCX, XLSX and images only; every other kind is bounded by its raw cap and deadline.
     """
     if kind == "docx":
         return check_docx(unit_path, docx_guard_limits())
+    if kind == "xlsx":
+        return check_xlsx(unit_path, xlsx_guard_limits())
     if kind in IMAGE_KINDS:
         return check_image(unit_path, image_max_megapixels())
     return None

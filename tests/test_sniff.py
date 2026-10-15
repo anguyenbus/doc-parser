@@ -109,7 +109,9 @@ TEXT = b"Meeting notes\n\n- item one\n- item two\n"
         (DOCX, "a.docx", Sniff("docx", "docx", False)),
         (_python_docx(), "a.docx", Sniff("docx", "docx", False)),
         (_large_docx_head(), "big.docx", Sniff("docx", "docx", False)),
-        (XLSX, "a.xlsx", Sniff("xlsx", None, False)),
+        (XLSX, "a.xlsx", Sniff("xlsx", "xlsx", False)),
+        (XLSX, "a.xlsm", Sniff("xlsx", "xlsx", False)),  # macro-enabled: macros never run
+        (XLSX, "a.docx", Sniff("xlsx", "xlsx", True)),
         (PPTX, "a.pptx", Sniff("pptx", None, False)),
         (ZIP, "a.zip", Sniff("zip", None, False)),
         # msg, doc, xls, ppt, ole2
@@ -205,7 +207,7 @@ def test_text_like_files_with_other_extensions_have_no_kind(
 
 @pytest.mark.parametrize(
     ("head", "detected"),
-    [(b"not really a pdf", "text"), (bytes(range(256)), "binary"), (XLSX, "xlsx")],
+    [(b"not really a pdf", "text"), (bytes(range(256)), "binary"), (PPTX, "pptx")],
 )
 def test_pdf_name_without_header_still_routes_to_pdf(head: bytes, detected: str) -> None:
     result = sniff(head, "scan.PDF")

@@ -461,7 +461,7 @@ def test_deadline_is_not_in_the_config_hash(monkeypatch: pytest.MonkeyPatch) -> 
 # ---------------------------------------------------------------------------
 
 DOCX = FIXTURES / "doc.docx"
-XLSX = FIXTURES / "sheet.xlsx"
+PPTX = FIXTURES / "slides.pptx"  # a format no kind handles
 
 
 def _enable_test_kind(
@@ -530,6 +530,7 @@ def test_config_hash_changes_with_handler_version(monkeypatch: pytest.MonkeyPatc
     # image: png and jpeg).
     for handler, bumped in (
         ("docx", {"docx"}),
+        ("xlsx", {"xlsx"}),
         ("email", {"eml", "msg"}),
         ("image", {"png", "jpeg"}),
         ("pdf", {"pdf"}),
@@ -556,7 +557,7 @@ def test_disabled_kind_fails_with_unsupported_type_and_writes_no_work(
     big_txt.write_bytes(b"plain text line\n" * 70_000)  # 1.12 MB
     cases = [
         (DOCX, "unsupported_type", "docx", "docx"),  # a kind, but switched off
-        (XLSX, "unsupported_type", None, "xlsx"),  # no kind at all
+        (PPTX, "unsupported_type", None, "pptx"),  # no kind at all
     ]
     for source, code, kind, detected in cases:
         result = parse_pdf_pages(source, tmp_path / "store")
@@ -719,7 +720,7 @@ def test_intake_rejection_writes_status_and_one_failed_event(
         return sorted((root / "published/v1/events").rglob("*.json"))
 
     result = api.parse_file_in_store(
-        XLSX, str(root), workers=0, publish=PublishRequest("sheet", "job-1")
+        PPTX, str(root), workers=0, publish=PublishRequest("slides", "job-1")
     )
 
     assert (result["state"], result["reason_code"], result["work_id"]) == (
@@ -734,7 +735,7 @@ def test_intake_rejection_writes_status_and_one_failed_event(
         1,
         "document",
     )
-    assert (status["kind"], status["detected_type"], status["flags"]) == (None, "xlsx", [])
+    assert (status["kind"], status["detected_type"], status["flags"]) == (None, "pptx", [])
     [unit] = status["pages"]
     assert (unit["attempts"], unit["retryable"], unit["reason_code"]) == (
         0,
@@ -749,7 +750,7 @@ def test_intake_rejection_writes_status_and_one_failed_event(
     intake_hash = config_module.config_hash({"intake": "unsupported_type", "kind": None})
     assert event["version"] == version_for(sha256, intake_hash, "failed", 0)
     assert result["published"]["version"] == event["version"]
-    assert (event["type"], event["doc_id"], event["job_id"]) == ("failed", "sheet", "job-1")
+    assert (event["type"], event["doc_id"], event["job_id"]) == ("failed", "slides", "job-1")
     assert (event["kind"], event["unit"], event["flags"], event["handler_version"]) == (
         None,
         "document",
@@ -768,11 +769,11 @@ def test_intake_rejection_writes_status_and_one_failed_event(
         [
             "parse_pages.py",
             "--input",
-            str(XLSX),
+            str(PPTX),
             "--work-dir",
             str(root),
             "--doc-id",
-            "sheet",
+            "slides",
             "--workers",
             "0",
             "--no-escalate",
@@ -783,7 +784,7 @@ def test_intake_rejection_writes_status_and_one_failed_event(
     assert exit_info.value.code == 2
     assert events() == [event_path] and event_path.read_bytes() == before
     again = api.parse_file_in_store(
-        XLSX, str(root), workers=0, publish=PublishRequest("sheet", "job-1")
+        PPTX, str(root), workers=0, publish=PublishRequest("slides", "job-1")
     )
     assert again["published"] == result["published"]
     assert event_path.read_bytes() == before

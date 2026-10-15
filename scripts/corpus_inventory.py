@@ -15,7 +15,8 @@ Usage:
 
 Every file is sniffed from its first 64 KiB (an S3 range GET) with
 ``parser_service.formats.sniff``. Only files detected as DOCX are read in full, streamed to a
-temporary file, for ``parser_service.formats.guards.docx_stats``. A PNG or JPEG
+temporary file, for ``parser_service.formats.guards.docx_stats``; files detected
+as XLSX likewise, for ``guards.xlsx_stats``. A PNG or JPEG
 gets its declared megapixels from the same head (``guards.image_header_of``); a JPEG
 whose frame header lies past the head is read in full for it.
 
@@ -23,8 +24,9 @@ Outputs:
     <out-dir>/inventory.json   aggregate: counts by detected type, by extension and by
                                routed kind; size p50/p99/max per kind and per detected
                                type; DOCX index and element-count percentiles; name and
-                               content mismatches; the .msg share; image megapixel
-                               percentiles; timing (if asked)
+                               content mismatches; the .msg share; XLSX cell and
+                               used-range percentiles; image megapixel percentiles;
+                               timing (if asked)
     <out-dir>/inventory.md     the same as a markdown report
     --csv                      one row per file: key and numbers only, no document text.
                                It must be outside the repository (default: the system
@@ -70,6 +72,7 @@ from parser_service.formats.guards import (  # noqa: E402
     docx_stats,
     image_header,
     image_header_of,
+    xlsx_stats,
 )
 from parser_service.formats.sniff import (  # noqa: E402
     KIND_EXTENSIONS,
@@ -105,6 +108,12 @@ CSV_COLUMNS = (
     "docx_document_xml_bytes",
     "docx_paragraphs",
     "docx_table_cells",
+    "xlsx_sheets",
+    "xlsx_cells",
+    "xlsx_grid_cells",
+    "xlsx_formulas_without_value",
+    "xlsx_expanded_bytes",
+    "xlsx_ratio",
     "image_megapixels",
     "error",
     "parse_verdict",
@@ -120,6 +129,15 @@ _DOCX_FIELDS = (
     "docx_document_xml_bytes",
     "docx_paragraphs",
     "docx_table_cells",
+)
+
+_XLSX_FIELDS = (
+    "xlsx_sheets",
+    "xlsx_cells",
+    "xlsx_grid_cells",
+    "xlsx_formulas_without_value",
+    "xlsx_expanded_bytes",
+    "xlsx_ratio",
 )
 
 
@@ -140,6 +158,7 @@ class FileRow:
     kind: str = ""
     mismatch: bool = False
     docx: dict[str, Any] = field(default_factory=dict)
+    xlsx: dict[str, Any] = field(default_factory=dict)
     image_megapixels: float | None = None
     error: str = ""
     parse_verdict: str = ""
@@ -164,8 +183,8 @@ class FileRow:
             ),
         }
         for column in CSV_COLUMNS:
-            if column.startswith("docx_"):
-                value = self.docx.get(column)
+            if column.startswith(("docx_", "xlsx_")):
+                value = (self.docx if column.startswith("docx_") else self.xlsx).get(column)
                 row[column] = "" if value is None else value
         return row
 
@@ -236,8 +255,8 @@ def open_source(prefix: str, region: str | None) -> LocalSource | S3Source:
 
 
 def measure_file(source: LocalSource | S3Source, key: str, size: int, scratch: Path) -> FileRow:
-    """Sniff one file; for a DOCX stream it in full for ``docx_stats``; for an image
-    read its declared megapixels."""
+    """Sniff one file; stream a DOCX or XLSX in full for its stats; for an image read
+    its declared megapixels."""
     row = FileRow(key=key, size_bytes=size, extension=extension_of(key))
     try:
         head, declared = source.head(key)
@@ -251,6 +270,13 @@ def measure_file(source: LocalSource | S3Source, key: str, size: int, scratch: P
             try:
                 source.download(key, target)
                 row.docx = _docx_numbers(target)
+            finally:
+                target.unlink(missing_ok=True)
+        elif result.detected_type == "xlsx":
+            target = scratch / "stats.xlsx"
+            try:
+                source.download(key, target)
+                row.xlsx = _xlsx_numbers(target)
             finally:
                 target.unlink(missing_ok=True)
         elif result.detected_type in ("png", "jpeg"):
@@ -267,6 +293,18 @@ def measure_file(source: LocalSource | S3Source, key: str, size: int, scratch: P
     except Exception as exc:  # noqa: BLE001 - one bad object must not stop the inventory
         row.error = type(exc).__name__
     return row
+
+
+def _xlsx_numbers(path: Path) -> dict[str, Any]:
+    stats = xlsx_stats(path)
+    return {
+        "xlsx_sheets": stats.sheets,
+        "xlsx_cells": stats.cells,
+        "xlsx_grid_cells": stats.grid_cells,
+        "xlsx_formulas_without_value": stats.formulas_without_value,
+        "xlsx_expanded_bytes": stats.index.expanded_bytes,
+        "xlsx_ratio": round(stats.index.ratio, 2),
+    }
 
 
 def _docx_numbers(path: Path) -> dict[str, Any]:
@@ -445,6 +483,7 @@ def aggregate(rows: list[FileRow], prefix: str) -> dict[str, Any]:
         by_kind.setdefault(row.kind or "none", []).append(row.size_bytes)
         by_type.setdefault(row.detected_type or "error", []).append(row.size_bytes)
     docx_rows = [row for row in rows if row.docx]
+    xlsx_rows = [row for row in rows if row.xlsx]
     image_rows = [row for row in rows if row.detected_type in ("png", "jpeg")]
     msg_files = sum(1 for row in rows if row.detected_type == "msg")
     msg_bytes = sum(row.size_bytes for row in rows if row.detected_type == "msg")
@@ -486,6 +525,18 @@ def aggregate(rows: list[FileRow], prefix: str) -> dict[str, Any]:
             ),
             "encrypted_entry_files": sum(
                 1 for row in docx_rows if row.docx.get("docx_encrypted_entries")
+            ),
+        },
+        "xlsx": {
+            "files": len(xlsx_rows),
+            **{
+                name.removeprefix("xlsx_"): _spread(
+                    [row.xlsx[name] for row in xlsx_rows if row.xlsx.get(name) is not None]
+                )
+                for name in _XLSX_FIELDS
+            },
+            "files_with_uncalculated_formulas": sum(
+                1 for row in xlsx_rows if row.xlsx.get("xlsx_formulas_without_value")
             ),
         },
         "images": {
@@ -553,6 +604,16 @@ def render_markdown(report: dict[str, Any]) -> str:
             f"names, {docx['encrypted_entry_files']} with encrypted entries)",
             "Measure",
             {name.removeprefix("docx_"): docx[name.removeprefix("docx_")] for name in _DOCX_FIELDS},
+        ),
+        "",
+    ]
+    xlsx = report["xlsx"]
+    lines += [
+        _spread_table(
+            f"XLSX ({xlsx['files']} files; {xlsx['files_with_uncalculated_formulas']} with "
+            "formulas stored without a value)",
+            "Measure",
+            {name.removeprefix("xlsx_"): xlsx[name.removeprefix("xlsx_")] for name in _XLSX_FIELDS},
         ),
         "",
     ]

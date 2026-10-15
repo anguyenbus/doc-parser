@@ -44,7 +44,7 @@ def test_bench_pages_writes_graded_predictions(
     folder.mkdir()
     shutil.copy(FIXTURES / "three_page_digital.pdf", folder / "doc_a.pdf")
     shutil.copy(FIXTURES / "page.html", folder / "doc_b.html")
-    shutil.copy(FIXTURES / "sheet.xlsx", folder / "doc_c.xlsx")  # refused: unsupported_type
+    shutil.copy(FIXTURES / "slides.pptx", folder / "doc_c.pptx")  # refused: unsupported_type
     (folder / "doc_a.json").write_text("{}")  # gold next to the source: skipped
     (folder / "README.md").write_text("notes")  # skipped
     output = tmp_path / "predictions"
@@ -77,7 +77,7 @@ def test_bench_pages_writes_graded_predictions(
     # A refused file: an empty prediction, a failure, and route "error".
     assert (output / "doc_c.md").read_text() == ""
     failures = json.loads((output / "failures.json").read_text())
-    assert [(f["filename"], f["state"]) for f in failures] == [("doc_c.xlsx", "failed")]
+    assert [(f["filename"], f["state"]) for f in failures] == [("doc_c.pptx", "failed")]
     with (output / "route_stats.csv").open() as f:
         rows = {row["doc_id"]: row for row in csv.DictReader(f)}
     assert (rows["doc_a"]["route"], rows["doc_a"]["pages"], rows["doc_a"]["state"]) == (
@@ -93,6 +93,6 @@ def test_bench_pages_writes_graded_predictions(
         for r in caplog.records
         if r.name == "bench_pages" and r.getMessage().startswith("{")
     ]
-    assert [e["filename"] for e in events] == ["doc_a.pdf", "doc_b.html", "doc_c.xlsx"]
+    assert [e["filename"] for e in events] == ["doc_a.pdf", "doc_b.html", "doc_c.pptx"]
     assert all(e["event"] == "file_parsed" and e["parse_duration_s"] >= 0 for e in events)
     assert events[0]["page_count"] == 3 and events[0]["vlm_call_count"] == 0

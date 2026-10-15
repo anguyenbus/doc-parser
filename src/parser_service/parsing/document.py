@@ -45,6 +45,7 @@ load-bearing (they ARE the better renderer), so they must not be modified.
 
 from __future__ import annotations
 
+import html
 import logging
 import mimetypes
 import os
@@ -167,12 +168,14 @@ def _single_format_converter(kind: str) -> Any:
     from docling.datamodel.backend_options import (
         EmailBackendOptions,
         HTMLBackendOptions,
+        MsExcelBackendOptions,
         MsWordBackendOptions,
     )
     from docling.datamodel.base_models import InputFormat
     from docling.document_converter import (
         DocumentConverter,
         EmailFormatOption,
+        ExcelFormatOption,
         FormatOption,
         HTMLFormatOption,
         WordFormatOption,
@@ -185,6 +188,14 @@ def _single_format_converter(kind: str) -> Any:
             backend_options=MsWordBackendOptions.model_validate(
                 {"enable_remote_fetch": False, "enable_local_fetch": False}
             )
+        )
+    elif kind == "xlsx":
+        # A lone non-empty cell (a note or a title) becomes text, not a 1x1 table.
+        # Charts are parsed into their data; no chart is rendered (that needs
+        # LibreOffice). Hidden sheets go to Docling's invisible layer: not exported.
+        input_format = InputFormat.XLSX
+        option = ExcelFormatOption(
+            backend_options=MsExcelBackendOptions.model_validate({"treat_singleton_as_text": True})
         )
     elif kind == "html":
         input_format = InputFormat.HTML
@@ -901,7 +912,7 @@ def _whole_doc_to_markdown(
     """DOCX/XLSX/HTML → whole-doc ``export_to_markdown()``, gate skipped.
 
     Structured formats Docling reads reliably; treated as one logical page.
-    ``kind`` (``docx``, ``html``, ``eml`` or ``msg``) converts with that kind's
+    ``kind`` (``docx``, ``xlsx``, ``html``, ``eml`` or ``msg``) converts with that kind's
     single-format converter (the page pipeline's handlers); None uses today's converter (the
     batch ``parse_to_markdown``). Both get the output fixes of
     ``_fix_whole_doc_markdown``.
@@ -942,7 +953,8 @@ def _convert_whole_doc(
         return "", None
 
     is_docx = kind == "docx" or (kind is None and _input_format(result) == "docx")
-    markdown = _fix_whole_doc_markdown(doc.export_to_markdown(), doc, is_docx)
+    whole = _xlsx_markdown(doc, path) if kind == "xlsx" else doc.export_to_markdown()
+    markdown = _fix_whole_doc_markdown(whole, doc, is_docx)
     page_routes.append(
         {
             "page_index": 0,
@@ -952,6 +964,58 @@ def _convert_whole_doc(
         }
     )
     return markdown, doc
+
+
+# A ``<sheet>`` entry of xl/workbook.xml, and its name and state attributes.
+_WORKBOOK_SHEET = re.compile(rb"<(?:\w+:)?sheet\b[^>]*>")
+_SHEET_ATTR = re.compile(rb'\b(name|state)="([^"]*)"')
+
+
+def workbook_sheets(path: Path) -> list[tuple[str, str]]:
+    """``(name, state)`` of each sheet of an XLSX, in workbook order.
+
+    The state is ``visible``, ``hidden`` or ``veryHidden``. Read from
+    ``xl/workbook.xml`` (a small part; the cost guard has bounded the ZIP). Raises
+    ``zipfile.BadZipFile`` or ``KeyError`` for a file that is not a workbook.
+    """
+    import zipfile
+
+    with zipfile.ZipFile(path) as archive:
+        xml = archive.read("xl/workbook.xml")
+    sheets = []
+    for tag in _WORKBOOK_SHEET.findall(xml):
+        attrs = {
+            key.decode(): html.unescape(value.decode("utf-8", "replace"))
+            for key, value in _SHEET_ATTR.findall(tag)
+        }
+        sheets.append((attrs.get("name", ""), attrs.get("state", "visible")))
+    return sheets
+
+
+def _xlsx_markdown(doc: Any, path: Path) -> str:
+    """One ``## <sheet name>`` section per sheet that has content, in workbook order.
+
+    Docling makes each sheet a page (1-based, in workbook order) but its
+    whole-document export drops the sheet names, so a table cannot be traced to its
+    sheet. A hidden sheet's items are on the invisible layer and export as nothing,
+    so it gets no section. When the sheet list and the pages disagree, the
+    whole-document export is used as is.
+    """
+    sheets = workbook_sheets(path)
+    if len(sheets) != len(doc.pages):
+        logger.warning(
+            "%s: %d sheets but %d pages; sheet headings left out",
+            path.name,
+            len(sheets),
+            len(doc.pages),
+        )
+        return str(doc.export_to_markdown())
+    sections = []
+    for page_no, (name, _state) in enumerate(sheets, start=1):
+        body = str(doc.export_to_markdown(page_no=page_no)).strip()
+        if body:
+            sections.append(f"## {name.strip() or f'Sheet {page_no}'}\n\n{body}")
+    return "\n\n".join(sections)
 
 
 def _input_format(result: Any) -> str | None:

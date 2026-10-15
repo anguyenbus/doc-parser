@@ -72,7 +72,7 @@ id, and progress is found by each copy's sha256. T2 to T4 need the 107-page PDF,
 which is not in git: set `BIG_PDF`, or copy it from the 2026-10-03 run's
 `input/source/` prefix in S3. T6 and T7 are not written yet.
 
-`test.env` enables every kind with a tested handler (`pdf,docx,html,txt,eml,msg,png,jpeg`).
+`test.env` enables every kind with a tested handler (`pdf,docx,xlsx,html,txt,eml,msg,png,jpeg`).
 T5 checks the live ConfigMap and refuses to start without `txt`, `docx` and `html`.
 
 ## Runbook
@@ -95,11 +95,12 @@ MB means 1,000,000 bytes. Values marked * are provisional (see
 
 | Key | Start | Unit | Read by |
 |---|---|---|---|
-| `PARSER_ENABLED_KINDS` | `pdf,docx,html,txt,eml,msg,png,jpeg` | comma list of `pdf`, `txt`, `docx`, `html`, `eml`, `msg`, `png`, `jpeg` | driver (intake); service (409 for other kinds) |
+| `PARSER_ENABLED_KINDS` | `pdf,docx,xlsx,html,txt,eml,msg,png,jpeg` | comma list of `pdf`, `txt`, `docx`, `xlsx`, `html`, `eml`, `msg`, `png`, `jpeg` | driver (intake); service (409 for other kinds) |
 | `PARSER_DEADLINE_PDF_PAGE_S` | 600 * | s, one PDF page | service (kills the parse worker); driver (start check, final rule) |
 | `PARSER_DEADLINE_TXT_S` | 60 * | s, one document | same |
 | `PARSER_DEADLINE_DOCX_S` | 300 * | s, one document | same |
 | `PARSER_DEADLINE_HTML_S` | 300 * | s, one document | same |
+| `PARSER_DEADLINE_XLSX_S` | 300 * | s, one workbook | same |
 | `PARSER_DEADLINE_EMAIL_S` | 120 * | s, one document (`eml` and `msg`) | same |
 | `PARSER_DEADLINE_IMAGE_S` | 600 * | s, one image (`png` and `jpeg`) | same |
 | `PARSER_REMOTE_REQUEST_TIMEOUT_S` | 900 | s, one page request | driver (request timeout); service (start check) |
@@ -107,6 +108,7 @@ MB means 1,000,000 bytes. Values marked * are provisional (see
 | `PARSER_MAX_TXT_MB` | 50 * | MB, raw file | driver (intake, `too_large`) |
 | `PARSER_MAX_DOCX_MB` | 100 * | MB, raw file | same |
 | `PARSER_MAX_HTML_MB` | 50 * | MB, raw file | same |
+| `PARSER_MAX_XLSX_MB` | 50 * | MB, raw file | same |
 | `PARSER_MAX_EMAIL_MB` | 50 * | MB, raw file (`eml` and `msg`) | same |
 | `PARSER_MAX_IMAGE_MB` | 50 * | MB, raw file (`png` and `jpeg`) | same |
 | `PARSER_MAX_OUTPUT_MB` | 20 * | MB, one document's markdown | service (sends it with each request; the worker enforces it, `output_too_large`); driver (final rule). PDF pages have no output cap |
@@ -116,6 +118,9 @@ MB means 1,000,000 bytes. Values marked * are provisional (see
 | `PARSER_DOCX_MAX_ENTRIES` | 10000 * | ZIP entries | same |
 | `PARSER_DOCX_MAX_PARAGRAPHS` | 50000 * | paragraphs in `word/document.xml` | service (DOCX guard, `too_complex`); driver (final rule) |
 | `PARSER_DOCX_MAX_TABLE_CELLS` | 100000 * | table cells in `word/document.xml` | same |
+| `PARSER_XLSX_MAX_EXPANDED_MB`, `_PART_MB`, `_RATIO`, `_ENTRIES` | 300, 200, 100, 10000 * | as the DOCX ZIP limits | service (XLSX guard, `zip_bomb`); driver (final rule) |
+| `PARSER_XLSX_MAX_CELLS` | 500000 * | cells in all worksheets | service (XLSX guard, `too_complex`); driver (final rule) |
+| `PARSER_XLSX_MAX_GRID_CELLS` | 5000000 * | summed used-range area, rows x columns per sheet | same |
 | `PARSER_IMAGE_MAX_MEGAPIXELS` | 50 * | megapixels the header declares (width x height x frames) | service (image guard, `too_complex`); driver (final rule) |
 | `PARSER_IMAGES_MIN_PIXELS` | 40000 | pixels (width x height) | parse worker (`images_not_ocrd` flag; never changes a unit's state) |
 
@@ -161,10 +166,10 @@ refuse to start otherwise, and the error names the key and the minimum.
 
 ### Enabled kinds
 
-Every kind with a tested handler ships enabled: `pdf`, `docx`, `html`, `txt`, `eml`,
-`msg`, `png` and `jpeg`. The list is explicit, not taken from Docling: a format Docling
-reads but the parser has no handler for (PPTX, XLSX, GIF, TIFF, WebP, Markdown, audio,
-video) cannot be
+Every kind with a tested handler ships enabled: `pdf`, `docx`, `xlsx`, `html`, `txt`,
+`eml`, `msg`, `png` and `jpeg`. The list is explicit, not taken from Docling: a format
+Docling reads but the parser has no handler for (PPTX, legacy XLS, GIF, TIFF, WebP,
+Markdown, audio, video) cannot be
 enabled, because the driver and the service refuse to start with it. The * limits
 are provisional for every enabled kind until the corpus inventory replaces them.
 
@@ -173,7 +178,7 @@ To change the list (to switch a kind back on after the kill switch, below):
 1. Set the new list in the environment and apply the ConfigMap
    ([k8s/namespace.yaml.tpl](k8s/namespace.yaml.tpl) reads `${PARSER_ENABLED_KINDS}`,
    and `test.env` defaults it to every handled kind), for example:
-   `export PARSER_ENABLED_KINDS=pdf,docx,html,txt,eml,msg,png,jpeg; source test.env; envsubst < k8s/namespace.yaml.tpl | kubectl apply -f -`.
+   `export PARSER_ENABLED_KINDS=pdf,docx,xlsx,html,txt,eml,msg,png,jpeg; source test.env; envsubst < k8s/namespace.yaml.tpl | kubectl apply -f -`.
 2. Restart the page service and wait for it:
    `kubectl -n $NAMESPACE rollout restart deployment/page-parser-predictor`, then
    `kubectl -n $NAMESPACE rollout status deployment/page-parser-predictor`.
@@ -290,6 +295,7 @@ per kind. Set from it:
 
 - the raw caps (`PARSER_MAX_*_MB`) from the size per kind;
 - the DOCX guards (`PARSER_DOCX_MAX_*`) from the DOCX percentiles;
+- the XLSX guards (`PARSER_XLSX_MAX_*`) from the XLSX cell and used-range percentiles;
 - the image guard (`PARSER_IMAGE_MAX_MEGAPIXELS`) from the image megapixels;
 - the deadlines (`PARSER_DEADLINE_*`) from the timed sample, then the request
   timeout to keep the deadline ordering;

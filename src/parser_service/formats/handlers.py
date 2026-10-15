@@ -1,8 +1,8 @@
 """
 handlers.py — parse one unit of a routed kind, and the handler versions (spec D3, D6).
 
-A unit is one page of a PDF or one whole single-unit file (txt, docx, html, eml,
-msg, png, jpeg). ``parse_unit`` dispatches on the kind read from the manifest, never on the
+A unit is one page of a PDF or one whole single-unit file (txt, docx, xlsx, html,
+eml, msg, png, jpeg). ``parse_unit`` dispatches on the kind read from the manifest, never on the
 file name, and runs in the page service's parse worker (``service.worker``) or, for
 the local executor, in the page pipeline's own process.
 
@@ -12,6 +12,7 @@ enable it. A kind's task group adds its handler by adding an entry:
 
     HANDLERS["txt"] = _parse_txt                              # Group 4 (done)
     HANDLERS["docx"] = _parse_docx; HANDLERS["html"] = ...    # Group 5b (done)
+    HANDLERS["xlsx"] = _parse_xlsx                            # spreadsheets
     HANDLERS["eml"] = _parse_eml; HANDLERS["msg"] = _parse_msg  # Group 6 (done)
     HANDLERS["png"] = HANDLERS["jpeg"] = _parse_image             # images
 
@@ -61,6 +62,7 @@ HANDLER_VERSIONS: dict[str, str] = {
     "pdf": "1",
     "txt": "1",
     "docx": "1",
+    "xlsx": "1",
     "html": "1",
     "email": "1",
     "image": "1",
@@ -72,6 +74,7 @@ HANDLER_NAMES: dict[str, str] = {
     "pdf": "pdf",
     "txt": "txt",
     "docx": "docx",
+    "xlsx": "xlsx",
     "html": "html",
     "eml": "email",
     "msg": "email",
@@ -190,6 +193,10 @@ def _parse_txt(path: Path, page_number: int, escalate: bool) -> Reply:
 
 ROUTE_DOCLING_KEPT = "docling-kept"
 FLAG_IMAGES_NOT_OCRD = "images_not_ocrd"
+# XLSX: a hidden sheet's content is left out; a formula stored without a value
+# (the file was never calculated) reads as an empty cell.
+FLAG_HIDDEN_SHEETS_SKIPPED = "hidden_sheets_skipped"
+FLAG_FORMULAS_NOT_CALCULATED = "formulas_not_calculated"
 # Exception text kept in a record's reason, as the parse worker keeps it (D9).
 _MAX_REASON_CHARS = 500
 
@@ -211,7 +218,7 @@ _BOMB_IMAGE_PIXELS = 1 << 40
 
 
 def _docx_image_pixels(doc: Any) -> list[int]:
-    """The pixel count of every body-layer picture of a DOCX that has embedded data.
+    """The pixel count of every body-layer picture of a DOCX or XLSX that has embedded data.
 
     Furniture pictures (headers, footers) and pictures with no image data (a
     linked image, a format Docling could not read) are left out.
@@ -307,8 +314,21 @@ def _image_flags(pixels: list[int]) -> list[str]:
     return [FLAG_IMAGES_NOT_OCRD] if any(count >= threshold for count in pixels) else []
 
 
+def _xlsx_flags(path: Path) -> list[str]:
+    """``hidden_sheets_skipped`` and ``formulas_not_calculated`` for an XLSX, as they apply."""
+    from parser_service.formats.guards import xlsx_stats
+    from parser_service.parsing.document import workbook_sheets
+
+    flags = []
+    if any(state != "visible" for _name, state in workbook_sheets(path)):
+        flags.append(FLAG_HIDDEN_SHEETS_SKIPPED)
+    if xlsx_stats(path).formulas_without_value:
+        flags.append(FLAG_FORMULAS_NOT_CALCULATED)
+    return flags
+
+
 def _parse_whole_doc(kind: str, path: Path) -> Reply:
-    """A DOCX, HTML or email document: Docling's whole-document markdown with the output fixes.
+    """A DOCX, XLSX, HTML or email document: Docling's markdown with the output fixes.
 
     No blank-page probe. Converts with ``kind``'s single-format converter.
     Success is ``ok`` with route ``docling-kept``, or ``empty_document`` when the
@@ -316,7 +336,9 @@ def _parse_whole_doc(kind: str, path: Path) -> Reply:
     (retried under the attempt limit). ``extra.flags`` holds ``images_not_ocrd``
     when an embedded image is at least ``PARSER_IMAGES_MIN_PIXELS``; a flag never
     changes the state. An email (``eml``, ``msg``) also gets ``extra.email``, its
-    headers and attachment list read from the message itself (``_email_facts``).
+    headers and attachment list read from the message itself (``_email_facts``). An
+    XLSX gets one ``## <sheet>`` section per visible sheet with content, and the
+    flags ``hidden_sheets_skipped`` and ``formulas_not_calculated`` (``_xlsx_flags``).
     """
     from parser_service.parsing import document  # Docling is imported lazily there
 
@@ -337,10 +359,13 @@ def _parse_whole_doc(kind: str, path: Path) -> Reply:
             {"route": None, "warnings": warnings},
         )
     email: dict[str, Any] | None = None
+    more_flags: list[str] = []
     if kind in EMAIL_KINDS:
         email, pixels = _email_facts(kind, path)
-    elif kind == "docx":
+    elif kind in ("docx", "xlsx"):
         pixels = _docx_image_pixels(doc)
+        if kind == "xlsx":
+            more_flags = _xlsx_flags(path)
     else:
         pixels = _html_image_pixels(path)
     route = _route(markdown, ROUTE_DOCLING_KEPT)
@@ -349,7 +374,7 @@ def _parse_whole_doc(kind: str, path: Path) -> Reply:
         "route_reason": None,
         "page_routes": [{**r, "route": route} for r in page_routes],
         "warnings": warnings,
-        "flags": _image_flags(pixels),
+        "flags": _image_flags(pixels) + more_flags,
     }
     if email is not None:
         extra["email"] = email
@@ -359,6 +384,11 @@ def _parse_whole_doc(kind: str, path: Path) -> Reply:
 def _parse_docx(path: Path, page_number: int, escalate: bool) -> Reply:
     """A DOCX document (the service's cost guard has already passed it)."""
     return _parse_whole_doc("docx", path)
+
+
+def _parse_xlsx(path: Path, page_number: int, escalate: bool) -> Reply:
+    """An XLSX workbook (the service's cost guard has already passed it)."""
+    return _parse_whole_doc("xlsx", path)
 
 
 def _parse_html(path: Path, page_number: int, escalate: bool) -> Reply:
@@ -633,6 +663,7 @@ HANDLERS: dict[str, UnitHandler] = {
     "pdf": _parse_pdf_page,
     "txt": _parse_txt,
     "docx": _parse_docx,
+    "xlsx": _parse_xlsx,
     "html": _parse_html,
     "eml": _parse_eml,
     "msg": _parse_msg,

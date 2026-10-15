@@ -1,6 +1,6 @@
 """
-guards.py — the cost guards: DOCX without decompressing more than one part, images
-without decoding any pixel.
+guards.py — the cost guards: DOCX without decompressing more than one part, XLSX
+without decompressing more than its worksheets, images without decoding any pixel.
 
 Pure Python (``zipfile``, ``re``); it never imports Docling. Two building blocks,
 shared by the corpus inventory (``scripts/corpus_inventory.py``) and the DOCX cost
@@ -33,6 +33,17 @@ A rejection returns ``(reason_code, detail, limits)``, where ``limits`` holds th
 limit values behind it (the four ZIP limits, or the two count limits), stored in
 the unit's record so the failure is final until one of them changes (spec D5).
 Details hold numbers only, never a part name or document text.
+
+``check_xlsx(path, limits)`` is the XLSX cost guard. It runs the same ZIP index
+checks as the DOCX guard (``zip_bomb``), then streams every ``xl/worksheets/*.xml``
+part once, capped at its declared size, counting cells and reading each cell's
+reference (``r="AB12"``). Docling loads the whole workbook and walks each sheet's
+used range, so two things cost: the number of cells (about 2.7 KB of memory each)
+and the used-range area, rows x columns (about 0.2 KB each). A workbook with two
+cells at A1 and XFD1048576 has a used range of 17 billion cells and never finishes.
+More than ``xlsx_max_cells`` cells, or a summed used-range area over
+``xlsx_max_grid_cells``, is ``too_complex``. ``xlsx_stats(path)`` gives the same
+numbers for the corpus inventory, plus the formulas stored without a value.
 
 ``check_image(path, max_megapixels)`` is the image cost guard. It reads the
 dimensions a PNG (``IHDR``, and ``acTL`` for an animated PNG's frame count) or a
@@ -209,6 +220,15 @@ class DocxLimits:
     docx_max_paragraphs: int
     docx_max_table_cells: int
 
+    def zip_thresholds(self) -> tuple[int, int, int, int]:
+        """``(max entries, max expanded MB, max part MB, max ratio)`` for ``_index_problem``."""
+        return (
+            self.docx_max_entries,
+            self.docx_max_expanded_mb,
+            self.docx_max_part_mb,
+            self.docx_max_ratio,
+        )
+
     def zip_limits(self) -> dict[str, int]:
         """The four ZIP limits, stored with a ``zip_bomb`` record."""
         return {
@@ -226,28 +246,25 @@ class DocxLimits:
         }
 
 
-def _index_problem(index: ZipIndexStats, limits: DocxLimits) -> str | None:
+def _index_problem(index: ZipIndexStats, limits: DocxLimits | XlsxLimits) -> str | None:
     """The first ZIP index check (spec D7 order) that ``index`` fails, as a detail."""
-    if index.entries > limits.docx_max_entries:
-        return f"{index.entries} entries, over {limits.docx_max_entries}"
+    max_entries, max_expanded_mb, max_part_mb, max_ratio = limits.zip_thresholds()
+    if index.entries > max_entries:
+        return f"{index.entries} entries, over {max_entries}"
     if index.duplicate_names:
         return f"{index.duplicate_names} duplicate entry name(s)"
     if index.encrypted_entries:
         return f"{index.encrypted_entries} encrypted entry(ies)"
-    if index.expanded_bytes > limits.docx_max_expanded_mb * _MB:
-        return (
-            f"expanded {index.expanded_bytes / _MB:.1f} MB, over {limits.docx_max_expanded_mb} MB"
-        )
-    if index.largest_part_bytes > limits.docx_max_part_mb * _MB:
-        return (
-            f"a part of {index.largest_part_bytes / _MB:.1f} MB, over {limits.docx_max_part_mb} MB"
-        )
-    if index.ratio > limits.docx_max_ratio:
-        return f"ratio {index.ratio:.0f}:1, over {limits.docx_max_ratio}:1"
-    if index.max_large_part_ratio > limits.docx_max_ratio:
+    if index.expanded_bytes > max_expanded_mb * _MB:
+        return f"expanded {index.expanded_bytes / _MB:.1f} MB, over {max_expanded_mb} MB"
+    if index.largest_part_bytes > max_part_mb * _MB:
+        return f"a part of {index.largest_part_bytes / _MB:.1f} MB, over {max_part_mb} MB"
+    if index.ratio > max_ratio:
+        return f"ratio {index.ratio:.0f}:1, over {max_ratio}:1"
+    if index.max_large_part_ratio > max_ratio:
         return (
             f"a part of 1 MiB or more at ratio {index.max_large_part_ratio:.0f}:1, "
-            f"over {limits.docx_max_ratio}:1"
+            f"over {max_ratio}:1"
         )
     return None
 
@@ -297,6 +314,220 @@ def check_docx(
         )
     if counts.truncated:  # more bytes than the index declared: never parse them
         return REASON_ZIP_BOMB, "index mismatch", limits.zip_limits()
+    return None
+
+
+# ---------------------------------------------------------------------------
+# XLSX
+# ---------------------------------------------------------------------------
+
+WORKSHEET_PREFIX = "xl/worksheets/"
+# A cell's start tag, any namespace prefix: ``<c r="B2" s="1" t="s">`` or ``<c/>``.
+# ``<col``, ``<cols`` and ``<cfRule`` do not match (a letter follows the ``c``).
+CELL_START = re.compile(rb"<(?:[A-Za-z_][\w.-]{0,31}:)?c(\s[^<>]*)?/?>")
+_CELL_REF = re.compile(rb'\br="([A-Z]{1,3})([0-9]{1,7})"')
+# A formula with no stored value: ``<f>..</f>`` or ``<f .../>`` followed by the end
+# of the cell or an empty ``<v>``. Excel stores the value; files written by
+# libraries that never calculate often do not, and Docling then reads an empty cell.
+FORMULA_NO_VALUE = re.compile(
+    rb"(?:</(?:\w+:)?f>|<(?:\w+:)?f\b[^<>]*/>)\s*"
+    rb"(?:</(?:\w+:)?c>|<(?:\w+:)?v\s*/>|<(?:\w+:)?v>\s*</(?:\w+:)?v>)"
+)
+# Bytes kept across a chunk boundary: room for one cell start tag or formula ending.
+_XLSX_CARRY = 512
+
+
+@dataclass(frozen=True)
+class SheetCounts:
+    """One streamed pass over a worksheet part."""
+
+    cells: int
+    max_row: int  # the largest row number of any cell reference (0: none)
+    max_col: int  # the largest column number of any cell reference (0: none)
+    formulas_without_value: int
+    bytes_read: int
+    limit_exceeded: bool  # cells went over ``max_cells``; the pass stopped
+    truncated: bool  # the byte cap was reached with more of the stream left unread
+
+    @property
+    def grid_cells(self) -> int:
+        """The used range's area, rows x columns, as Docling walks it."""
+        return self.max_row * self.max_col
+
+
+def _column_number(letters: bytes) -> int:
+    number = 0
+    for letter in letters:
+        number = number * 26 + (letter - 64)
+    return number
+
+
+def count_sheet_cells(
+    stream: IO[bytes],
+    *,
+    chunk_size: int = CHUNK_BYTES,
+    max_bytes: int | None = None,
+    max_cells: int | None = None,
+) -> SheetCounts:
+    """Count the cells of one worksheet part and the largest row and column they use.
+
+    Reads at most ``max_bytes`` (all when None), and stops after the chunk in which
+    the cells exceed ``max_cells``. Errors from the stream propagate, as in
+    ``count_elements``.
+    """
+    cells = max_row = max_col = formulas = read = 0
+    carry = b""
+    while max_bytes is None or read < max_bytes:
+        want = chunk_size if max_bytes is None else min(chunk_size, max_bytes - read)
+        chunk = stream.read(want)
+        if not chunk:
+            return SheetCounts(cells, max_row, max_col, formulas, read, False, False)
+        read += len(chunk)
+        data = carry + chunk
+        end = 0
+        for match in CELL_START.finditer(data):
+            cells += 1
+            ref = _CELL_REF.search(match.group(1) or b"")
+            if ref:
+                max_col = max(max_col, _column_number(ref.group(1)))
+                max_row = max(max_row, int(ref.group(2)))
+            end = max(end, match.end())
+        for match in FORMULA_NO_VALUE.finditer(data):
+            formulas += 1
+            end = max(end, match.end())
+        carry = data[max(end, len(data) - _XLSX_CARRY) :]
+        if max_cells is not None and cells > max_cells:
+            return SheetCounts(cells, max_row, max_col, formulas, read, True, False)
+    truncated = bool(stream.read(1))
+    return SheetCounts(cells, max_row, max_col, formulas, read, False, truncated)
+
+
+def _worksheets(infos: Iterable[zipfile.ZipInfo]) -> list[zipfile.ZipInfo]:
+    return [
+        info
+        for info in infos
+        if info.filename.startswith(WORKSHEET_PREFIX)
+        and info.filename.endswith(".xml")
+        and "/" not in info.filename[len(WORKSHEET_PREFIX) :]
+    ]
+
+
+@dataclass(frozen=True)
+class XlsxStats:
+    """The index numbers of an XLSX plus the counts of its worksheets."""
+
+    index: ZipIndexStats
+    sheets: int
+    cells: int
+    grid_cells: int  # summed over the sheets
+    formulas_without_value: int
+
+
+def xlsx_stats(path: str | Path, *, max_bytes: int | None = None) -> XlsxStats:
+    """Index numbers and worksheet counts for the XLSX at ``path``.
+
+    ``max_bytes`` caps the streamed pass of each worksheet (None reads it all).
+    Raises ``zipfile.BadZipFile`` for a file that is not a ZIP, or whose worksheet
+    streams disagree with its index.
+    """
+    with zipfile.ZipFile(path) as archive:
+        infos = archive.infolist()
+        sheets = _worksheets(infos)
+        totals = [0, 0, 0]
+        for info in sheets:
+            with archive.open(info) as part:
+                counts = count_sheet_cells(part, max_bytes=max_bytes)
+            totals[0] += counts.cells
+            totals[1] += counts.grid_cells
+            totals[2] += counts.formulas_without_value
+    return XlsxStats(zip_index_stats(infos), len(sheets), *totals)
+
+
+@dataclass(frozen=True)
+class XlsxLimits:
+    """The XLSX guard thresholds. Field names are the keys stored in ``limits``."""
+
+    xlsx_max_expanded_mb: int
+    xlsx_max_part_mb: int
+    xlsx_max_ratio: int
+    xlsx_max_entries: int
+    xlsx_max_cells: int
+    xlsx_max_grid_cells: int
+
+    def zip_thresholds(self) -> tuple[int, int, int, int]:
+        """``(max entries, max expanded MB, max part MB, max ratio)`` for ``_index_problem``."""
+        return (
+            self.xlsx_max_entries,
+            self.xlsx_max_expanded_mb,
+            self.xlsx_max_part_mb,
+            self.xlsx_max_ratio,
+        )
+
+    def zip_limits(self) -> dict[str, int]:
+        """The four ZIP limits, stored with a ``zip_bomb`` record."""
+        return {
+            "xlsx_max_expanded_mb": self.xlsx_max_expanded_mb,
+            "xlsx_max_part_mb": self.xlsx_max_part_mb,
+            "xlsx_max_ratio": self.xlsx_max_ratio,
+            "xlsx_max_entries": self.xlsx_max_entries,
+        }
+
+    def count_limits(self) -> dict[str, int]:
+        """The two size limits, stored with a ``too_complex`` record."""
+        return {
+            "xlsx_max_cells": self.xlsx_max_cells,
+            "xlsx_max_grid_cells": self.xlsx_max_grid_cells,
+        }
+
+
+def check_xlsx(
+    path: str | Path, limits: XlsxLimits, *, chunk_size: int = CHUNK_BYTES
+) -> GuardRejection | None:
+    """The XLSX cost guard: ``(reason_code, detail, limits)``, or None to parse.
+
+    Reads the ZIP index, then each worksheet up to its declared size (never more
+    than ``xlsx_max_part_mb``), stopping once the cells pass the limit. A file whose
+    central directory cannot be read passes: the handler reports it.
+    """
+    try:
+        archive = zipfile.ZipFile(path)
+    except (zipfile.BadZipFile, OSError):
+        return None
+    cells = grid = 0
+    with archive:
+        infos = archive.infolist()
+        problem = _index_problem(zip_index_stats(infos), limits)
+        if problem is not None:
+            return REASON_ZIP_BOMB, problem, limits.zip_limits()
+        for info in _worksheets(infos):
+            cap = min(info.file_size, limits.xlsx_max_part_mb * _MB)
+            try:
+                with archive.open(info) as part:
+                    counts = count_sheet_cells(
+                        part,
+                        chunk_size=chunk_size,
+                        max_bytes=cap,
+                        max_cells=limits.xlsx_max_cells - cells,
+                    )
+            except (zipfile.BadZipFile, EOFError, zlib.error):
+                return REASON_ZIP_BOMB, "index mismatch", limits.zip_limits()
+            if counts.truncated:
+                return REASON_ZIP_BOMB, "index mismatch", limits.zip_limits()
+            cells += counts.cells
+            grid += counts.grid_cells
+            if counts.limit_exceeded or cells > limits.xlsx_max_cells:
+                return (
+                    REASON_TOO_COMPLEX,
+                    f"more than {limits.xlsx_max_cells} cells",
+                    limits.count_limits(),
+                )
+            if grid > limits.xlsx_max_grid_cells:
+                return (
+                    REASON_TOO_COMPLEX,
+                    f"used ranges of {grid} cells (rows x columns), over "
+                    f"{limits.xlsx_max_grid_cells}",
+                    limits.count_limits(),
+                )
     return None
 
 

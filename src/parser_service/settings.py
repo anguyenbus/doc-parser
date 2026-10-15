@@ -45,6 +45,8 @@ DEADLINE_ENV: dict[str, tuple[str, int]] = {
     "pdf": ("PARSER_DEADLINE_PDF_PAGE_S", 600),
     "txt": ("PARSER_DEADLINE_TXT_S", 60),  # provisional until the corpus inventory
     "docx": ("PARSER_DEADLINE_DOCX_S", 300),  # provisional until the corpus inventory
+    # measured: 500k cells ~30 s, a 10M-cell used range ~35 s; provisional
+    "xlsx": ("PARSER_DEADLINE_XLSX_S", 300),
     "html": ("PARSER_DEADLINE_HTML_S", 300),  # provisional until the corpus inventory
     # eml and msg share one key (the email handler): provisional until the corpus inventory
     "eml": ("PARSER_DEADLINE_EMAIL_S", 120),
@@ -71,6 +73,7 @@ DEFAULT_ENABLED_KINDS: tuple[str, ...] = KINDS
 RAW_CAP_ENV: dict[str, tuple[str, int]] = {
     "txt": ("PARSER_MAX_TXT_MB", 50),  # provisional until the corpus inventory
     "docx": ("PARSER_MAX_DOCX_MB", 100),  # provisional until the corpus inventory
+    "xlsx": ("PARSER_MAX_XLSX_MB", 50),  # provisional until the corpus inventory
     "html": ("PARSER_MAX_HTML_MB", 50),  # provisional until the corpus inventory
     # eml and msg share one key: provisional until the corpus inventory
     "eml": ("PARSER_MAX_EMAIL_MB", 50),
@@ -95,6 +98,20 @@ DOCX_GUARD_ENV: dict[str, tuple[str, int]] = {
     "docx_max_entries": ("PARSER_DOCX_MAX_ENTRIES", 10_000),
     "docx_max_paragraphs": ("PARSER_DOCX_MAX_PARAGRAPHS", 50_000),
     "docx_max_table_cells": ("PARSER_DOCX_MAX_TABLE_CELLS", 100_000),
+}
+# The XLSX cost guard's thresholds, checked by the page service before an XLSX
+# reaches the parse worker: the four ZIP limits as for a DOCX (``zip_bomb``), and
+# (``too_complex``) the cells and the summed used-range area (rows x columns) of
+# the worksheets. Docling loads the whole workbook: measured ~2.7 KB of memory per
+# cell (1M cells: 3.4 GB, 54 s) and ~0.2 KB per used-range cell (20M: 4.7 GB); a
+# sheet whose cells span A1:XFD1048576 never finishes. Provisional.
+XLSX_GUARD_ENV: dict[str, tuple[str, int]] = {
+    "xlsx_max_expanded_mb": ("PARSER_XLSX_MAX_EXPANDED_MB", 300),
+    "xlsx_max_part_mb": ("PARSER_XLSX_MAX_PART_MB", 200),
+    "xlsx_max_ratio": ("PARSER_XLSX_MAX_RATIO", 100),
+    "xlsx_max_entries": ("PARSER_XLSX_MAX_ENTRIES", 10_000),
+    "xlsx_max_cells": ("PARSER_XLSX_MAX_CELLS", 500_000),
+    "xlsx_max_grid_cells": ("PARSER_XLSX_MAX_GRID_CELLS", 5_000_000),
 }
 # The image cost guard's threshold, checked by the page service before an image
 # reaches the parse worker: an image whose header declares more pixels is
@@ -210,13 +227,13 @@ def _enabled_kinds(env: Mapping[str, str], problems: list[str]) -> tuple[str, ..
 
 def _size_caps(env: Mapping[str, str], problems: list[str]) -> None:
     """Every raw cap in ``RAW_CAP_ENV``, the output cap, the image flag's pixel
-    threshold, every DOCX guard threshold in ``DOCX_GUARD_ENV`` and the image
-    guard's megapixel threshold is a positive integer."""
+    threshold, every DOCX and XLSX guard threshold and the image guard's megapixel
+    threshold is a positive integer."""
     for name, default in dict(RAW_CAP_ENV.values()).items():  # a shared key is read once
         _integer(env, name, 1, default, problems)
     _integer(env, MAX_OUTPUT_ENV, 1, DEFAULT_MAX_OUTPUT_MB, problems)
     _integer(env, IMAGES_MIN_PIXELS_ENV, 1, DEFAULT_IMAGES_MIN_PIXELS, problems)
-    for name, default in DOCX_GUARD_ENV.values():
+    for name, default in [*DOCX_GUARD_ENV.values(), *XLSX_GUARD_ENV.values()]:
         _integer(env, name, 1, default, problems)
     _integer(env, IMAGE_MAX_MEGAPIXELS_ENV, 1, DEFAULT_IMAGE_MAX_MEGAPIXELS, problems)
 

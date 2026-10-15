@@ -42,8 +42,8 @@ Inside `pipeline/` the modules follow the same rule: `config` ← `layout`, `run
 | | `config.py` | Unit and file states, the per-kind pipeline config and its hash, enabled kinds, caps, deadlines, the final-failure rule |
 | top level | `settings.py` | Start-up validation of the environment for the scripts and the service |
 | `formats/` | `sniff.py` | A file's kind from its bytes (and the extension for txt and html) |
-| | `guards.py` | The cost guards: DOCX (ZIP index and streamed element count) and images (declared megapixels, header only) |
-| | `handlers.py` | One handler per kind (pdf, docx, html, txt, eml, msg, png, jpeg) and their versions |
+| | `guards.py` | The cost guards: DOCX (ZIP index, streamed element count), XLSX (ZIP index, streamed cell and used-range count) and images (declared megapixels, header only) |
+| | `handlers.py` | One handler per kind (pdf, docx, xlsx, html, txt, eml, msg, png, jpeg) and their versions |
 | | `pdf.py` | One PDF page: blank-page probe, `parse_to_markdown`, `classify_page_result` |
 | | `image.py` | One PNG or JPEG, parsed as one page: blank probe, `parse_to_markdown`, the PDF page's classification |
 | | `result.py` | The unit result contract: states, `Reply`, `exception_reply`, `apply_output_cap` |
@@ -76,9 +76,9 @@ flowchart TB
     subgraph SVC["page-service pod"]
         direction TB
         PR["service/predictor.py"] --> PPR["remote_runner.process_page_request<br/>config and kind checks"]
-        PPR --> U["pipeline/units.py<br/>attempt counter, DOCX and image guards"]
+        PPR --> U["pipeline/units.py<br/>attempt counter, cost guards"]
         U --> W["service/worker.py<br/>parse under the deadline"]
-        W --> H["formats/handlers.py<br/>pdf, docx, html, txt, eml, msg, png, jpeg"]
+        W --> H["formats/handlers.py<br/>pdf, docx, xlsx, html, txt, eml, msg, png, jpeg"]
         U --> REC["record in work/results/"]
     end
     R -- "POST /v1/models/page-parser:predict" --> PR

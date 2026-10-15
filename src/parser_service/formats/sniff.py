@@ -14,7 +14,7 @@ Rules, in order (spec D1; the first that matches wins):
                                                         declared type says txt
     pdf              ``%PDF-`` in the first 1024 bytes -> pdf
     docx/xlsx/pptx/zip  ZIP local header; the part names (or [Content_Types].xml)
-                     say Word, Excel, PowerPoint or none of them -> docx, else none
+                     say Word, Excel, PowerPoint or none of them -> docx, xlsx, else none
     msg/doc/xls/ppt/ole2  OLE2 header; the directory entries say MSG (``__substg1.0_``
                      streams), Word, Excel, PowerPoint or none of them -> msg, else none
     png, jpeg        PNG or JPEG magic                -> png, jpeg
@@ -25,7 +25,7 @@ Rules, in order (spec D1; the first that matches wins):
     text             no NUL, < 5% C0 control bytes -> the text rule
     binary           anything else                   -> none
 
-Binary kinds (pdf, docx, msg, eml, png, jpeg) trust the content; a disagreeing extension only
+Binary kinds (pdf, docx, xlsx, msg, eml, png, jpeg) trust the content; a disagreeing extension only
 sets ``mismatch``. Text and html content take the kind from the extension or the
 declared type (``.txt`` / ``text/plain`` -> txt, ``.html`` / ``.htm`` / ``text/html``
 -> html); when that disagrees with the content, the name wins and ``mismatch`` is
@@ -56,6 +56,7 @@ SNIFF_BYTES = 64 * 1024
 KIND_EXTENSIONS: dict[str, str] = {
     "pdf": "pdf",
     "docx": "docx",
+    "xlsx": "xlsx",
     "html": "html",
     "txt": "txt",
     "eml": "eml",
@@ -69,6 +70,7 @@ KINDS: tuple[str, ...] = tuple(KIND_EXTENSIONS)
 _BINARY_KIND_EXTENSIONS: dict[str, frozenset[str]] = {
     "pdf": frozenset({"pdf"}),
     "docx": frozenset({"docx"}),
+    "xlsx": frozenset({"xlsx", "xlsm"}),
     "msg": frozenset({"msg"}),
     "eml": frozenset({"eml"}),
     "png": frozenset({"png"}),

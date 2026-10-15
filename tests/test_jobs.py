@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from test_page_pipeline import THREE_PAGE, XLSX, _install_fake, _result
+from test_page_pipeline import PPTX, THREE_PAGE, _install_fake, _result
 from test_page_pipeline_store import MemoryStore
 from test_parse_pages_script import _main, script  # noqa: F401  (fixture)
 
@@ -199,7 +199,7 @@ def test_job_status_counts_pages_and_documents() -> None:
             "state": "failed",
             "unit": "document",
             "kind": None,
-            "detected_type": "xlsx",
+            "detected_type": "pptx",
             "flags": [],
             "page_count": 1,
             "ok_pages": 0,
@@ -209,7 +209,7 @@ def test_job_status_counts_pages_and_documents() -> None:
     assert (status["pages_total"], status["pages_ok"]) == (10, 9)
     assert (status["documents_total"], status["documents_ok"]) == (3, 1)
     assert status["coverage"] == round((9 + 1) / (10 + 3), 4)
-    assert status["docs"][4]["detected_type"] == "xlsx"
+    assert status["docs"][4]["detected_type"] == "pptx"
 
     # An outcome with no count (a driver error) keeps the totals unknown, as before.
     record_doc(store, job, job.docs[3], {"state": "error", "error": "boom"})
@@ -226,7 +226,7 @@ def test_job_with_one_unsupported_file_parses_the_rest(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    """A PDF and an XLSX: the PDF completes, the XLSX fails alone with unsupported_type
+    """A PDF and a PPTX: the PDF completes, the PPTX fails alone with unsupported_type
     (exit 2), and the job reports coverage 1/2 units."""
     from pypdf import PdfReader, PdfWriter
 
@@ -238,8 +238,11 @@ def test_job_with_one_unsupported_file_parses_the_rest(
     writer.add_page(PdfReader(THREE_PAGE).pages[0])
     with (inbox / "one-page.pdf").open("wb") as handle:
         writer.write(handle)
-    shutil.copy(XLSX, inbox / "sheet.xlsx")
-    docs = [{"doc_id": "report", "file": "one-page.pdf"}, {"doc_id": "sheet", "file": "sheet.xlsx"}]
+    shutil.copy(PPTX, inbox / "slides.pptx")
+    docs = [
+        {"doc_id": "report", "file": "one-page.pdf"},
+        {"doc_id": "slides", "file": "slides.pptx"},
+    ]
     (inbox / "job.json").write_text(json.dumps(_job(docs=docs)))
     location = tmp_path / "store"
     args = (
@@ -252,7 +255,7 @@ def test_job_with_one_unsupported_file_parses_the_rest(
         "--no-escalate",
     )
 
-    assert _main(script, monkeypatch, *args, "--index", "1") == 2  # the XLSX fails, alone
+    assert _main(script, monkeypatch, *args, "--index", "1") == 2  # the PPTX fails, alone
     assert _main(script, monkeypatch, *args, "--index", "0") == 0  # the PDF still runs
     assert calls == [1]
 
@@ -262,20 +265,20 @@ def test_job_with_one_unsupported_file_parses_the_rest(
     assert (status["pages_total"], status["pages_ok"]) == (1, 1)
     assert (status["documents_total"], status["documents_ok"]) == (1, 0)
     assert status["coverage"] == 0.5
-    report, sheet = status["docs"]
+    report, slides = status["docs"]
     assert (report["kind"], report["unit"], report["detected_type"], report["flags"]) == (
         "pdf",
         "page",
         "pdf",
         [],
     )
-    assert (sheet["kind"], sheet["unit"], sheet["detected_type"], sheet["flags"]) == (
+    assert (slides["kind"], slides["unit"], slides["detected_type"], slides["flags"]) == (
         None,
         "document",
-        "xlsx",
+        "pptx",
         [],
     )
-    assert sheet["work_id"] is None and sheet["published"] == "failed"
-    [unit] = sheet["not_ok_pages"]
+    assert slides["work_id"] is None and slides["published"] == "failed"
+    [unit] = slides["not_ok_pages"]
     assert unit["reason_code"] == "unsupported_type"
-    assert [p.name for p in (location / "work").rglob("source.*")] == ["source.pdf"]  # no XLSX work
+    assert [p.name for p in (location / "work").rglob("source.*")] == ["source.pdf"]  # no PPTX work

@@ -30,3 +30,9 @@ file was made once, by hand, on 2026-10-14.
   sent date, both bodies and the attachment.
 
 The test asserts these values. If you replace the file, keep the markers and update the test.
+
+## `slides.pptx`
+
+A one-slide PowerPoint deck (about 28 KB) made with python-pptx on 2026-10-15: a title
+("Quarterly review") and one line of text, all invented. The page pipeline has no kind for
+PPTX, so the tests use it as the file that intake refuses with `unsupported_type`.
