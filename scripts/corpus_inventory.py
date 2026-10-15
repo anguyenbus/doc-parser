@@ -63,7 +63,6 @@ from typing import Any
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
-from parser_service import io_layer  # noqa: E402
 from parser_service.formats.guards import docx_stats  # noqa: E402
 from parser_service.formats.sniff import (  # noqa: E402
     KIND_EXTENSIONS,
@@ -71,6 +70,7 @@ from parser_service.formats.sniff import (  # noqa: E402
     extension_of,
     sniff,
 )
+from parser_service.storage import aws  # noqa: E402
 
 log = logging.getLogger("corpus_inventory")
 
@@ -182,10 +182,10 @@ class S3Source:
     """Objects under ``s3://bucket/prefix``: list, range GET, streamed GET. Read-only."""
 
     def __init__(self, uri: str, region: str) -> None:
-        self.bucket, self.prefix = io_layer.parse_s3_uri(uri)
+        self.bucket, self.prefix = aws.parse_s3_uri(uri)
         if not self.bucket:
             raise ValueError(f"not an s3://bucket/prefix URI: {uri}")
-        self.client = io_layer.s3_client(region)
+        self.client = aws.s3_client(region)
 
     def list(self) -> Iterator[tuple[str, int]]:
         paginator = self.client.get_paginator("list_objects_v2")

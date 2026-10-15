@@ -2,8 +2,8 @@
 test_pdf.py
 
 Unit tests for PDF parsing paths — digital, scanned, and mixed PDFs.
-Also includes element mapping tests (_docling_item_to_element and
-_docling_table_to_content).
+Also includes element mapping tests (docling_item_to_element and
+docling_table_to_content).
 """
 
 from __future__ import annotations
@@ -54,14 +54,14 @@ def _make_mock_item(
 
 
 def test_docling_item_to_element_text_item() -> None:
-    """_docling_item_to_element maps TextItem to paragraph with correct char_span."""
-    from parser_service.parser_service import _docling_item_to_element
+    """docling_item_to_element maps TextItem to paragraph with correct char_span."""
+    from parser_service.parsing.elements import docling_item_to_element
 
     item = _make_mock_item("TextItem", text="Hello world", self_ref=None)
     out: dict[str, Any] = {"elements": []}
     char_offset = 10
 
-    elem, new_offset = _docling_item_to_element(item, char_offset, out)
+    elem, new_offset = docling_item_to_element(item, char_offset, out)
 
     assert elem is not None
     assert elem["type"] == "paragraph"
@@ -76,13 +76,13 @@ def test_docling_item_to_element_text_item() -> None:
 
 
 def test_docling_item_to_element_section_header() -> None:
-    """_docling_item_to_element maps SectionHeaderItem to heading with level."""
-    from parser_service.parser_service import _docling_item_to_element
+    """docling_item_to_element maps SectionHeaderItem to heading with level."""
+    from parser_service.parsing.elements import docling_item_to_element
 
     item = _make_mock_item("SectionHeaderItem", text="My Section", level=2, self_ref="texts/0")
     out: dict[str, Any] = {"elements": []}
 
-    elem, new_offset = _docling_item_to_element(item, 0, out)
+    elem, new_offset = docling_item_to_element(item, 0, out)
 
     assert elem is not None
     assert elem["type"] == "heading"
@@ -97,26 +97,26 @@ def test_docling_item_to_element_section_header() -> None:
 
 def test_docling_item_to_element_unknown_type() -> None:
     """Unknown Docling item types return (None, unchanged_char_offset)."""
-    from parser_service.parser_service import _docling_item_to_element
+    from parser_service.parsing.elements import docling_item_to_element
 
     item = _make_mock_item("SomeUnknownDoclingItem", text="irrelevant")
     out: dict[str, Any] = {"elements": []}
     char_offset = 42
 
-    elem, new_offset = _docling_item_to_element(item, char_offset, out)
+    elem, new_offset = docling_item_to_element(item, char_offset, out)
 
     assert elem is None
     assert new_offset == 42  # unchanged
 
 
 # ---------------------------------------------------------------------------
-# Test 4: _docling_table_to_content with a merged cell (row_span=2)
+# Test 4: docling_table_to_content with a merged cell (row_span=2)
 # ---------------------------------------------------------------------------
 
 
 def test_docling_table_to_content_merged_cell() -> None:
-    """_docling_table_to_content emits merged cell once with correct row_span."""
-    from parser_service.parser_service import _docling_table_to_content
+    """docling_table_to_content emits merged cell once with correct row_span."""
+    from parser_service.parsing.elements import docling_table_to_content
 
     # Build a mock 3x2 table where cell (0,0) spans 2 rows
     def make_cell(start_r: int, end_r: int, start_c: int, end_c: int, text: str) -> MagicMock:
@@ -140,7 +140,7 @@ def test_docling_table_to_content_merged_cell() -> None:
     table_item.data.num_cols = 2
     table_item.data.grid = grid
 
-    content = _docling_table_to_content(table_item)
+    content = docling_table_to_content(table_item)
 
     assert content["kind"] == "table"
     assert content["rows"] == 2
@@ -170,7 +170,7 @@ def test_docling_table_to_content_merged_cell() -> None:
 
 def test_digital_pdf_no_vlm_element_ids(mock_vlm_table: None) -> None:
     """parse(digital_simple.pdf) with mocked VLM produces zero vlm_p*_* IDs."""
-    from parser_service.parser_service import parse
+    from parser_service.legacy.element_json import parse
 
     result = parse(FIXTURES / "digital_simple.pdf")
 
@@ -187,7 +187,7 @@ def test_digital_pdf_no_vlm_element_ids(mock_vlm_table: None) -> None:
 
 def test_digital_pdf_char_span_monotonic(mock_vlm_table: None) -> None:
     """All char_span values on a digital PDF are monotonically non-decreasing."""
-    from parser_service.parser_service import parse
+    from parser_service.legacy.element_json import parse
 
     result = parse(FIXTURES / "digital_simple.pdf")
     elements = result["elements"]
@@ -211,7 +211,7 @@ def test_digital_pdf_char_span_monotonic(mock_vlm_table: None) -> None:
 
 def test_digital_pdf_vlm_table_fallback(mock_vlm_error: None) -> None:
     """When VLM fails on a table, vlm_table_fallback warning is emitted."""
-    from parser_service.parser_service import parse
+    from parser_service.legacy.element_json import parse
 
     result = parse(FIXTURES / "digital_complex_tables.pdf")
 
@@ -237,7 +237,7 @@ def test_digital_pdf_vlm_table_fallback(mock_vlm_error: None) -> None:
 
 def test_scanned_pdf_all_vlm_element_ids(mock_vlm_page: None) -> None:
     """parse(scanned.pdf) with mocked VLM — all element IDs match vlm_p*_* pattern."""
-    from parser_service.parser_service import parse
+    from parser_service.legacy.element_json import parse
 
     result = parse(FIXTURES / "scanned.pdf")
 
@@ -266,7 +266,7 @@ def test_scanned_pdf_all_vlm_element_ids(mock_vlm_page: None) -> None:
 
 def test_mixed_pdf_correct_element_ids_per_page(mock_vlm_page: None) -> None:
     """parse(mixed.pdf) produces correct element ID pattern per page type."""
-    from parser_service.parser_service import parse
+    from parser_service.legacy.element_json import parse
 
     result = parse(FIXTURES / "mixed.pdf")
 

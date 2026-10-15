@@ -10,7 +10,7 @@ Architecture (Route B, adopted 2026-05-31 after benchmark evidence reversed the
 Task-Group-1 spike decision — see planning/spike-route-decision.md):
   - Run Docling ONCE over the document.
   - Group Docling items into eval-harness elements by 0-based page index (reusing
-    ``_docling_item_to_element``), then render EACH page's element list to markdown
+    ``docling_item_to_element``), then render EACH page's element list to markdown
     via ``markdown.render_markdown`` — the parser-owned renderer, which scores
     ~0.05 NID HIGHER than Docling's native ``export_to_markdown`` dialect against
     the verbatim-text gold on both DP-Bench and OmniDocBench. There is no
@@ -23,7 +23,7 @@ Task-Group-1 spike decision — see planning/spike-route-decision.md):
   - Concatenate page markdown in page order with plain ``\\n\\n`` (no inline page
     markers — provenance lives in ``page_routes``).
 
-Format routing (reuses ``parser_service._classify``):
+Format routing (reuses ``parser_service.classify_by_extension``):
   - PDF                → per-page gated path described above.
   - DOCX/XLSX/HTML     → whole-doc ``export_to_markdown()``, gate skipped, one
                          logical page (see ``_whole_doc_to_markdown`` note).
@@ -53,20 +53,19 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from parser_service.parser_service import (
-    PARSER_VERSION,
-    SCHEMA_VERSION,
-    _append_warning,
-    _classify,
-    _docling_item_to_element,
-    _emit_vlm_elements,
-    _empty_output,
-    _input_size_error,
-)
 from parser_service.parsing.confidence import (
     LOW_CONFIDENCE_THRESHOLD,
     document_confidence,
     page_confidence,
+)
+from parser_service.parsing.elements import (
+    SCHEMA_VERSION,
+    append_warning,
+    classify_by_extension,
+    docling_item_to_element,
+    emit_vlm_elements,
+    empty_output,
+    input_size_error,
 )
 from parser_service.parsing.engines.textract import (
     analyze_page,
@@ -81,6 +80,7 @@ from parser_service.parsing.engines.vlm import (
 from parser_service.parsing.markdown import render_markdown
 from parser_service.parsing.quality_gate import _measure_text_quality, evaluate_page
 from parser_service.parsing.render import classify_for_fastpath, render_page, text_layer_tokens
+from parser_service.version import PARSER_VERSION
 
 logger = logging.getLogger(__name__)
 
@@ -253,10 +253,10 @@ def parse_to_markdown(file_path: Path, escalate: bool = True) -> dict[str, Any]:
     reset_textract_call_count()
 
     mime = mimetypes.guess_type(str(file_path))[0] or ""
-    kind = _classify(file_path, mime)
+    kind = classify_by_extension(file_path, mime)
 
     # We return only markdown + page_routes + warnings — no source/sha256 — so we
-    # do NOT build the _empty_output skeleton here (that would read the whole file
+    # do NOT build the empty_output skeleton here (that would read the whole file
     # to compute a hash we discard). Just an empty, validated warnings list.
     warnings: list[dict[str, Any]] = []
     page_routes: list[dict[str, Any]] = []
@@ -265,15 +265,15 @@ def parse_to_markdown(file_path: Path, escalate: bool = True) -> dict[str, Any]:
 
     markdown = ""
     try:
-        size_error = _input_size_error(file_path)
+        size_error = input_size_error(file_path)
         if size_error is not None:
             # Reject oversized input before any Docling/render work (stat-based;
             # no file read on this path at all).
-            _append_warning(
+            append_warning(
                 container, code="input_too_large", message=size_error, scope="document"
             )
         elif kind == "unknown":
-            _append_warning(
+            append_warning(
                 container,
                 code="unsupported_type",
                 message=f"Unsupported file type: extension={file_path.suffix!r}, mime={mime!r}",
@@ -287,7 +287,7 @@ def parse_to_markdown(file_path: Path, escalate: bool = True) -> dict[str, Any]:
             markdown = _whole_doc_to_markdown(file_path, container, page_routes)
     except Exception as exc:  # noqa: BLE001 — never-raises contract
         logger.exception("Unexpected failure in parse_to_markdown for %s", file_path)
-        _append_warning(
+        append_warning(
             container,
             code="unhandled_exception",
             message=str(exc),
@@ -309,7 +309,7 @@ def parse_to_markdown(file_path: Path, escalate: bool = True) -> dict[str, Any]:
     # Surface below-threshold pages as additive, advisory-only warnings.
     for pconf in page_confidences:
         if pconf["confidence"] < LOW_CONFIDENCE_THRESHOLD:
-            _append_warning(
+            append_warning(
                 container,
                 code="low_confidence_page",
                 message=(
@@ -353,7 +353,7 @@ def wrap_md_as_prediction(md: str, source: Path | str | dict[str, Any]) -> dict[
     Args:
         md: The full document markdown (becomes the single paragraph's ``text``).
         source: Either a file path (``Path``/``str``) — in which case the full
-            four-field ``source`` is built EXACTLY as ``parser_service._empty_output``
+            four-field ``source`` is built EXACTLY as ``parser_service.empty_output``
             does (sha256 + mime + doc_id + filename) — or a prebuilt full ``source``
             dict (passed through unchanged). A path is the common eval-path contract;
             the dict form lets a caller that already built the source reuse it.
@@ -366,12 +366,12 @@ def wrap_md_as_prediction(md: str, source: Path | str | dict[str, Any]) -> dict[
 
     The schema requires ``source`` with all four fields, ``additionalProperties:
     false``, and a 64-hex ``sha256`` — so when given a path the full source is built
-    via the same code as ``_empty_output`` (reused below) to keep a partial source
+    via the same code as ``empty_output`` (reused below) to keep a partial source
     from slipping through.
     """
     if isinstance(source, dict):
         # Caller already built a full source dict — pass it through, reusing
-        # _empty_output's top-level shape (schema_version / parser_version /
+        # empty_output's top-level shape (schema_version / parser_version /
         # parsed_at / pages / elements / warnings) only.
         skeleton: dict[str, Any] = {
             "schema_version": SCHEMA_VERSION,
@@ -385,9 +385,9 @@ def wrap_md_as_prediction(md: str, source: Path | str | dict[str, Any]) -> dict[
     else:
         path = Path(source).resolve()
         mime = mimetypes.guess_type(str(path))[0] or ""
-        # Reuse _empty_output's source + skeleton construction verbatim so the
+        # Reuse empty_output's source + skeleton construction verbatim so the
         # source (sha256/mime/doc_id/filename) cannot drift from parse().
-        skeleton = _empty_output(path, mime)
+        skeleton = empty_output(path, mime)
 
     skeleton["elements"] = [
         {
@@ -469,7 +469,7 @@ def _pdf_to_markdown(
         result = converter.convert(str(path))
     except Exception as exc:  # noqa: BLE001
         logger.warning("Docling conversion failed for %s: %s", path.name, exc)
-        _append_warning(container, "docling_failed", str(exc), scope="document")
+        append_warning(container, "docling_failed", str(exc), scope="document")
         return ""
 
     doc = result.document
@@ -587,7 +587,7 @@ def _render_page_markdown(page_elems: list[dict[str, Any]]) -> str:
 def _elements_by_page(doc: Any, container: dict[str, Any]) -> dict[int, list[dict[str, Any]]]:
     """Group Docling items into eval-harness element dicts keyed by 0-based page.
 
-    Reuses ``_docling_item_to_element`` so the gate AND ``render_markdown`` see
+    Reuses ``docling_item_to_element`` so the gate AND ``render_markdown`` see
     exactly the same element shapes as ``parse()``. Items are appended in Docling
     iteration order, so each page's element list preserves reading order.
     char_span values are irrelevant here; a throwaway running offset is used.
@@ -598,7 +598,7 @@ def _elements_by_page(doc: Any, container: dict[str, Any]) -> dict[int, list[dic
     char_offset = 0
     layers = {_CL.BODY, _CL.FURNITURE}
     for item, _level in doc.iterate_items(traverse_pictures=True, included_content_layers=layers):
-        elem, char_offset = _docling_item_to_element(item, char_offset, container)
+        elem, char_offset = docling_item_to_element(item, char_offset, container)
         if elem is None:
             continue
         by_page.setdefault(elem["page_index"], []).append(elem)
@@ -627,7 +627,7 @@ def _vlm_page_markdown(
     | ``textract``), read here — this is the single escalation seam (``_image_to_markdown``
     inherits it for free). ``vlm`` calls ``vlm_client.call_vlm``; ``textract`` calls
     ``textract_client.analyze_page``. Both return the SAME element-JSON shape, so the
-    ``_emit_vlm_elements`` → ``render_markdown`` conversion below is reused unchanged.
+    ``emit_vlm_elements`` → ``render_markdown`` conversion below is reused unchanged.
 
     Records the route in ``page_routes`` (``vlm`` / ``textract`` on success, or the
     matching ``*-fallback-docling`` when the engine produced nothing usable). The four
@@ -653,7 +653,7 @@ def _vlm_page_markdown(
 
     def _fallback(detail: str, reason_override: str | None = None) -> str:
         route = route_fallback if docling_fallback is not None else route_ok
-        _append_warning(
+        append_warning(
             container,
             "vlm_fallback_docling" if docling_fallback is not None else "page_unparseable",
             f"{engine_label} {detail} on page {page_idx}"
@@ -712,13 +712,13 @@ def _vlm_page_markdown(
         return _fallback("returned empty 'elements'")
 
     # Convert the VLM element-JSON to markdown via the existing renderer. We reuse
-    # _emit_vlm_elements so list-splitting / table-text mirroring match parse().
+    # emit_vlm_elements so list-splitting / table-text mirroring match parse().
     buf: dict[str, Any] = {"elements": []}
     local_offset = 0
     for i, raw_elem in enumerate(elements_raw):
         if not isinstance(raw_elem, dict):
             continue
-        local_offset = _emit_vlm_elements(buf, raw_elem, page_idx, i, local_offset)
+        local_offset = emit_vlm_elements(buf, raw_elem, page_idx, i, local_offset)
 
     engine_md = render_markdown({"elements": buf["elements"]}).strip()
     if not engine_md:
@@ -788,7 +788,7 @@ def _vlm_page_markdown(
     }
 
     if revert_to_docling:
-        _append_warning(
+        append_warning(
             container,
             "vlm_rejected_kept_docling",
             f"{engine_label} output rejected on page {page_idx}; kept Docling "
@@ -837,7 +837,7 @@ def _image_to_markdown(
         doc = result.document
     except Exception as exc:  # noqa: BLE001
         logger.warning("Docling conversion failed for image %s: %s", path.name, exc)
-        _append_warning(container, "docling_failed", str(exc), scope="document")
+        append_warning(container, "docling_failed", str(exc), scope="document")
         return ""
 
     page_elements = _elements_by_page(doc, container)
@@ -932,7 +932,7 @@ def _convert_whole_doc(
         # The page pipeline runs this in its parse worker: at most 500 characters of
         # exception text in a log line (spec D9).
         logger.warning("Docling conversion failed for %s: %s", path.name, str(exc)[:500])
-        _append_warning(container, "docling_failed", str(exc), scope="document")
+        append_warning(container, "docling_failed", str(exc), scope="document")
         return "", None
 
     is_docx = kind == "docx" or (kind is None and _input_format(result) == "docx")

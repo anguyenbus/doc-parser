@@ -34,10 +34,10 @@ def _call_tracker() -> tuple[list[Any], Any]:
 
 def test_parse_docx(monkeypatch: pytest.MonkeyPatch) -> None:
     """parse(doc.docx) produces one page entry, no warnings, no VLM calls."""
-    from parser_service.parser_service import parse
+    from parser_service.legacy.element_json import parse
 
     calls, mock_vlm = _call_tracker()
-    monkeypatch.setattr("parser_service.parser_service.call_vlm", mock_vlm)
+    monkeypatch.setattr("parser_service.legacy.element_json.call_vlm", mock_vlm)
 
     result = parse(FIXTURES / "doc.docx")
 
@@ -60,10 +60,10 @@ def test_parse_docx(monkeypatch: pytest.MonkeyPatch) -> None:
 
 def test_parse_xlsx(monkeypatch: pytest.MonkeyPatch) -> None:
     """parse(sheet.xlsx) produces one page entry, no warnings, no VLM calls."""
-    from parser_service.parser_service import parse
+    from parser_service.legacy.element_json import parse
 
     calls, mock_vlm = _call_tracker()
-    monkeypatch.setattr("parser_service.parser_service.call_vlm", mock_vlm)
+    monkeypatch.setattr("parser_service.legacy.element_json.call_vlm", mock_vlm)
 
     result = parse(FIXTURES / "sheet.xlsx")
 
@@ -83,10 +83,10 @@ def test_parse_xlsx(monkeypatch: pytest.MonkeyPatch) -> None:
 
 def test_parse_html(monkeypatch: pytest.MonkeyPatch) -> None:
     """parse(page.html) produces one page entry, no warnings, no VLM calls."""
-    from parser_service.parser_service import parse
+    from parser_service.legacy.element_json import parse
 
     calls, mock_vlm = _call_tracker()
-    monkeypatch.setattr("parser_service.parser_service.call_vlm", mock_vlm)
+    monkeypatch.setattr("parser_service.legacy.element_json.call_vlm", mock_vlm)
 
     result = parse(FIXTURES / "page.html")
 

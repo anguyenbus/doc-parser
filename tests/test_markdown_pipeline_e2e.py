@@ -117,11 +117,11 @@ def test_pdf_roundtrip_to_schema_valid_prediction(
     assert pred["elements"][0]["type"] == "paragraph"
     # The exact markdown produced by parse_to_markdown rides through unchanged.
     assert pred["elements"][0]["text"] == md
-    # Source matches what _empty_output builds for the same file (no drift).
-    from parser_service.parser_service import _empty_output
+    # Source matches what empty_output builds for the same file (no drift).
+    from parser_service.parsing.elements import empty_output
 
     mime = mimetypes.guess_type(str(DIGITAL))[0] or ""
-    assert pred["source"] == _empty_output(DIGITAL.resolve(), mime)["source"]
+    assert pred["source"] == empty_output(DIGITAL.resolve(), mime)["source"]
 
 
 # ===========================================================================

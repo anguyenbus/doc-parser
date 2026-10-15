@@ -1,23 +1,22 @@
 """
-io_layer.py — I/O abstraction for local filesystem and AWS S3.
+batch_io.py — file I/O of the single-node batch script (``scripts/parse_batch.py``).
 
 InputRef: dataclass describing a file location.
 LocalIO / S3IO: implementations of list_input_files, read_bytes, write_json.
 Runtime selection: S3IO if URI starts with s3://, else LocalIO.
-parse_s3_uri / s3_client: the one S3 URI parser and client factory in the repo,
-shared by S3IO and the page store (``store.py``).
+S3 access goes through ``parser_service.storage.aws``.
 """
 
 from __future__ import annotations
 
 import json
 import logging
-import threading
-import urllib.parse
 from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
+
+from parser_service.storage import aws
 
 logger = logging.getLogger(__name__)
 
@@ -61,43 +60,13 @@ class LocalIO:
         out.write_text(text, encoding="utf-8")
 
 
-def parse_s3_uri(uri: str) -> tuple[str, str]:
-    """Split ``s3://bucket/key`` into ``(bucket, key)``.
-
-    Lenient on purpose: nothing is validated and nothing is raised. Strict checks
-    (scheme, non-empty bucket) belong to the caller that needs them.
-    """
-    p = urllib.parse.urlparse(uri)
-    return p.netloc, p.path.lstrip("/")
-
-
-_S3_CLIENTS: dict[str | None, Any] = {}
-_S3_CLIENTS_LOCK = threading.Lock()
-
-
-def s3_client(region: str | None = None) -> Any:
-    """The process-wide S3 client: one per region, created on first use.
-
-    ``region`` is passed to boto3 explicitly when given; with None boto3 resolves
-    it from its default chain (``AWS_REGION``, the profile, the instance role).
-    """
-    with _S3_CLIENTS_LOCK:
-        client = _S3_CLIENTS.get(region)
-        if client is None:
-            import boto3
-
-            client = boto3.client("s3", region_name=region) if region else boto3.client("s3")
-            _S3_CLIENTS[region] = client
-        return client
-
-
 class S3IO:
     def _parse_uri(self, uri: str) -> tuple[str, str]:
-        return parse_s3_uri(uri)
+        return aws.parse_s3_uri(uri)
 
     def list_input_files(self, uri: str) -> Iterator[InputRef]:
         bucket, prefix = self._parse_uri(uri)
-        paginator = s3_client().get_paginator("list_objects_v2")
+        paginator = aws.s3_client().get_paginator("list_objects_v2")
         for page in paginator.paginate(Bucket=bucket, Prefix=prefix):
             for obj in page.get("Contents", []):
                 key: str = obj["Key"]
@@ -106,19 +75,23 @@ class S3IO:
 
     def read_bytes(self, ref: InputRef) -> bytes:
         bucket, key = self._parse_uri(ref.uri)
-        return s3_client().get_object(Bucket=bucket, Key=key)["Body"].read()  # type: ignore[no-any-return]
+        return aws.s3_client().get_object(Bucket=bucket, Key=key)["Body"].read()  # type: ignore[no-any-return]
 
     def write_json(self, ref: InputRef, output_uri: str, data: dict[str, Any]) -> None:
         bucket, prefix = self._parse_uri(output_uri)
         key = f"{prefix.rstrip('/')}/{Path(ref.filename).stem}.json"
         body = json.dumps(data, ensure_ascii=False, indent=2).encode("utf-8")
-        s3_client().put_object(Bucket=bucket, Key=key, Body=body, ContentType="application/json")
+        aws.s3_client().put_object(
+            Bucket=bucket, Key=key, Body=body, ContentType="application/json"
+        )
 
     def write_text(self, ref: InputRef, output_uri: str, text: str, ext: str) -> None:
         bucket, prefix = self._parse_uri(output_uri)
         key = f"{prefix.rstrip('/')}/{Path(ref.filename).stem}{ext}"
         ctype = "text/markdown" if ext == ".md" else "text/plain"
-        s3_client().put_object(Bucket=bucket, Key=key, Body=text.encode("utf-8"), ContentType=ctype)
+        aws.s3_client().put_object(
+            Bucket=bucket, Key=key, Body=text.encode("utf-8"), ContentType=ctype
+        )
 
 
 def _select_io(uri: str) -> LocalIO | S3IO:

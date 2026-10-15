@@ -1,17 +1,20 @@
 """
 parser_service package.
 
-Exposes parse() at the package level for eval-harness and script entry points.
+Subpackages: ``formats`` (detect a file's kind, guard and parse it), ``parsing`` (Docling,
+the quality gate, escalation engines, markdown), ``pipeline`` (intake, units, status,
+stitch), ``service`` (the KServe page service and its worker), ``storage`` and
+``delivery`` (publish, jobs). ``legacy`` holds the element-JSON ``parse()`` for the eval
+harness, exposed here as ``parser_service.parse`` and imported only when first used.
 """
 
 from __future__ import annotations
 
 import logging
 import os
+from typing import Any
 
 from PIL import Image
-
-from .parser_service import parse
 
 logging.basicConfig(level=os.environ.get("PARSER_LOG_LEVEL", "INFO"))
 
@@ -23,3 +26,12 @@ logging.basicConfig(level=os.environ.get("PARSER_LOG_LEVEL", "INFO"))
 Image.MAX_IMAGE_PIXELS = int(os.environ.get("PARSER_MAX_IMAGE_PIXELS", 128_000_000))
 
 __all__ = ["parse"]
+
+
+def __getattr__(name: str) -> Any:
+    """``parser_service.parse`` loads the legacy element-JSON parser on first use only."""
+    if name == "parse":
+        from parser_service.legacy.element_json import parse
+
+        return parse
+    raise AttributeError(f"module 'parser_service' has no attribute {name!r}")

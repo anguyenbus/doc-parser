@@ -5,10 +5,10 @@ Tests for issue #4 (PR1): raw-input size cap + streaming hash + the removal of
 the discarded whole-file hash read on the markdown (production) path.
 
 Layers:
-  A. Pure helpers — _input_size_error, _max_input_bytes, _sha256_file.
+  A. Pure helpers — input_size_error, max_input_bytes, sha256_file.
   B. Guard integration — parse() and parse_to_markdown reject oversized input
      before Docling, and the markdown path never invokes the converter.
-  C. Decoupling — parse_to_markdown no longer depends on _empty_output.
+  C. Decoupling — parse_to_markdown no longer depends on empty_output.
 """
 
 from __future__ import annotations
@@ -19,15 +19,11 @@ from pathlib import Path
 
 import pytest
 
-from parser_service import parser_service
-from parser_service.parser_service import (
-    _input_size_error,
-    _max_input_bytes,
-    _sha256_file,
-    parse,
-)
+from parser_service.legacy.element_json import parse
 from parser_service.parsing import document as markdown_pipeline
+from parser_service.parsing import elements
 from parser_service.parsing.document import parse_to_markdown
+from parser_service.parsing.elements import input_size_error, max_input_bytes, sha256_file
 
 FIXTURES = Path(__file__).parent / "fixtures"
 DIGITAL_PDF = FIXTURES / "digital_simple.pdf"
@@ -40,22 +36,22 @@ DIGITAL_PDF = FIXTURES / "digital_simple.pdf"
 
 def test_max_input_bytes_reads_env(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("PARSER_MAX_INPUT_MB", "50")
-    assert _max_input_bytes() == 50_000_000
+    assert max_input_bytes() == 50_000_000
     monkeypatch.delenv("PARSER_MAX_INPUT_MB", raising=False)
-    assert _max_input_bytes() == 200_000_000  # default
+    assert max_input_bytes() == 200_000_000  # default
 
 
 def test_input_size_error_under_cap(tmp_path: Path) -> None:
     f = tmp_path / "small.pdf"
     f.write_bytes(b"x" * 1000)
-    assert _input_size_error(f) is None
+    assert input_size_error(f) is None
 
 
 def test_input_size_error_over_cap(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("PARSER_MAX_INPUT_MB", "0.001")  # 1000-byte cap
     f = tmp_path / "big.pdf"
     f.write_bytes(b"x" * 5000)
-    msg = _input_size_error(f)
+    msg = input_size_error(f)
     assert msg is not None
     assert "exceeds" in msg
 
@@ -66,12 +62,12 @@ def test_input_size_error_disabled_when_cap_nonpositive(
     monkeypatch.setenv("PARSER_MAX_INPUT_MB", "0")
     f = tmp_path / "big.pdf"
     f.write_bytes(b"x" * 5000)
-    assert _input_size_error(f) is None
+    assert input_size_error(f) is None
 
 
 def test_input_size_error_missing_file_returns_none(tmp_path: Path) -> None:
     # Cannot stat → return None and let the normal parse path surface the failure.
-    assert _input_size_error(tmp_path / "does_not_exist.pdf") is None
+    assert input_size_error(tmp_path / "does_not_exist.pdf") is None
 
 
 def test_sha256_file_matches_oneshot(tmp_path: Path) -> None:
@@ -79,11 +75,11 @@ def test_sha256_file_matches_oneshot(tmp_path: Path) -> None:
     data = (b"abcdefgh" * 200_003)  # ~1.6 MiB, not a chunk multiple
     f = tmp_path / "blob.bin"
     f.write_bytes(data)
-    assert _sha256_file(f) == hashlib.sha256(data).hexdigest()
+    assert sha256_file(f) == hashlib.sha256(data).hexdigest()
 
 
 def test_sha256_file_matches_on_fixture() -> None:
-    assert _sha256_file(DIGITAL_PDF) == hashlib.sha256(DIGITAL_PDF.read_bytes()).hexdigest()
+    assert sha256_file(DIGITAL_PDF) == hashlib.sha256(DIGITAL_PDF.read_bytes()).hexdigest()
 
 
 # ---------------------------------------------------------------------------
@@ -136,17 +132,17 @@ def test_default_cap_allows_normal_fixture() -> None:
 
 
 def test_parse_to_markdown_independent_of_empty_output(monkeypatch: pytest.MonkeyPatch) -> None:
-    """parse_to_markdown must succeed even if _empty_output would raise.
+    """parse_to_markdown must succeed even if empty_output would raise.
 
-    Proves the production path no longer calls _empty_output (which previously
+    Proves the production path no longer calls empty_output (which previously
     read the whole file just to compute a discarded sha256).
     """
 
     def _boom(*_a: object, **_k: object) -> object:
-        raise AssertionError("_empty_output must not be called on the markdown path")
+        raise AssertionError("empty_output must not be called on the markdown path")
 
-    monkeypatch.setattr(parser_service, "_empty_output", _boom)
-    monkeypatch.setattr(markdown_pipeline, "_empty_output", _boom)
+    monkeypatch.setattr(elements, "empty_output", _boom)
+    monkeypatch.setattr(markdown_pipeline, "empty_output", _boom)
 
     result = parse_to_markdown(DIGITAL_PDF)
     assert len(result["markdown"]) > 0

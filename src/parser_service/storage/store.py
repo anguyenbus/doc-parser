@@ -39,7 +39,7 @@ from contextlib import AbstractContextManager, contextmanager
 from pathlib import Path
 from typing import Any, Literal, Protocol
 
-from parser_service import io_layer
+from parser_service.storage import aws
 
 logger = logging.getLogger(__name__)
 
@@ -265,7 +265,7 @@ class S3Store:
         self.bucket = bucket
         self.prefix = prefix.strip("/")
         self.region = region
-        self._client = client if client is not None else io_layer.s3_client(region)
+        self._client = client if client is not None else aws.s3_client(region)
 
     def _key(self, key: str) -> str:
         validate_key(key)
@@ -397,7 +397,7 @@ def location_kind(location: str) -> Literal["local", "s3"]:
         return "local"
     if not location.startswith("s3://"):
         raise ValueError(f"store location has an unsupported scheme (only s3://): {location!r}")
-    bucket, _prefix = io_layer.parse_s3_uri(location)
+    bucket, _prefix = aws.parse_s3_uri(location)
     if not bucket:
         raise ValueError(f"store location has no bucket: {location!r}")
     return "s3"
@@ -413,5 +413,5 @@ def open_store(location: str | Path, region: str | None = None, client: Any = No
         return LocalStore(location)
     if location_kind(location) == "local":
         return LocalStore(location)
-    bucket, prefix = io_layer.parse_s3_uri(location)
+    bucket, prefix = aws.parse_s3_uri(location)
     return S3Store(bucket, prefix, region=region, client=client)

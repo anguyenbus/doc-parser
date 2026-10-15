@@ -37,7 +37,7 @@ def force_promote(monkeypatch: pytest.MonkeyPatch) -> None:
 
 def test_image_all_elements_have_vlm_p0_ids(mock_vlm_page: None, force_promote: None) -> None:
     """parse(screenshot.png) with mocked VLM — all element IDs start with vlm_p0_."""
-    from parser_service.parser_service import parse
+    from parser_service.legacy.element_json import parse
 
     result = parse(FIXTURES / "screenshot.png")
 
@@ -64,7 +64,7 @@ def test_image_vlm_error_produces_image_unparseable_warning(
     mock_vlm_error: None, force_promote: None
 ) -> None:
     """parse(screenshot.png) with mocked VLM error → image_unparseable warning."""
-    from parser_service.parser_service import parse
+    from parser_service.legacy.element_json import parse
 
     result = parse(FIXTURES / "screenshot.png")
 
@@ -85,7 +85,7 @@ def test_image_vlm_error_produces_image_unparseable_warning(
 
 def test_unsupported_type_warning(tmp_path: Path) -> None:
     """parse() on an unsupported file type returns unsupported_type warning."""
-    from parser_service.parser_service import parse
+    from parser_service.legacy.element_json import parse
 
     unknown_file = tmp_path / "mystery.xyz123"
     unknown_file.write_bytes(b"some content")
@@ -106,12 +106,12 @@ def test_image_vlm_invalid_shape_warning(
     monkeypatch: pytest.MonkeyPatch, force_promote: None
 ) -> None:
     """parse(screenshot.png) with VLM returning non-list elements → vlm_invalid_shape."""
-    from parser_service.parser_service import parse
+    from parser_service.legacy.element_json import parse
 
     def _mock_call_vlm(image_bytes: bytes, mode: str) -> dict[str, Any]:
         return {"elements": {"key": "not a list"}}
 
-    monkeypatch.setattr("parser_service.parser_service.call_vlm", _mock_call_vlm)
+    monkeypatch.setattr("parser_service.legacy.element_json.call_vlm", _mock_call_vlm)
 
     result = parse(FIXTURES / "screenshot.png")
 

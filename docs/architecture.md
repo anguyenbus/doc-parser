@@ -32,7 +32,7 @@ graph TD
     end
 
     subgraph io["I/O helpers"]
-        IOL["io_layer.py<br/><i>input load / size caps</i>"]
+        IOL["batch_io.py<br/><i>input load / size caps</i>"]
     end
 
     INIT --> PS
@@ -84,7 +84,7 @@ graph TD
 | **confidence.py** | Advisory page/doc confidence scoring | `route_stats` (route vocabulary) |
 | **route_stats.py** | Route-name constants + CSV telemetry schema | *(leaf; also consumed by scripts)* |
 | **markdown.py** | Renders elements → Markdown text | *(leaf)* |
-| **io_layer.py** | Input loading / byte-size handling | *(leaf)* |
+| **batch_io.py** | Input loading / byte-size handling | *(leaf)* |
 
 > Note: `markdown_pipeline` only *mentions* `route_stats` in a comment — the CSV is
 > actually written by `scripts/parse_batch.py`, which imports `route_stats.FIELDNAMES`.

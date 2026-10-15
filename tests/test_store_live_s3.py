@@ -43,8 +43,8 @@ from typing import Any
 
 import pytest
 
-from parser_service import io_layer
 from parser_service.page_pipeline import file_id_for, work_id_for
+from parser_service.storage import aws
 from parser_service.storage.store import Store, StoreNotFoundError, open_store
 
 pytestmark = pytest.mark.live
@@ -146,7 +146,7 @@ def test_live_s3_store_and_pipeline(tmp_path: Path) -> None:
     def save() -> None:
         report_path.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
 
-    client = io_layer.s3_client(REGION)
+    client = aws.s3_client(REGION)
     store = open_store(location, region=REGION)
     written_by_run = False
     try:

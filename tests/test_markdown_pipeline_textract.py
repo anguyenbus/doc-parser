@@ -9,7 +9,7 @@ engine switch with ``textract_client.analyze_page`` mocked (NO AWS):
     (NOT Textract) — current behavior reproduced bit-for-bit.
   - ``textract`` routes: with ``PARSER_ESCALATION_ENGINE=textract``, a promoted page
     calls ``analyze_page``; its element-JSON flows through the unchanged
-    ``_emit_vlm_elements`` → ``render_markdown`` path; route recorded as ``textract``.
+    ``emit_vlm_elements`` → ``render_markdown`` path; route recorded as ``textract``.
   - Textract fallback: all four garbage shapes → page kept Docling, route
     ``textract-fallback-docling``.
   - quality signal only: ``_measure_text_quality`` recorded on the ``textract`` route

@@ -105,8 +105,8 @@ from parser_service.observability import (
     observe_unit,
     truncate,
 )
-from parser_service.parser_service import PARSER_VERSION, _sha256_file
 from parser_service.parsing.document import enable_converter_reuse, parse_to_markdown
+from parser_service.parsing.elements import sha256_file
 from parser_service.parsing.render import render_page, text_layer_tokens
 from parser_service.parsing.route_stats import (
     ROUTE_DOCLING_KEPT,
@@ -126,6 +126,7 @@ from parser_service.settings import (
     split_kinds,
 )
 from parser_service.storage.store import LocalStore, Store, StoreNotFoundError, open_store
+from parser_service.version import PARSER_VERSION
 
 logger = logging.getLogger(__name__)
 
@@ -556,12 +557,12 @@ def work_id_for(source: Path, kind: str | None = None) -> str:
     """
     if kind is None:
         kind = _sniff_source(Path(source)).kind or "pdf"
-    return _work_id(_sha256_file(source), config_hash(pipeline_config(kind)))
+    return _work_id(sha256_file(source), config_hash(pipeline_config(kind)))
 
 
 def file_id_for(source: Path) -> str:
     """The id of a named source file's output in the store: ``<stem>-<sha256[:16]>``."""
-    return _file_id(source.stem, _sha256_file(source))
+    return _file_id(source.stem, sha256_file(source))
 
 
 def work_dir_for(source: Path, work_root: Path) -> Path:
@@ -657,7 +658,7 @@ def _intake(store: Store, work_id: str, source: Path, kind: str) -> dict[str, An
         store.write(_source_key(work_id, kind), _read_source(source))
         manifest = {
             "source_name": source.name,
-            "source_sha256": _sha256_file(source),
+            "source_sha256": sha256_file(source),
             "kind": kind,
             "unit": UNIT_DOCUMENT,
             "page_count": 1,
@@ -682,7 +683,7 @@ def _intake(store: Store, work_id: str, source: Path, kind: str) -> dict[str, An
 
     manifest = {
         "source_name": source.name,
-        "source_sha256": _sha256_file(source),
+        "source_sha256": sha256_file(source),
         "kind": "pdf",
         "unit": UNIT_PAGE,
         "page_count": page_count,
@@ -1989,7 +1990,7 @@ def parse_file_in_store(
         store = open_store(location, region=region)
 
     started = time.perf_counter()
-    sha256 = _sha256_file(source)
+    sha256 = sha256_file(source)
     found = _sniff_source(source, declared_type)
     if found.mismatch:
         logger.warning(

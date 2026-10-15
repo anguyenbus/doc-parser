@@ -3,7 +3,7 @@ test_parse_pages_script.py — ``scripts/parse_pages.py`` on the configured stor
 
 Offline: ``parse_to_markdown`` is the fake from ``test_page_pipeline.py`` and pages
 run in-process (``--workers 0 --no-escalate``). S3 is botocore's Stubber on a
-client supplied by replacing the factory (``io_layer.s3_client``). A complete run
+client supplied by replacing the factory (``aws.s3_client``). A complete run
 against an S3 location is not scripted through Stubber (that is the live check):
 the S3-location cases replace the pipeline call and check the wiring.
 
@@ -26,8 +26,8 @@ from botocore.stub import Stubber
 from test_page_pipeline import THREE_PAGE, _install_fake, _result
 from test_scripts_rewiring import _load_script
 
-from parser_service import io_layer
 from parser_service.page_pipeline import file_id_for, work_id_for
+from parser_service.storage import aws
 from parser_service.storage.store import S3Store
 
 REGION = "ap-southeast-2"
@@ -65,7 +65,7 @@ def stubbed(monkeypatch: pytest.MonkeyPatch) -> Iterator[tuple[Stubber, list[str
         regions.append(region)
         return client
 
-    monkeypatch.setattr(io_layer, "s3_client", factory)
+    monkeypatch.setattr(aws, "s3_client", factory)
     with Stubber(client) as stubber:
         yield stubber, regions
         stubber.assert_no_pending_responses()

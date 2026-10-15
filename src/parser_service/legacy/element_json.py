@@ -26,112 +26,28 @@ Failure modes go into warnings[] — parse() never raises.
 
 from __future__ import annotations
 
-import hashlib
-import importlib.metadata
 import logging
 import mimetypes
-import os
-from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any
 
 from pydantic import BaseModel
 
+from parser_service.parsing.elements import (
+    append_warning,
+    bbox_of,
+    classify_by_extension,
+    docling_item_to_element,
+    emit_vlm_elements,
+    empty_output,
+    input_size_error,
+)
 from parser_service.parsing.engines.vlm import (
     call_vlm,
     reset_vlm_call_count,
 )
 
 logger = logging.getLogger(__name__)
-
-# ---------------------------------------------------------------------------
-# Module-level constants
-# ---------------------------------------------------------------------------
-
-SCHEMA_VERSION: str = "1.0.0"
-
-try:
-    PARSER_VERSION: str = importlib.metadata.version("parser-service")
-except importlib.metadata.PackageNotFoundError:
-    PARSER_VERSION = "0.0.0+dev"
-
-# Raw-input size cap. A file larger than this is rejected (stat-based, before any
-# whole-file read or Docling/render) with an ``input_too_large`` warning.
-# Overridable via PARSER_MAX_INPUT_MB. NOTE: this bounds the RAW input size only;
-# it does NOT bound post-decompression expansion of zip-based Office formats
-# (DOCX/XLSX) inside Docling, nor Docling's model working set (~1.6 GB/worker,
-# the dominant memory term — see tech-stack.md). It is a sanity bound, not the
-# pod memory budget.
-_DEFAULT_MAX_INPUT_MB = 200.0
-
-
-def _max_input_bytes() -> int:
-    """Return the raw-input byte cap (reads PARSER_MAX_INPUT_MB, in MB)."""
-    mb = float(os.environ.get("PARSER_MAX_INPUT_MB", str(_DEFAULT_MAX_INPUT_MB)))
-    return int(mb * 1_000_000)
-
-
-def _input_size_error(path: Path) -> str | None:
-    """Return an error message if ``path`` exceeds the input-size cap, else None.
-
-    Stat-based (no read), so an oversized file is rejected before any whole-file
-    read or Docling/render work. A non-positive cap disables the check. Returns
-    None when the size cannot be determined (let the normal parse path surface
-    that failure instead of masking it here).
-    """
-    cap = _max_input_bytes()
-    if cap <= 0:
-        return None
-    try:
-        size = path.stat().st_size
-    except OSError:
-        return None
-    if size > cap:
-        return (
-            f"Input file is {size / 1_000_000:.1f} MB, exceeds "
-            f"PARSER_MAX_INPUT_MB cap ({cap / 1_000_000:.0f} MB)"
-        )
-    return None
-
-
-def _sha256_file(path: Path, chunk_size: int = 1 << 20) -> str:
-    """Stream a file's SHA-256 in ``chunk_size`` blocks (default 1 MiB).
-
-    Avoids holding the whole file resident in memory just to hash it.
-    """
-    h = hashlib.sha256()
-    with path.open("rb") as f:
-        for chunk in iter(lambda: f.read(chunk_size), b""):
-            h.update(chunk)
-    return h.hexdigest()
-
-# Docling class name → schema element type
-_DOCLING_TYPE_MAP: dict[str, str] = {
-    "SectionHeaderItem": "heading",
-    "TextItem": "paragraph",
-    "ListItem": "list_item",
-    "TableItem": "table",
-    "PictureItem": "figure",
-    "CaptionItem": "caption",
-    "FootnoteItem": "footnote",
-    "PageHeaderItem": "header",
-    "PageFooterItem": "footer",
-    "FormulaItem": "equation",
-    "CodeItem": "code_block",
-}
-
-
-# ---------------------------------------------------------------------------
-# Pydantic models for output validation
-# ---------------------------------------------------------------------------
-
-
-class WarningModel(BaseModel):
-    scope: Literal["document", "page", "element"]
-    page_index: int | None = None
-    element_id: str | None = None
-    code: str
-    message: str
 
 
 class ParserOutputModel(BaseModel):
@@ -164,15 +80,15 @@ def parse(file_path: Path) -> dict[str, Any]:
     reset_vlm_call_count()
 
     mime = mimetypes.guess_type(str(file_path))[0] or ""
-    kind = _classify(file_path, mime)
+    kind = classify_by_extension(file_path, mime)
 
-    # Reject oversized input before any Docling/render work. _empty_output streams
+    # Reject oversized input before any Docling/render work. empty_output streams
     # the hash (~1 MiB RAM), so building the skeleton for a rejected file is cheap;
     # the guard's value is short-circuiting the ~1.6 GB Docling working set.
-    size_error = _input_size_error(file_path)
-    out = _empty_output(file_path, mime)
+    size_error = input_size_error(file_path)
+    out = empty_output(file_path, mime)
     if size_error is not None:
-        _append_warning(out, code="input_too_large", message=size_error, scope="document")
+        append_warning(out, code="input_too_large", message=size_error, scope="document")
         return out
 
     # Running char_span counter — initialized here, passed through all paths.
@@ -180,7 +96,7 @@ def parse(file_path: Path) -> dict[str, Any]:
 
     try:
         if kind == "unknown":
-            _append_warning(
+            append_warning(
                 out,
                 code="unsupported_type",
                 message=f"Unsupported file type: extension={file_path.suffix!r}, mime={mime!r}",
@@ -197,7 +113,7 @@ def parse(file_path: Path) -> dict[str, Any]:
 
     except Exception as exc:
         logger.exception("Unexpected failure parsing %s", file_path)
-        _append_warning(
+        append_warning(
             out,
             code="unhandled_exception",
             message=str(exc),
@@ -214,7 +130,7 @@ def parse(file_path: Path) -> dict[str, Any]:
         ParserOutputModel(**out)
     except Exception as exc:
         logger.warning("Output validation failed for %s: %s", file_path.name, exc)
-        _append_warning(
+        append_warning(
             out,
             code="unhandled_exception",
             message=f"Output validation error: {exc}",
@@ -246,100 +162,6 @@ def _reorder_elements(out: dict[str, Any]) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Classification
-# ---------------------------------------------------------------------------
-
-
-def _classify(path: Path, mime: str) -> str:
-    """Classify file into pdf|image|docx|xlsx|html|unknown.
-
-    Uses path.suffix.lower() first, then mimetypes.guess_type fallback.
-    """
-    ext = path.suffix.lower()
-
-    # Extension-based classification (checked first, case-insensitive)
-    if ext == ".pdf":
-        return "pdf"
-    if ext in {".png", ".jpg", ".jpeg", ".tif", ".tiff", ".webp"}:
-        return "image"
-    if ext == ".docx":
-        return "docx"
-    if ext in {".xlsx", ".xlsm"}:
-        return "xlsx"
-    if ext in {".html", ".htm"}:
-        return "html"
-
-    # MIME-based fallback (when extension is unrecognized)
-    if mime == "application/pdf":
-        return "pdf"
-    if mime.startswith("image/"):
-        return "image"
-    if mime == "application/vnd.openxmlformats-officedocument.wordprocessingml.document":
-        return "docx"
-    if mime in {
-        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        "application/vnd.ms-excel.sheet.macroEnabled.12",
-    }:
-        return "xlsx"
-    if mime in {"text/html", "application/xhtml+xml"}:
-        return "html"
-
-    return "unknown"
-
-
-# ---------------------------------------------------------------------------
-# Output skeleton
-# ---------------------------------------------------------------------------
-
-
-def _empty_output(path: Path, mime: str) -> dict[str, Any]:
-    """Build the schema skeleton with sha256, parsed_at, and empty arrays."""
-    sha256 = _sha256_file(path)
-    return {
-        "schema_version": SCHEMA_VERSION,
-        "parser_version": PARSER_VERSION,
-        "parsed_at": datetime.now(tz=UTC).isoformat(),
-        "source": {
-            "doc_id": path.stem,
-            "filename": path.name,
-            "mime_type": mime,
-            "sha256": sha256,
-        },
-        "pages": [],
-        "elements": [],
-        "warnings": [],
-    }
-
-
-# ---------------------------------------------------------------------------
-# Warning helper
-# ---------------------------------------------------------------------------
-
-
-def _append_warning(
-    out: dict[str, Any],
-    code: str,
-    message: str,
-    scope: str,
-    page_index: int | None = None,
-    element_id: str | None = None,
-) -> None:
-    """Construct, validate, and append a warning dict to out['warnings']."""
-    raw: dict[str, Any] = {"scope": scope, "code": code, "message": message}
-    if page_index is not None:
-        raw["page_index"] = page_index
-    if element_id is not None:
-        raw["element_id"] = element_id
-
-    try:
-        WarningModel(**raw)
-    except Exception as exc:
-        logger.warning("Warning shape validation failed: %s (raw=%r)", exc, raw)
-
-    out["warnings"].append(raw)
-
-
-# ---------------------------------------------------------------------------
 # PDF routing path
 # ---------------------------------------------------------------------------
 
@@ -360,7 +182,7 @@ def _parse_pdf(path: Path, out: dict[str, Any], char_offset: int) -> tuple[dict[
         result = converter.convert(str(path))
     except Exception as exc:
         logger.warning("Docling conversion failed for %s: %s", path.name, exc)
-        _append_warning(out, "docling_failed", str(exc), scope="document")
+        append_warning(out, "docling_failed", str(exc), scope="document")
         return out, char_offset
 
     doc = result.document
@@ -369,7 +191,7 @@ def _parse_pdf(path: Path, out: dict[str, Any], char_offset: int) -> tuple[dict[
     max_pages = int(__import__("os").environ.get("PARSER_MAX_PAGES", "2000"))
     for page_no, page in enumerate(getattr(doc, "pages", {}).values()):
         if page_no >= max_pages:
-            _append_warning(
+            append_warning(
                 out,
                 "page_unparseable",
                 f"Page {page_no} exceeds PARSER_MAX_PAGES={max_pages}",
@@ -397,7 +219,7 @@ def _parse_pdf(path: Path, out: dict[str, Any], char_offset: int) -> tuple[dict[
 
     _layers = {_CL.BODY, _CL.FURNITURE}
     for item, _level in doc.iterate_items(traverse_pictures=True, included_content_layers=_layers):
-        elem, char_offset = _docling_item_to_element(item, char_offset, out)
+        elem, char_offset = docling_item_to_element(item, char_offset, out)
         if elem is None:
             continue
 
@@ -405,7 +227,7 @@ def _parse_pdf(path: Path, out: dict[str, Any], char_offset: int) -> tuple[dict[
 
         # For tables: try VLM crop first; fall back to Docling extraction on failure.
         if elem["type"] == "table":
-            bbox = _bbox_of(item)
+            bbox = bbox_of(item)
             if bbox is not None:
                 try:
                     crop_bytes = render_region(path, page_idx, bbox)
@@ -419,7 +241,7 @@ def _parse_pdf(path: Path, out: dict[str, Any], char_offset: int) -> tuple[dict[
                             "cells": vlm_result.get("cells", []),
                         }
                     else:
-                        _append_warning(
+                        append_warning(
                             out,
                             "vlm_table_fallback",
                             f"VLM failed for table on page {page_idx}; using Docling extraction",
@@ -428,7 +250,7 @@ def _parse_pdf(path: Path, out: dict[str, Any], char_offset: int) -> tuple[dict[
                         )
                 except Exception as exc:
                     logger.warning("Table VLM crop failed: %s", exc)
-                    _append_warning(
+                    append_warning(
                         out,
                         "vlm_table_fallback",
                         f"Render/VLM error for table on page {page_idx}: {exc}",
@@ -466,7 +288,7 @@ def _parse_pdf(path: Path, out: dict[str, Any], char_offset: int) -> tuple[dict[
         )
         if decision.action == "promote_to_vlm":
             pages_to_promote.add(page_idx)
-            _append_warning(
+            append_warning(
                 out,
                 "vlm_promoted",
                 f"Layer {decision.layer}: {decision.reason}",
@@ -496,7 +318,7 @@ def _parse_pdf(path: Path, out: dict[str, Any], char_offset: int) -> tuple[dict[
             page_bytes = render_page(path, page_idx)
         except Exception as exc:
             logger.warning("render_page failed for page %d: %s", page_idx, exc)
-            _append_warning(
+            append_warning(
                 out,
                 "page_unparseable",
                 f"Could not render page {page_idx}: {exc}",
@@ -517,7 +339,7 @@ def _parse_pdf(path: Path, out: dict[str, Any], char_offset: int) -> tuple[dict[
         ) -> None:
             if fallback:
                 out["elements"].extend(fallback)
-                _append_warning(
+                append_warning(
                     out,
                     "vlm_fallback_docling",
                     f"VLM {msg} on page {page_idx}; kept Docling output",
@@ -525,7 +347,7 @@ def _parse_pdf(path: Path, out: dict[str, Any], char_offset: int) -> tuple[dict[
                     page_index=page_idx,
                 )
             else:
-                _append_warning(out, code, msg, scope="page", page_index=page_idx)
+                append_warning(out, code, msg, scope="page", page_index=page_idx)
 
         vlm_result = call_vlm(page_bytes, mode="page")
 
@@ -544,7 +366,7 @@ def _parse_pdf(path: Path, out: dict[str, Any], char_offset: int) -> tuple[dict[
         for i, raw_elem in enumerate(elements_raw):
             if not isinstance(raw_elem, dict):
                 continue
-            local_offset = _emit_vlm_elements(buf, raw_elem, page_idx, i, local_offset)
+            local_offset = emit_vlm_elements(buf, raw_elem, page_idx, i, local_offset)
 
         if buf["elements"]:
             out["elements"].extend(buf["elements"])
@@ -553,82 +375,6 @@ def _parse_pdf(path: Path, out: dict[str, Any], char_offset: int) -> tuple[dict[
             _keep_docling("page_unparseable", "returned no usable elements")
 
     return out, char_offset
-
-
-def _emit_vlm_elements(
-    out: dict[str, Any], raw_elem: dict[str, Any], page_idx: int, seq: int, char_offset: int
-) -> int:
-    """Append VLM element(s) to ``out['elements']``; return the updated char_offset.
-
-    A ``list`` element whose text holds several bulleted lines is expanded into
-    one ``list_item`` element per item. The grading markdown converter only
-    renders ``list_item`` (a bare ``list`` container contributes no text), so
-    without this split the bullet text is silently dropped.
-
-    A ``table`` element carrying a structured ``table`` object (rows/cols/cells)
-    is preserved as table content so the converter renders its cells — the VLM
-    often models TOCs/tables this way with an empty ``text``, which would
-    otherwise be lost.
-    """
-    text = raw_elem.get("text", "") or ""
-    elem_type = raw_elem.get("type", "paragraph")
-
-    tbl = raw_elem.get("table")
-    if elem_type == "table" and isinstance(tbl, dict) and tbl.get("cells"):
-        cells = tbl["cells"]
-        cell_text = " ".join(str(c.get("text", "")) for c in cells if isinstance(c, dict))
-        out["elements"].append(
-            {
-                "element_id": f"vlm_p{page_idx}_{seq:04d}",
-                "type": "table",
-                "page_index": page_idx,
-                "char_span": [char_offset, char_offset + len(cell_text)],
-                # Mirror the cell text into `text`: the grader's markdown
-                # converter skips any element with empty `text` *before*
-                # rendering table cells, so an empty-text table is dropped.
-                "text": text or cell_text,
-                "content": {
-                    "kind": "table",
-                    "rows": tbl.get("rows", 0),
-                    "cols": tbl.get("cols", 0),
-                    "header_rows": tbl.get("header_rows", 1),
-                    "cells": cells,
-                },
-            }
-        )
-        return char_offset + len(cell_text)
-
-    if elem_type == "list" and text.strip():
-        normalized = text.replace("•", "\n").replace("·", "\n")
-        items = [ln.strip().lstrip("-*").strip() for ln in normalized.splitlines()]
-        items = [it for it in items if it]
-        if items:
-            for j, item in enumerate(items):
-                out["elements"].append(
-                    {
-                        "element_id": f"vlm_p{page_idx}_{seq:04d}_{j:02d}",
-                        "type": "list_item",
-                        "page_index": page_idx,
-                        "char_span": [char_offset, char_offset + len(item)],
-                        "text": item,
-                        "content": {"kind": "text"},
-                    }
-                )
-                char_offset += len(item)
-            return char_offset
-
-    vlm_elem: dict[str, Any] = {
-        "element_id": f"vlm_p{page_idx}_{seq:04d}",
-        "type": elem_type,
-        "page_index": page_idx,
-        "char_span": [char_offset, char_offset + len(text)],
-        "text": text,
-        "content": {"kind": "text"},
-    }
-    if elem_type == "heading" and "level" in raw_elem:
-        vlm_elem["level"] = raw_elem["level"]
-    out["elements"].append(vlm_elem)
-    return char_offset + len(text)
 
 
 # ---------------------------------------------------------------------------
@@ -654,7 +400,7 @@ def _parse_image(path: Path, out: dict[str, Any], char_offset: int) -> tuple[dic
         conversion_result = converter.convert(str(path))
         doc = conversion_result.document
     except Exception as exc:
-        _append_warning(out, "docling_failed", str(exc), scope="document")
+        append_warning(out, "docling_failed", str(exc), scope="document")
         return out, char_offset
 
     before = len(out["elements"])
@@ -662,7 +408,7 @@ def _parse_image(path: Path, out: dict[str, Any], char_offset: int) -> tuple[dic
 
     _layers = {_CL.BODY, _CL.FURNITURE}
     for item, _ in doc.iterate_items(traverse_pictures=True, included_content_layers=_layers):
-        elem, char_offset = _docling_item_to_element(item, char_offset, out)
+        elem, char_offset = docling_item_to_element(item, char_offset, out)
         if elem is not None:
             out["elements"].append(elem)
 
@@ -676,7 +422,7 @@ def _parse_image(path: Path, out: dict[str, Any], char_offset: int) -> tuple[dic
     del out["elements"][before:]
     char_offset -= sum(len(e.get("text", "")) for e in page_elements)
 
-    _append_warning(
+    append_warning(
         out,
         "vlm_promoted",
         f"Layer {decision.layer}: {decision.reason}",
@@ -688,12 +434,12 @@ def _parse_image(path: Path, out: dict[str, Any], char_offset: int) -> tuple[dic
     vlm_result = call_vlm(image_bytes, mode="page")
 
     if "error" in vlm_result:
-        _append_warning(out, "image_unparseable", vlm_result["error"], scope="page", page_index=0)
+        append_warning(out, "image_unparseable", vlm_result["error"], scope="page", page_index=0)
         return out, char_offset
 
     elements_raw = vlm_result.get("elements")
     if not isinstance(elements_raw, list):
-        _append_warning(
+        append_warning(
             out,
             "vlm_invalid_shape",
             "VLM image response 'elements' is not a list",
@@ -705,7 +451,7 @@ def _parse_image(path: Path, out: dict[str, Any], char_offset: int) -> tuple[dic
     for i, raw_elem in enumerate(elements_raw):
         if not isinstance(raw_elem, dict):
             continue
-        char_offset = _emit_vlm_elements(out, raw_elem, 0, i, char_offset)
+        char_offset = emit_vlm_elements(out, raw_elem, 0, i, char_offset)
 
     return out, char_offset
 
@@ -729,7 +475,7 @@ def _parse_office_or_html(
         result = converter.convert(str(path))
     except Exception as exc:
         logger.warning("Docling conversion failed for %s: %s", path.name, exc)
-        _append_warning(out, "docling_failed", str(exc), scope="document")
+        append_warning(out, "docling_failed", str(exc), scope="document")
         return out, char_offset
 
     doc = result.document
@@ -738,155 +484,11 @@ def _parse_office_or_html(
 
     _layers = {_CL.BODY, _CL.FURNITURE}
     for item, _level in doc.iterate_items(traverse_pictures=True, included_content_layers=_layers):
-        elem, char_offset = _docling_item_to_element(item, char_offset, out)
+        elem, char_offset = docling_item_to_element(item, char_offset, out)
         if elem is not None:
             out["elements"].append(elem)
 
     return out, char_offset
-
-
-# ---------------------------------------------------------------------------
-# Docling item → eval-harness element mapping
-# ---------------------------------------------------------------------------
-
-
-def _docling_item_to_element(
-    item: Any,
-    char_offset: int,
-    out: dict[str, Any],
-) -> tuple[dict[str, Any] | None, int]:
-    """Map one Docling item to an eval-harness element dict.
-
-    Args:
-        item: A Docling document item (any type).
-        char_offset: Current running character offset.
-        out: The output dict (used to determine next element_id index).
-
-    Returns:
-        (element_dict, new_char_offset) on success.
-        (None, char_offset) for unmapped Docling types — caller must skip None.
-    """
-    type_name = type(item).__name__
-    elem_type = _DOCLING_TYPE_MAP.get(type_name)
-    if elem_type is None:
-        return None, char_offset
-
-    # element_id: prefer item.self_ref if available.
-    if hasattr(item, "self_ref") and item.self_ref:
-        element_id = item.self_ref.lstrip("#/")
-    else:
-        element_id = f"elem_{len(out['elements']):05d}"
-
-    text = getattr(item, "text", "") or ""
-    page_index = _page_index_of(item)
-    bbox = _bbox_of(item)
-
-    elem: dict[str, Any] = {
-        "element_id": element_id,
-        "type": elem_type,
-        "page_index": page_index,
-        "char_span": [char_offset, char_offset + len(text)],
-        "text": text,
-        "content": {"kind": "text"},
-    }
-
-    if bbox is not None:
-        elem["bbox"] = bbox
-
-    if elem_type == "heading":
-        elem["level"] = int(getattr(item, "level", 1) or 1)
-
-    if elem_type == "table":
-        elem["content"] = _docling_table_to_content(item)
-
-    return elem, char_offset + len(text)
-
-
-def _docling_table_to_content(table_item: Any) -> dict[str, Any]:
-    """Convert Docling TableItem grid to TableContent dict.
-
-    Returns {"kind": "table", "rows": ..., "cols": ..., "header_rows": ...,
-             "cells": [...]}.
-    Returns {"kind": "table", "rows": 0, "cols": 0, "header_rows": 0, "cells": []}
-    on any error.
-
-    # Docling table API stability note: grid access via table_item.data.grid
-    # uses the stable 2.x API. If this breaks on a future patch, pin docling
-    # version in pyproject.toml.
-    """
-    try:
-        data = table_item.data
-        rows = data.num_rows
-        cols = data.num_cols
-        cells_out: list[dict[str, Any]] = []
-
-        for r in range(rows):
-            for c in range(cols):
-                cell = data.grid[r][c]
-                if cell is None:
-                    continue
-                # Only emit the top-left cell of a merged span.
-                if cell.start_row_offset_idx != r or cell.start_col_offset_idx != c:
-                    continue
-                row_span = max(1, cell.end_row_offset_idx - cell.start_row_offset_idx)
-                col_span = max(1, cell.end_col_offset_idx - cell.start_col_offset_idx)
-                cells_out.append(
-                    {
-                        "row": r,
-                        "col": c,
-                        "text": cell.text or "",
-                        "row_span": row_span,
-                        "col_span": col_span,
-                    }
-                )
-
-        return {
-            "kind": "table",
-            "rows": rows,
-            "cols": cols,
-            "header_rows": 1,
-            "cells": cells_out,
-        }
-    except Exception as exc:
-        logger.warning("Could not read Docling table data: %s", exc)
-        return {"kind": "table", "rows": 0, "cols": 0, "header_rows": 0, "cells": []}
-
-
-# ---------------------------------------------------------------------------
-# Geometry helpers
-# ---------------------------------------------------------------------------
-
-
-def _bbox_of(item: Any) -> dict[str, float] | None:
-    """Extract (x0, y0, x1, y1) bbox from a Docling item if available.
-
-    Docling bbox fields: l (left), t (top), r (right), b (bottom) in PDF pts.
-    """
-    prov = getattr(item, "prov", None)
-    if not prov:
-        return None
-    first = prov[0]
-    b = getattr(first, "bbox", None)
-    if b is None:
-        return None
-    return {
-        "x0": float(b.l),
-        "y0": float(b.b),  # PDF bottom = y0 (bottom-left origin)
-        "x1": float(b.r),
-        "y1": float(b.t),  # PDF top = y1
-    }
-
-
-def _page_index_of(item: Any) -> int:
-    """Return 0-indexed page number for a Docling item.
-
-    Docling uses 1-indexed page numbers; we subtract 1.
-    Returns 0 on AttributeError (safe default).
-    """
-    try:
-        return int(item.prov[0].page_no) - 1
-    except (AttributeError, IndexError, TypeError):
-        return 0
 
 
 # ---------------------------------------------------------------------------

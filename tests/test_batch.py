@@ -1,7 +1,7 @@
 """
 test_batch.py
 
-Unit tests for the I/O abstraction layer (io_layer.py).
+Unit tests for the I/O abstraction layer (batch_io.py).
 """
 
 from __future__ import annotations
@@ -10,7 +10,7 @@ import json
 from pathlib import Path
 from typing import Any
 
-from parser_service.io_layer import InputRef, LocalIO
+from parser_service.legacy.batch_io import InputRef, LocalIO
 
 # ---------------------------------------------------------------------------
 # Test 1: LocalIO.list_input_files — yields only supported files
@@ -101,7 +101,7 @@ def test_input_ref_fields() -> None:
 
 def test_module_level_list_input_files(tmp_path: Path) -> None:
     """Module-level list_input_files function works for local URIs."""
-    from parser_service.io_layer import list_input_files
+    from parser_service.legacy.batch_io import list_input_files
 
     (tmp_path / "doc.docx").write_bytes(b"PK\x03\x04fake")
     (tmp_path / "ignored.csv").write_text("a,b,c")

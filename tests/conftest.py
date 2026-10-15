@@ -30,7 +30,7 @@ def scanned_pdf_path() -> Path:
 
 
 # ---------------------------------------------------------------------------
-# VLM mock fixtures (monkeypatch call_vlm in parser_service.parser_service)
+# VLM mock fixtures (monkeypatch call_vlm in parser_service.legacy.element_json)
 # ---------------------------------------------------------------------------
 
 
@@ -54,7 +54,7 @@ def mock_vlm_table(monkeypatch: pytest.MonkeyPatch) -> None:
     def _mock_call_vlm(image_bytes: bytes, mode: str) -> dict[str, Any]:
         return table_response
 
-    monkeypatch.setattr("parser_service.parser_service.call_vlm", _mock_call_vlm)
+    monkeypatch.setattr("parser_service.legacy.element_json.call_vlm", _mock_call_vlm)
 
 
 @pytest.fixture
@@ -70,7 +70,7 @@ def mock_vlm_page(monkeypatch: pytest.MonkeyPatch) -> None:
     def _mock_call_vlm(image_bytes: bytes, mode: str) -> dict[str, Any]:
         return page_response
 
-    monkeypatch.setattr("parser_service.parser_service.call_vlm", _mock_call_vlm)
+    monkeypatch.setattr("parser_service.legacy.element_json.call_vlm", _mock_call_vlm)
 
 
 @pytest.fixture
@@ -80,4 +80,4 @@ def mock_vlm_error(monkeypatch: pytest.MonkeyPatch) -> None:
     def _mock_call_vlm(image_bytes: bytes, mode: str) -> dict[str, Any]:
         return {"error": "mocked_failure"}
 
-    monkeypatch.setattr("parser_service.parser_service.call_vlm", _mock_call_vlm)
+    monkeypatch.setattr("parser_service.legacy.element_json.call_vlm", _mock_call_vlm)

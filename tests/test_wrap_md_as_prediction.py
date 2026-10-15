@@ -129,23 +129,23 @@ def test_wrap_validates_against_wheel_schema_one_paragraph(
 
 
 # ---------------------------------------------------------------------------
-# Test 2: full four-field source, matching _empty_output for the same file.
+# Test 2: full four-field source, matching empty_output for the same file.
 # ---------------------------------------------------------------------------
 
 
 def test_wrap_source_matches_empty_output(validate_against_wheel: Validator) -> None:
-    """Source has all four fields and matches what _empty_output produces."""
+    """Source has all four fields and matches what empty_output produces."""
     import mimetypes
 
-    from parser_service.parser_service import _empty_output
     from parser_service.parsing.document import wrap_md_as_prediction
+    from parser_service.parsing.elements import empty_output
 
     md = "hello world"
     pred = wrap_md_as_prediction(md, DIGITAL)
     validate_against_wheel(pred)
 
     mime = mimetypes.guess_type(str(DIGITAL))[0] or ""
-    expected = _empty_output(DIGITAL.resolve(), mime)["source"]
+    expected = empty_output(DIGITAL.resolve(), mime)["source"]
 
     source = pred["source"]
     assert set(source.keys()) == {"doc_id", "filename", "mime_type", "sha256"}

@@ -1,13 +1,13 @@
 """
-test_io_layer_s3.py — ``S3IO`` on the shared URI parser and client factory (``io_layer``).
+test_batch_io_s3.py — ``S3IO`` (legacy/batch_io.py) on the shared URI parser and client factory (``storage/aws.py``).
 
 Offline: every S3 call is answered by botocore's Stubber. The stubbed client is
-supplied by replacing the factory (``io_layer.s3_client``); the factory itself is
+supplied by replacing the factory (``aws.s3_client``); the factory itself is
 tested with ``boto3`` replaced in ``sys.modules`` (as ``test_client_retry.py`` does),
 so no client is ever built against the real credential chain.
 
 Run ONLY these tests:
-    uv run pytest tests/test_io_layer_s3.py
+    uv run pytest tests/test_batch_io_s3.py
 """
 
 from __future__ import annotations
@@ -24,19 +24,20 @@ import pytest
 from botocore.response import StreamingBody
 from botocore.stub import Stubber
 
-from parser_service import io_layer
-from parser_service.io_layer import S3IO, InputRef, parse_s3_uri
+from parser_service.legacy.batch_io import S3IO, InputRef
+from parser_service.storage import aws
+from parser_service.storage.aws import parse_s3_uri
 
 REGION = "ap-southeast-2"
 
 
 @pytest.fixture
 def stubbed(monkeypatch: pytest.MonkeyPatch) -> Iterator[Stubber]:
-    """A Stubber on a client that ``io_layer.s3_client()`` now returns."""
+    """A Stubber on a client that ``aws.s3_client()`` now returns."""
     client = boto3.client(
         "s3", region_name=REGION, aws_access_key_id="test", aws_secret_access_key="test"
     )
-    monkeypatch.setattr(io_layer, "s3_client", lambda region=None: client)
+    monkeypatch.setattr(aws, "s3_client", lambda region=None: client)
     with Stubber(client) as stubber:
         yield stubber
         stubber.assert_no_pending_responses()
@@ -128,7 +129,7 @@ def _fake_boto3(monkeypatch: pytest.MonkeyPatch) -> MagicMock:
     fake = MagicMock()
     fake.client.side_effect = lambda *args, **kwargs: MagicMock(name=f"client{kwargs}")
     monkeypatch.setitem(sys.modules, "boto3", fake)
-    monkeypatch.setattr(io_layer, "_S3_CLIENTS", {})
+    monkeypatch.setattr(aws, "_S3_CLIENTS", {})
     return fake
 
 
@@ -136,20 +137,20 @@ def test_factory_without_a_region_uses_the_default_chain(monkeypatch: pytest.Mon
     monkeypatch.delenv("AWS_REGION", raising=False)
     fake = _fake_boto3(monkeypatch)
 
-    client = io_layer.s3_client()
+    client = aws.s3_client()
 
     assert client is not None
     fake.client.assert_called_once_with("s3")  # no region argument: boto3 resolves it
-    assert io_layer.s3_client() is client  # one client per process
+    assert aws.s3_client() is client  # one client per process
     assert fake.client.call_count == 1
 
 
 def test_factory_passes_a_given_region_explicitly(monkeypatch: pytest.MonkeyPatch) -> None:
     fake = _fake_boto3(monkeypatch)
 
-    client: Any = io_layer.s3_client(REGION)
+    client: Any = aws.s3_client(REGION)
 
     fake.client.assert_called_once_with("s3", region_name=REGION)
-    assert io_layer.s3_client(REGION) is client
-    assert io_layer.s3_client() is not client  # the default-chain client is a separate one
+    assert aws.s3_client(REGION) is client
+    assert aws.s3_client() is not client  # the default-chain client is a separate one
     assert fake.client.call_count == 2

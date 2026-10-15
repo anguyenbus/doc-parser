@@ -79,7 +79,6 @@ logging.basicConfig(
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
-from parser_service import io_layer  # noqa: E402
 from parser_service.delivery.jobs import (  # noqa: E402
     ACTION_DELETE,
     DOC_DELETED,
@@ -99,6 +98,7 @@ from parser_service.page_pipeline import (  # noqa: E402
     parse_pdf_pages_in_store,
 )
 from parser_service.settings import SettingsError, load_settings  # noqa: E402
+from parser_service.storage import aws  # noqa: E402
 from parser_service.storage.store import open_store  # noqa: E402
 
 
@@ -114,12 +114,12 @@ def _fetch_s3_input(uri: str, region: str | None, directory: Path) -> tuple[Path
     """
     from botocore.exceptions import ClientError
 
-    bucket, key = io_layer.parse_s3_uri(uri)
+    bucket, key = aws.parse_s3_uri(uri)
     name = key.rpartition("/")[2]
     if not bucket or not name:
         raise ValueError(f"the input is not an s3://bucket/key URI: {uri}")
     try:
-        response = io_layer.s3_client(region).get_object(Bucket=bucket, Key=key)
+        response = aws.s3_client(region).get_object(Bucket=bucket, Key=key)
     except ClientError as exc:
         if exc.response.get("Error", {}).get("Code") == "NoSuchKey":
             raise FileNotFoundError(f"{uri} does not exist") from exc
@@ -142,8 +142,8 @@ def _index(index: int | None, flag: str) -> int:
 def _read_text(uri: str, region: str | None) -> str:
     """A small text file from a path or an s3:// URI."""
     if uri.startswith("s3://"):
-        bucket, key = io_layer.parse_s3_uri(uri)
-        body = io_layer.s3_client(region).get_object(Bucket=bucket, Key=key)["Body"].read()
+        bucket, key = aws.parse_s3_uri(uri)
+        body = aws.s3_client(region).get_object(Bucket=bucket, Key=key)["Body"].read()
         return body.decode("utf-8")
     return Path(uri).read_text(encoding="utf-8")
 

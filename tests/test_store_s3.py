@@ -24,7 +24,7 @@ from botocore.exceptions import ClientError
 from botocore.response import StreamingBody
 from botocore.stub import Stubber
 
-from parser_service import io_layer
+from parser_service.storage import aws
 from parser_service.storage import store as store_module
 from parser_service.storage.store import S3Store, StoreDeleteError, StoreNotFoundError, open_store
 
@@ -215,7 +215,7 @@ def test_opening_needs_a_region_and_normalises_the_location(
         regions.append(region)
         return client
 
-    monkeypatch.setattr(io_layer, "s3_client", factory)
+    monkeypatch.setattr(aws, "s3_client", factory)
 
     with pytest.raises(ValueError, match="region"):
         open_store("s3://bucket/parser")

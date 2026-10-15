@@ -51,7 +51,7 @@ logging.basicConfig(
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
-from parser_service.io_layer import (  # noqa: E402
+from parser_service.legacy.batch_io import (  # noqa: E402
     InputRef,
     list_input_files,
     write_json,
@@ -467,7 +467,7 @@ async def run_batch(
     else:
         import boto3  # noqa: PLC0415
 
-        from parser_service.io_layer import S3IO  # noqa: PLC0415
+        from parser_service.legacy.batch_io import S3IO  # noqa: PLC0415
         from parser_service.parsing.route_stats import FIELDNAMES  # noqa: PLC0415
 
         buf = io.StringIO()
@@ -495,7 +495,7 @@ async def run_batch(
         logger.info("failures.json written to %s", failures_path)
     else:
         # Write failures.json to S3.
-        from parser_service.io_layer import S3IO  # noqa: PLC0415
+        from parser_service.legacy.batch_io import S3IO  # noqa: PLC0415
 
         dummy_ref = InputRef(uri="", filename="failures.json", kind="s3")
         S3IO().write_json(dummy_ref, output_uri, failures_data)

@@ -178,7 +178,7 @@ def test_inventory_on_a_local_folder(tmp_path: Path, monkeypatch: pytest.MonkeyP
 
     # S3 outside ap-southeast-2 is refused before any client is made.
     monkeypatch.setenv("AWS_REGION", "us-east-1")
-    monkeypatch.setattr(inventory.io_layer, "s3_client", pytest.fail)
+    monkeypatch.setattr(inventory.aws, "s3_client", pytest.fail)
     assert (
         inventory.main(
             ["--prefix", "s3://bucket/corpus", "--out-dir", str(out_dir), "--csv", str(csv_path)]

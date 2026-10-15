@@ -5,7 +5,7 @@ All AWS Textract API communication for the parser service — the Textract twin 
 ``vlm_client.py``. Textract is a SELECTABLE escalation engine (behind
 ``PARSER_ESCALATION_ENGINE``) that replaces the Bedrock VLM on gate-promoted pages
 only; it emits the SAME element-JSON shape the VLM emits, so the downstream
-``_emit_vlm_elements`` -> ``render_markdown`` path is reused unchanged.
+``emit_vlm_elements`` -> ``render_markdown`` path is reused unchanged.
 
 Public API:
   analyze_page(image_bytes) -> dict   # never raises; {"error": ...} on failure
@@ -32,7 +32,7 @@ logger = logging.getLogger(__name__)
 # LAYOUT block type -> element-JSON mapping
 # -------------------------------------------------------------------------
 # Each LAYOUT_* block maps to an element ``type`` the existing renderer
-# (``parser_service._emit_vlm_elements`` + ``markdown.render_markdown``) already
+# (``parsing.elements.emit_vlm_elements`` + ``markdown.render_markdown``) already
 # consumes. Headings additionally carry a ``level``; tables carry a structured
 # ``table`` object. This mirrors the shape ``vlm_client.PAGE_PROMPT`` defines.
 _LAYOUT_TYPE_MAP: dict[str, str] = {
@@ -138,7 +138,7 @@ def _blocks_to_elements(blocks: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
     Pure, side-effect-free function (parallel to ``vlm_client._build_bedrock_request``):
     accepts the ``Blocks`` list from an ``AnalyzeDocument`` (LAYOUT + TABLES) response
-    and returns the ``elements`` list in the EXACT shape ``parser_service._emit_vlm_elements``
+    and returns the ``elements`` list in the EXACT shape ``parsing.elements.emit_vlm_elements``
     + ``markdown.render_markdown`` already consume — no schema change, no renderer change.
 
     LAYOUT block types map per ``_LAYOUT_TYPE_MAP``; ``LAYOUT_TITLE``/``LAYOUT_SECTION_HEADER``
@@ -461,7 +461,7 @@ def _make_table_element(
     repo-root prior-art scripts) and converts Textract's 1-indexed positions to the
     schema's 0-indexed ``row``/``col``. Carries ``row_span``/``col_span`` (default 1)
     and counts header rows from cells tagged ``COLUMN_HEADER``. Emits the exact table
-    object ``vlm_client.TABLE_PROMPT`` defines and ``_emit_vlm_elements`` consumes.
+    object ``vlm_client.TABLE_PROMPT`` defines and ``emit_vlm_elements`` consumes.
     """
     cells_blocks = [
         c for c in _child_blocks(table_block, by_id) if c.get("BlockType") == "CELL"
