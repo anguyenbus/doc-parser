@@ -26,7 +26,7 @@ flowchart LR
         G[doc-bench grade<br/>NED + TEDS]
     end
     subgraph host["host (parser)"]
-        S[stage source files] --> P[parse_batch.py<br/>Docling + vlm|textract]
+        S[stage source files] --> P["parse_batch.py<br/>Docling + vlm or textract"]
     end
     P -->|predictions/&lt;doc_id&gt;.json| G
     gold --> G

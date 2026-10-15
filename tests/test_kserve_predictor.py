@@ -48,9 +48,10 @@ from parser_service.formats.result import Reply, exception_reply  # noqa: E402
 from parser_service.pipeline import config, intake, layout  # noqa: E402
 from parser_service.pipeline.intake import work_id_for  # noqa: E402
 from parser_service.pipeline.remote_runner import KSERVE_MODEL_NAME  # noqa: E402
+from parser_service.pipeline.runner import Request, WorkerNotReady  # noqa: E402
 from parser_service.service import worker as page_worker  # noqa: E402
 from parser_service.service.predictor import PageParserModel, parse_instance  # noqa: E402
-from parser_service.service.worker import ParseWorker, Request, WorkerNotReady  # noqa: E402
+from parser_service.service.worker import ParseWorker  # noqa: E402
 from parser_service.storage.store import LocalStore  # noqa: E402
 
 WORK_ID = work_id_for(THREE_PAGE)

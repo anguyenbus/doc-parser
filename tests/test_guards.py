@@ -41,7 +41,7 @@ from parser_service.formats.guards import (
 )
 from parser_service.formats.result import Reply
 from parser_service.pipeline import config, intake, layout, units
-from parser_service.service.worker import Request
+from parser_service.pipeline.runner import Request
 from parser_service.storage.store import LocalStore
 
 _W = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"

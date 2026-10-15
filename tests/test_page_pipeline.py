@@ -30,7 +30,7 @@ from parser_service.pipeline import config as config_module
 from parser_service.pipeline.api import parse_pdf_pages
 from parser_service.pipeline.config import strip_page_markers
 from parser_service.pipeline.intake import split_pdf, work_dir_for
-from parser_service.service.worker import Request
+from parser_service.pipeline.runner import Request
 
 FIXTURES = Path(__file__).parent / "fixtures"
 THREE_PAGE = FIXTURES / "three_page_digital.pdf"

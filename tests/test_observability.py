@@ -27,10 +27,10 @@ from test_page_pipeline import THREE_PAGE, XLSX, _enable_test_kind, _install_fak
 from parser_service import observability
 from parser_service.delivery.publish import PublishRequest
 from parser_service.formats.result import Reply
-from parser_service.formats.sniff import KINDS
+from parser_service.formats.sniff import KINDS, extension_of
 from parser_service.pipeline import api, remote_runner
 from parser_service.pipeline import intake as pipeline_intake
-from parser_service.service.worker import Request
+from parser_service.pipeline.runner import Request
 from parser_service.storage.store import LocalStore
 
 prometheus_client = pytest.importorskip("prometheus_client")
@@ -208,8 +208,8 @@ def test_metrics_and_events_emitted_per_kind(
     assert done[2]["work_id"] is None and isinstance(done[3]["elapsed_seconds"], float)
     [too_large] = _events(caplog, "guard_reject")
     assert too_large["limits"] == {"raw_cap_bytes": 1_000_000}
-    assert observability.extension_label("README") == "none"
-    assert observability.extension_label("a.HTM") == "htm"
+    assert observability.extension_label(extension_of("README")) == "none"
+    assert observability.extension_label(extension_of("a.HTM")) == "htm"
 
     # The driver's counters, derived from its events.
     counters = observability.driver_counters(_events(caplog))

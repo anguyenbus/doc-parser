@@ -29,7 +29,8 @@ import pytest
 from parser_service.formats.result import Reply
 from parser_service.pipeline import config, layout, units
 from parser_service.pipeline.intake import split_pdf, work_dir_for, work_id_for
-from parser_service.service.worker import ParseWorker, WorkerDied, WorkerTimeout
+from parser_service.pipeline.runner import WorkerDied, WorkerTimeout
+from parser_service.service.worker import ParseWorker
 from parser_service.storage.store import LocalStore
 
 FIXTURES = Path(__file__).parent / "fixtures"

@@ -67,13 +67,8 @@ from parser_service.observability import (
 )
 from parser_service.pipeline.config import KindNotEnabled, PipelineConfigMismatch, deadline_for
 from parser_service.pipeline.remote_runner import KSERVE_MODEL_NAME, process_page_request
-from parser_service.pipeline.units import ParseRunner
-from parser_service.service.worker import (
-    ParseWorker,
-    WorkerDied,
-    WorkerNotReady,
-    WorkerStartError,
-)
+from parser_service.pipeline.runner import ParseRunner, WorkerDied, WorkerNotReady, WorkerStartError
+from parser_service.service.worker import ParseWorker
 from parser_service.settings import load_settings
 from parser_service.storage.store import Store, open_store
 

@@ -27,7 +27,8 @@ from parser_service.pipeline.config import (
     pipeline_config,
 )
 from parser_service.pipeline.layout import _manifest_key, _read_attempts, _read_json, _work_prefix
-from parser_service.pipeline.units import ParseRunner, _finalize_exhausted, _process_page
+from parser_service.pipeline.runner import ParseRunner
+from parser_service.pipeline.units import _finalize_exhausted, _process_page
 from parser_service.settings import (
     ENABLED_KINDS_ENV,
 )

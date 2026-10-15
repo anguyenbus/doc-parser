@@ -68,8 +68,6 @@ from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from typing import Any
 
-from parser_service.formats.sniff import extension_of
-
 logger = logging.getLogger("parser_service.events")
 
 # The longest string any event field may hold (spec D9: no exception text over 500).
@@ -138,9 +136,9 @@ def kind_label(kind: str | None) -> str:
     return kind or KIND_UNSUPPORTED
 
 
-def extension_label(name: str) -> str:
-    """The ``extension`` label of a file name: a known extension, ``other`` or ``none``."""
-    ext = extension_of(name)
+def extension_label(ext: str) -> str:
+    """The ``extension`` label of a file extension (lower case, no dot, ``""`` for none):
+    a known extension, ``other`` or ``none``."""
     if not ext:
         return "none"
     return ext if ext in KNOWN_EXTENSIONS else "other"

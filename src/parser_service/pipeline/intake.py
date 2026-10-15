@@ -19,7 +19,7 @@ from parser_service.formats.result import (
     STATE_OK,
     STATE_PENDING,
 )
-from parser_service.formats.sniff import SNIFF_BYTES, Sniff, sniff
+from parser_service.formats.sniff import SNIFF_BYTES, Sniff, extension_of, sniff
 from parser_service.observability import (
     extension_label,
     kind_label,
@@ -348,7 +348,7 @@ def _file_event_fields(
         "file_id": file_id,
         "kind": kind_label(found.kind),
         "detected_type": found.detected_type,
-        "extension": extension_label(source.name),
+        "extension": extension_label(extension_of(source.name)),
         "mismatch": found.mismatch,
         "input_bytes": size,
     }

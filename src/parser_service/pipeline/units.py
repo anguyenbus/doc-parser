@@ -12,13 +12,12 @@ import time
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Any
 
 from parser_service.formats.handlers import handler_version, parse_unit
 from parser_service.formats.result import (
     STATE_FAILED,
     STATE_OK,
-    Reply,
     exception_reply,
 )
 from parser_service.observability import (
@@ -52,7 +51,7 @@ from parser_service.pipeline.layout import (
     _record_key,
     _unit_key,
 )
-from parser_service.service.worker import Request, WorkerTimeout
+from parser_service.pipeline.runner import ParseRunner, Request, WorkerTimeout
 from parser_service.storage.store import Store, StoreNotFoundError
 from parser_service.version import PARSER_VERSION
 
@@ -120,19 +119,6 @@ def _write_record(
             f"{store.location(_record_key(work_id, page_number))} but cannot be read as a record"
         )
     return stored
-
-
-class ParseRunner(Protocol):
-    """Runs one parse out of process under a deadline (``service.worker.ParseWorker``).
-
-    ``run`` returns the worker's reply, or raises ``WorkerTimeout`` (the worker
-    was killed and reaped) or ``WorkerDied`` (it died on its own).
-    """
-
-    @property
-    def pid(self) -> int | None: ...
-
-    def run(self, request: Request, deadline_s: float) -> Reply: ...
 
 
 def _process_page(

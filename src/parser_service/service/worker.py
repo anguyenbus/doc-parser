@@ -52,6 +52,13 @@ from pathlib import Path
 
 from parser_service.formats.handlers import parse_unit
 from parser_service.formats.result import Reply, apply_output_cap, exception_reply
+from parser_service.pipeline.runner import (
+    Request,
+    WorkerDied,
+    WorkerNotReady,
+    WorkerStartError,
+    WorkerTimeout,
+)
 from parser_service.settings import DEFAULT_WORKER_START_TIMEOUT_S
 
 logger = logging.getLogger(__name__)
@@ -66,40 +73,8 @@ _DEATH_WAIT_S = 5.0
 # Exception text kept in a reply's reason and in log lines (spec D9).
 _MAX_EXCEPTION_CHARS = 500
 
-# A request: (kind, unit_path, page_number, escalate, output_cap_bytes or None).
-Request = tuple[str, str, int, bool, int | None]
 # A parse target: (kind, unit_path, page_number, escalate) -> Reply.
 ParseTarget = Callable[[str, str, int, bool], Reply]
-
-
-class WorkerError(RuntimeError):
-    """Base class of the parse worker's errors."""
-
-
-class WorkerNotReady(WorkerError):
-    """No warm worker: it is starting, respawning, or was stopped."""
-
-
-class WorkerStartError(WorkerError):
-    """A new worker did not report ``ready`` (it failed, died or timed out)."""
-
-
-class WorkerTimeout(WorkerError):
-    """The worker sent no reply within the deadline; it was killed and reaped."""
-
-    def __init__(self, deadline_s: float, pid: int | None) -> None:
-        self.deadline_s = deadline_s
-        self.pid = pid
-        super().__init__(f"parse worker {pid} sent no reply within {deadline_s} s; killed")
-
-
-class WorkerDied(WorkerError):
-    """The worker died during a request (EOF on the pipe). No record is written."""
-
-    def __init__(self, pid: int | None, exitcode: int | None) -> None:
-        self.pid = pid
-        self.exitcode = exitcode
-        super().__init__(f"parse worker {pid} died during the parse (exit code {exitcode})")
 
 
 # ---------------------------------------------------------------------------
