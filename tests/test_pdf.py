@@ -1,19 +1,17 @@
 """
 test_pdf.py
 
-Unit tests for PDF parsing paths — digital, scanned, and mixed PDFs.
-Also includes element mapping tests (docling_item_to_element and
-docling_table_to_content).
+Element mapping tests: ``docling_item_to_element`` and ``docling_table_to_content``
+(``parsing/elements.py``), which the markdown path uses to turn Docling items into
+elements. The PDF paths themselves are tested through ``parse_to_markdown``
+(``test_markdown_pipeline*.py``) and the page pipeline (``test_page_pipeline.py``).
 """
 
 from __future__ import annotations
 
-import re
 from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock
-
-import pytest
 
 FIXTURES = Path(__file__).parent / "fixtures"
 
@@ -156,126 +154,3 @@ def test_docling_table_to_content_merged_cell() -> None:
     # The continuation at (1,0) should NOT appear
     row1_col0 = [c for c in cells if c["row"] == 1 and c["col"] == 0]
     assert len(row1_col0) == 0
-
-
-# ===========================================================================
-# Phase 3e: Digital PDF path tests
-# ===========================================================================
-
-
-# ---------------------------------------------------------------------------
-# Test 1: Digital PDF produces zero vlm_p{N}_{i} element IDs
-# ---------------------------------------------------------------------------
-
-
-def test_digital_pdf_no_vlm_element_ids(mock_vlm_table: None) -> None:
-    """parse(digital_simple.pdf) with mocked VLM produces zero vlm_p*_* IDs."""
-    from parser_service.legacy.element_json import parse
-
-    result = parse(FIXTURES / "digital_simple.pdf")
-
-    vlm_id_pattern = re.compile(r"^vlm_p\d+_\d+$")
-    vlm_ids = [e["element_id"] for e in result["elements"] if vlm_id_pattern.match(e["element_id"])]
-    # Digital PDFs must produce ZERO scanned-page fallback IDs
-    assert vlm_ids == [], f"Unexpected VLM element IDs on digital PDF: {vlm_ids}"
-
-
-# ---------------------------------------------------------------------------
-# Test 2: char_span values are monotonically non-decreasing with no gaps
-# ---------------------------------------------------------------------------
-
-
-def test_digital_pdf_char_span_monotonic(mock_vlm_table: None) -> None:
-    """All char_span values on a digital PDF are monotonically non-decreasing."""
-    from parser_service.legacy.element_json import parse
-
-    result = parse(FIXTURES / "digital_simple.pdf")
-    elements = result["elements"]
-
-    if len(elements) < 2:
-        pytest.skip("Need at least 2 elements to check monotonicity")
-
-    for i in range(len(elements) - 1):
-        current_end = elements[i]["char_span"][1]
-        next_start = elements[i + 1]["char_span"][0]
-        assert current_end == next_start, (
-            f"char_span gap between element {i} and {i + 1}: "
-            f"{elements[i]['char_span']} → {elements[i + 1]['char_span']}"
-        )
-
-
-# ---------------------------------------------------------------------------
-# Test 3: VLM failure on table → vlm_table_fallback warning, table element kept
-# ---------------------------------------------------------------------------
-
-
-def test_digital_pdf_vlm_table_fallback(mock_vlm_error: None) -> None:
-    """When VLM fails on a table, vlm_table_fallback warning is emitted."""
-    from parser_service.legacy.element_json import parse
-
-    result = parse(FIXTURES / "digital_complex_tables.pdf")
-
-    warning_codes = [w["code"] for w in result["warnings"]]
-    # The test verifies that if VLM fails, docling fallback warning is emitted.
-    # For our fixture PDFs (raw PDF with no real tables), Docling may not extract
-    # TableItems, but no exception should escape.
-    assert isinstance(result["elements"], list)
-    assert isinstance(result["warnings"], list)
-    # No unhandled exceptions
-    assert "unhandled_exception" not in warning_codes
-
-
-# ===========================================================================
-# Phase 3f: Scanned PDF and mixed PDF tests
-# ===========================================================================
-
-
-# ---------------------------------------------------------------------------
-# Test 1: scanned.pdf — all elements have vlm_p{N}_{i} IDs
-# ---------------------------------------------------------------------------
-
-
-def test_scanned_pdf_all_vlm_element_ids(mock_vlm_page: None) -> None:
-    """parse(scanned.pdf) with mocked VLM — all element IDs match vlm_p*_* pattern."""
-    from parser_service.legacy.element_json import parse
-
-    result = parse(FIXTURES / "scanned.pdf")
-
-    vlm_id_pattern = re.compile(r"^vlm_p\d+_\d{4}$")
-    elements = result["elements"]
-
-    if not elements:
-        # If VLM returned no elements but no errors, that's acceptable.
-        # Check that page_unparseable was NOT emitted (VLM was mocked to succeed).
-        warning_codes = [w["code"] for w in result["warnings"]]
-        assert "page_unparseable" not in warning_codes, (
-            "page_unparseable warning emitted for scanned PDF even with mocked VLM"
-        )
-        return
-
-    for elem in elements:
-        assert vlm_id_pattern.match(elem["element_id"]), (
-            f"Expected vlm_p*_* ID for scanned PDF element, got: {elem['element_id']!r}"
-        )
-
-
-# ---------------------------------------------------------------------------
-# Test 2: mixed.pdf — digital pages have no vlm_p IDs, scanned pages do
-# ---------------------------------------------------------------------------
-
-
-def test_mixed_pdf_correct_element_ids_per_page(mock_vlm_page: None) -> None:
-    """parse(mixed.pdf) produces correct element ID pattern per page type."""
-    from parser_service.legacy.element_json import parse
-
-    result = parse(FIXTURES / "mixed.pdf")
-
-    # We don't enforce strict per-page correctness here because Docling may
-    # or may not extract text from our minimal fixture PDFs.
-    # We assert no unhandled exceptions escape and output has required fields.
-    assert "schema_version" in result
-    assert "elements" in result
-    assert "warnings" in result
-    assert isinstance(result["elements"], list)
-    warning_codes = [w["code"] for w in result["warnings"]]
-    assert "unhandled_exception" not in warning_codes

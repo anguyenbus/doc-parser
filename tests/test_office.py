@@ -1,9 +1,9 @@
 """
 test_office.py
 
-Unit tests for DOCX, XLSX, and HTML parsing paths.
-
-These paths use Docling only; VLM is never called.
+DOCX, XLSX and HTML through ``parse_to_markdown``: Docling only, one logical page,
+no warnings, and the VLM never called. An unsupported file type is a warning, not
+an exception.
 """
 
 from __future__ import annotations
@@ -13,87 +13,36 @@ from typing import Any
 
 import pytest
 
+from parser_service.parsing.document import parse_to_markdown
+
 FIXTURES = Path(__file__).parent / "fixtures"
 
 
-def _call_tracker() -> tuple[list[Any], Any]:
-    """Return a call log list and a mock VLM that records calls."""
+@pytest.mark.parametrize("name", ["doc.docx", "sheet.xlsx", "page.html"])
+def test_whole_document_formats_never_call_the_vlm(
+    name: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
     calls: list[Any] = []
 
-    def _mock_call_vlm(image_bytes: bytes, mode: str) -> dict[str, Any]:
-        calls.append((image_bytes, mode))
+    def mock_vlm(image_bytes: bytes, mode: str) -> dict[str, Any]:
+        calls.append(mode)
         return {"error": "should not have been called"}
 
-    return calls, _mock_call_vlm
+    monkeypatch.setattr("parser_service.parsing.document.call_vlm", mock_vlm)
+    result = parse_to_markdown(FIXTURES / name)
+
+    assert [r["page_index"] for r in result["page_routes"]] == [0]
+    assert result["page_routes"][0]["route"] == "docling-kept"
+    assert result["markdown"].strip()
+    assert result["warnings"] == []
+    assert calls == [] and result["call_counts"] == {"vlm": 0, "textract": 0}
 
 
-# ---------------------------------------------------------------------------
-# Test 1: parse(doc.docx) — one page, no warnings, VLM never called
-# ---------------------------------------------------------------------------
+def test_unsupported_type_is_a_warning(tmp_path: Path) -> None:
+    unknown_file = tmp_path / "mystery.xyz123"
+    unknown_file.write_bytes(b"some content")
 
+    result = parse_to_markdown(unknown_file)
 
-def test_parse_docx(monkeypatch: pytest.MonkeyPatch) -> None:
-    """parse(doc.docx) produces one page entry, no warnings, no VLM calls."""
-    from parser_service.legacy.element_json import parse
-
-    calls, mock_vlm = _call_tracker()
-    monkeypatch.setattr("parser_service.legacy.element_json.call_vlm", mock_vlm)
-
-    result = parse(FIXTURES / "doc.docx")
-
-    assert result["schema_version"] == "1.0.0"
-    assert len(result["pages"]) == 1
-    assert result["pages"][0]["page_index"] == 0
-
-    # No VLM calls on the DOCX path
-    assert calls == [], f"Unexpected VLM calls: {calls}"
-
-    # No unexpected warnings (docling_failed allowed only if Docling has issues)
-    unexpected_codes = {w["code"] for w in result["warnings"]} - {"docling_failed"}
-    assert unexpected_codes == set(), f"Unexpected warnings: {unexpected_codes}"
-
-
-# ---------------------------------------------------------------------------
-# Test 2: parse(sheet.xlsx) — one page, no warnings, VLM never called
-# ---------------------------------------------------------------------------
-
-
-def test_parse_xlsx(monkeypatch: pytest.MonkeyPatch) -> None:
-    """parse(sheet.xlsx) produces one page entry, no warnings, no VLM calls."""
-    from parser_service.legacy.element_json import parse
-
-    calls, mock_vlm = _call_tracker()
-    monkeypatch.setattr("parser_service.legacy.element_json.call_vlm", mock_vlm)
-
-    result = parse(FIXTURES / "sheet.xlsx")
-
-    assert result["schema_version"] == "1.0.0"
-    assert len(result["pages"]) == 1
-    assert result["pages"][0]["page_index"] == 0
-    assert calls == [], f"Unexpected VLM calls: {calls}"
-
-    unexpected_codes = {w["code"] for w in result["warnings"]} - {"docling_failed"}
-    assert unexpected_codes == set(), f"Unexpected warnings: {unexpected_codes}"
-
-
-# ---------------------------------------------------------------------------
-# Test 3: parse(page.html) — one page, no warnings, VLM never called
-# ---------------------------------------------------------------------------
-
-
-def test_parse_html(monkeypatch: pytest.MonkeyPatch) -> None:
-    """parse(page.html) produces one page entry, no warnings, no VLM calls."""
-    from parser_service.legacy.element_json import parse
-
-    calls, mock_vlm = _call_tracker()
-    monkeypatch.setattr("parser_service.legacy.element_json.call_vlm", mock_vlm)
-
-    result = parse(FIXTURES / "page.html")
-
-    assert result["schema_version"] == "1.0.0"
-    assert len(result["pages"]) == 1
-    assert result["pages"][0]["page_index"] == 0
-    assert calls == [], f"Unexpected VLM calls: {calls}"
-
-    unexpected_codes = {w["code"] for w in result["warnings"]} - {"docling_failed"}
-    assert unexpected_codes == set(), f"Unexpected warnings: {unexpected_codes}"
+    assert result["markdown"] == ""
+    assert [w["code"] for w in result["warnings"]] == ["unsupported_type"]

@@ -41,7 +41,7 @@ import os
 import sys
 import time
 from pathlib import Path
-from typing import Any
+from typing import Any, NamedTuple
 
 # Configure logging before importing parser_service.
 logging.basicConfig(
@@ -51,24 +51,59 @@ logging.basicConfig(
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
-from parser_service.legacy.batch_io import (  # noqa: E402
-    InputRef,
-    list_input_files,
-    write_json,
-    write_text,
-)
 from parser_service.parsing.document import (  # noqa: E402
     parse_to_markdown,
     wrap_md_as_prediction,
 )
 from parser_service.parsing.route_stats import (  # noqa: E402
+    FIELDNAMES,
     error_record,
     route_record,
     summarize,
-    write_route_csv,
 )
+from parser_service.storage.store import Store, open_store  # noqa: E402
 
 logger = logging.getLogger(__name__)
+
+# The input files parse_to_markdown routes (by extension), read from the top level
+# of the input folder or S3 prefix.
+SUPPORTED_EXTENSIONS = {
+    ".pdf",
+    ".png",
+    ".jpg",
+    ".jpeg",
+    ".tif",
+    ".tiff",
+    ".docx",
+    ".xlsx",
+    ".xlsm",
+    ".html",
+    ".htm",
+}
+
+
+class InputRef(NamedTuple):
+    """One input file: its key in the input store and its file name."""
+
+    key: str
+    filename: str
+
+
+def list_input_files(store: Store) -> list[InputRef]:
+    """The supported files at the top level of ``store``, sorted by key."""
+    return [
+        InputRef(key=key, filename=key)
+        for key in store.list_keys()
+        if "/" not in key and Path(key).suffix.lower() in SUPPORTED_EXTENSIONS
+    ]
+
+
+def _write_text(store: Store, key: str, text: str) -> None:
+    store.write(key, text.encode("utf-8"))
+
+
+def _write_json(store: Store, key: str, data: Any) -> None:
+    _write_text(store, key, json.dumps(data, ensure_ascii=False, indent=2))
 
 # ---------------------------------------------------------------------------
 # Cost estimation constants (approximate — see Bedrock pricing page)
@@ -202,11 +237,15 @@ class BudgetTracker:
 # ---------------------------------------------------------------------------
 
 
-def _parse_file_sync(ref: InputRef, escalate: bool = True) -> dict[str, Any]:
+def _parse_file_sync(
+    store: Store, ref: InputRef, escalate: bool = True, emit_test_json: bool = False
+) -> tuple[dict[str, Any], dict[str, Any] | None]:
     """Parse one file to markdown synchronously (runs in thread pool).
 
-    Returns the ``parse_to_markdown`` result
-    (``{"markdown", "page_routes", "warnings"}``).
+    The file is read through the input store's ``local_file`` (an S3 input is
+    downloaded to a temporary file for the parse). Returns the ``parse_to_markdown``
+    result (``{"markdown", "page_routes", "warnings"}``) and, with
+    ``emit_test_json``, the wrapped prediction (built while the file is at hand).
 
     NOTE: transient-throttle retry now lives INSIDE the escalation clients
     (``engines.vlm.call_vlm`` / ``engines.textract.analyze_page`` wrap their inner
@@ -215,19 +254,22 @@ def _parse_file_sync(ref: InputRef, escalate: bool = True) -> dict[str, Any]:
     clients swallow the exception and return ``{"error": ...}`` (never re-raising
     the throttle), so it never reached this layer anyway.
     """
-    from pathlib import Path as P
-
-    path = P(ref.uri)
     # Only pass the additive ``escalate`` kwarg when suppressing escalation (the
     # budget-cap path). On the default path we call ``parse_to_markdown(path)``
     # positionally so the call site is byte-identical to before this feature.
     ptm_kwargs: dict[str, Any] = {} if escalate else {"escalate": False}
-    return parse_to_markdown(path, **ptm_kwargs)
+    with store.local_file(ref.key) as path:
+        result = parse_to_markdown(path, **ptm_kwargs)
+        prediction = (
+            wrap_md_as_prediction(result.get("markdown", ""), path) if emit_test_json else None
+        )
+    return result, prediction
 
 
 async def _process_file(
     ref: InputRef,
-    output_uri: str,
+    in_store: Store,
+    out_store: Store,
     emit_test_json: bool,
     semaphore: asyncio.Semaphore,
     executor: concurrent.futures.Executor,
@@ -259,11 +301,13 @@ async def _process_file(
             )
         try:
             loop = asyncio.get_event_loop()
-            coro = loop.run_in_executor(executor, _parse_file_sync, ref, escalate)
+            coro = loop.run_in_executor(
+                executor, _parse_file_sync, in_store, ref, escalate, emit_test_json
+            )
             if timeout_per_file is not None:
-                result = await asyncio.wait_for(coro, timeout=timeout_per_file)
+                result, prediction = await asyncio.wait_for(coro, timeout=timeout_per_file)
             else:
-                result = await coro
+                result, prediction = await coro
 
             duration = time.monotonic() - start
             # Per-invocation, race-free counts returned by parse_to_markdown
@@ -294,13 +338,12 @@ async def _process_file(
             logger.info(json.dumps(log_line))
 
             # Always write the RAG-ready Markdown.
-            write_text(ref, output_uri, markdown, ext=".md")
+            _write_text(out_store, f"{doc_id}.md", markdown)
 
             # Only on the eval path: also write the wrapped, schema-valid JSON the
             # doc-bench wheel grades. wrap_md_as_prediction builds the full source.
-            if emit_test_json:
-                prediction = wrap_md_as_prediction(markdown, Path(ref.uri))
-                write_json(ref, output_uri, prediction)
+            if prediction is not None:
+                _write_json(out_store, f"{doc_id}.json", prediction)
 
             # Routing telemetry derived directly from page_routes.
             route_records.append(route_record(page_routes, doc_id=doc_id))
@@ -380,7 +423,10 @@ async def run_batch(
     budget_usd: float | None = None,
 ) -> None:
     """Run the batch parsing pipeline."""
-    refs = list(list_input_files(input_uri))
+    region = os.environ.get("AWS_REGION")
+    in_store = open_store(input_uri, region=region)
+    out_store = open_store(output_uri, region=region)
+    refs = list_input_files(in_store)
     if max_files is not None:
         refs = refs[:max_files]
 
@@ -389,10 +435,6 @@ async def run_batch(
         return
 
     logger.info("Processing %d files from %s → %s", len(refs), input_uri, output_uri)
-
-    # Ensure output directory exists (local only).
-    if not output_uri.startswith("s3://"):
-        Path(output_uri).mkdir(parents=True, exist_ok=True)
 
     semaphore = asyncio.Semaphore(concurrency)
     results: list[dict[str, Any]] = []
@@ -407,7 +449,8 @@ async def run_batch(
         tasks = [
             _process_file(
                 ref,
-                output_uri,
+                in_store,
+                out_store,
                 emit_test_json,
                 semaphore,
                 executor,
@@ -459,46 +502,20 @@ async def run_batch(
     summary.update(budget.summary_fields())
     logger.info(json.dumps(summary))
 
-    # Write route_stats.csv (per-document routing breakdown).
-    if not output_uri.startswith("s3://"):
-        route_csv = Path(output_uri) / "route_stats.csv"
-        write_route_csv(route_records, route_csv)
-        logger.info("route_stats.csv written to %s", route_csv)
-    else:
-        import boto3  # noqa: PLC0415
+    # Write route_stats.csv (per-document routing breakdown) and failures.json.
+    buf = io.StringIO()
+    writer = csv.DictWriter(buf, fieldnames=FIELDNAMES)
+    writer.writeheader()
+    writer.writerows(route_records)
+    _write_text(out_store, "route_stats.csv", buf.getvalue())
+    logger.info("route_stats.csv written to %s", out_store.location("route_stats.csv"))
 
-        from parser_service.legacy.batch_io import S3IO  # noqa: PLC0415
-        from parser_service.parsing.route_stats import FIELDNAMES  # noqa: PLC0415
-
-        buf = io.StringIO()
-        writer = csv.DictWriter(buf, fieldnames=FIELDNAMES)
-        writer.writeheader()
-        for rec in route_records:
-            writer.writerow(rec)
-        bucket, prefix = S3IO()._parse_uri(output_uri)
-        key = f"{prefix.rstrip('/')}/route_stats.csv"
-        boto3.client("s3").put_object(
-            Bucket=bucket, Key=key, Body=buf.getvalue().encode("utf-8"), ContentType="text/csv"
-        )
-        logger.info("route_stats.csv written to s3://%s/%s", bucket, key)
-
-    # Write failures.json.
     failures_data = {
         "document_failures": failures.get("document_failures", []),
         "page_failures": failures.get("page_failures", []),
     }
-    if not output_uri.startswith("s3://"):
-        failures_path = Path(output_uri) / "failures.json"
-        failures_path.write_text(
-            json.dumps(failures_data, ensure_ascii=False, indent=2), encoding="utf-8"
-        )
-        logger.info("failures.json written to %s", failures_path)
-    else:
-        # Write failures.json to S3.
-        from parser_service.legacy.batch_io import S3IO  # noqa: PLC0415
-
-        dummy_ref = InputRef(uri="", filename="failures.json", kind="s3")
-        S3IO().write_json(dummy_ref, output_uri, failures_data)
+    _write_json(out_store, "failures.json", failures_data)
+    logger.info("failures.json written to %s", out_store.location("failures.json"))
 
 
 # ---------------------------------------------------------------------------

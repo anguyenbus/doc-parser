@@ -18,17 +18,11 @@ flowchart TB
     L4["<b>4 · formats/</b> — what a file is, how to parse it<br/>sniff.py · guards.py · handlers.py · pdf.py · image.py · result.py"]
     L5["<b>5 · parsing/</b> — parse one unit<br/>document.py · quality_gate.py · render.py · markdown.py<br/>elements.py · confidence.py · route_stats.py<br/>engines/ vlm.py · textract.py · retry.py"]
     L6["<b>6 · foundation</b><br/>storage/ store.py · aws.py — delivery/ publish.py · jobs.py<br/>observability.py · version.py"]
-    LEG["<b>legacy/</b><br/>element_json.py · batch_io.py"]
 
     L1 --> L2 --> L3 --> L4 --> L5 --> L6
-    LEG -.-> L5
-    LEG -.-> L6
 ```
 
-`legacy/` sits beside the layers: the element-JSON `parse()` for the eval harness
-(`legacy/element_json.py`, exposed as `parser_service.parse` and imported only when
-first used) and the single-node batch script's I/O (`legacy/batch_io.py`). Inside
-`pipeline/` the modules follow the same rule: `config` ← `layout`, `runner` ← `intake`,
+Inside `pipeline/` the modules follow the same rule: `config` ← `layout`, `runner` ← `intake`,
 `units` ← the runners and `status` ← `api`.
 
 ## 2. Modules
@@ -119,10 +113,9 @@ flowchart TD
 - **Contracts live with the layer that uses them.** The pipeline defines what it
   needs from a parse runner (`pipeline/runner.py`); the service implements it. The
   unit result contract (`formats/result.py`) sits below both.
-- **Function-level imports are deliberate and few.** `parser_service.parse` loads the
-  legacy parser on first use. The worker and the handlers import the Docling path
-  only when they parse, so the page service's own process stays light (a test checks
-  that it never loads Docling or torch). The legacy parser keeps its own.
+- **Function-level imports are deliberate and few.** The worker and the handlers
+  import the Docling path only when they parse, so the page service's own process
+  stays light (a test checks that it never loads Docling or torch).
 - **Shared code has one public home.** A name used across packages is public (no
   leading underscore) and lives in the module that owns it: `formats/result.py`,
   `pipeline/runner.py`, `parsing/elements.py`, `storage/aws.py`, `version.py`. Inside

@@ -1,8 +1,7 @@
 """
 aws.py — the one S3 URI parser and S3 client factory in the repo.
 
-Shared by the page store (``storage/store.py``), the scripts and the legacy batch
-I/O. Callers use ``aws.s3_client(...)`` at call time, so tests replace it in one place.
+Shared by the page store (``storage/store.py``) and the scripts. Callers use ``aws.s3_client(...)`` at call time, so tests replace it in one place.
 """
 
 from __future__ import annotations

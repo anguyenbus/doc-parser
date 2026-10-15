@@ -4,9 +4,7 @@ test_scripts_rewiring.py — Task Group 4 tests (task 4.1).
 Covers the CLI/script rewiring onto the markdown-first path, with the VLM
 mocked (no Bedrock needed):
 
-  - parse_one.py --format md   → parse_to_markdown output (NOT render_markdown(parse(...)))
-  - parse_one.py --format json → LEGACY element JSON via parse() (unchanged)
-  - parse_one.py --format both → legacy json + md
+  - parse_one.py               → parse_to_markdown output (markdown only)
   - parse_batch.py             → ALWAYS writes .md; wrapped .json ONLY with --emit-test-json
   - route_stats.route_record   → derives routes from page_routes, with the
                                   route-counts-sum-to-page-count invariant.
@@ -52,94 +50,42 @@ def _load_script(name: str) -> Any:
 # ===========================================================================
 
 
-def test_parse_one_md_uses_parse_to_markdown(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
-) -> None:
-    """--format md routes through parse_to_markdown, NOT render_markdown(parse(...))."""
-    parse_one = _load_script("parse_one")
-
-    sentinel = "PARSE_TO_MARKDOWN_OUTPUT_SENTINEL"
-    called = {"ptm": 0, "parse": 0}
-
-    def _fake_ptm(path: Any) -> dict[str, Any]:
-        called["ptm"] += 1
-        return {"markdown": sentinel, "page_routes": [], "warnings": []}
-
-    def _fake_parse(path: Any) -> dict[str, Any]:
-        called["parse"] += 1
-        return {"elements": [], "warnings": []}
-
-    monkeypatch.setattr(parse_one, "parse_to_markdown", _fake_ptm)
-    monkeypatch.setattr(parse_one, "parse", _fake_parse)
-    monkeypatch.setattr(sys, "argv", ["parse_one.py", "--input", str(DIGITAL), "--format", "md"])
-
-    parse_one.main()
-
-    out = capsys.readouterr().out
-    assert sentinel in out
-    assert called["ptm"] == 1
-    # The legacy parse() must NOT be invoked on the md path.
-    assert called["parse"] == 0
-
-
-def test_parse_one_json_uses_legacy_parse(
+def test_parse_one_prints_parse_to_markdown(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """--format json still emits LEGACY element JSON via parse() (unchanged)."""
+    """parse_one prints parse_to_markdown's markdown (``--format md`` still accepted)."""
     parse_one = _load_script("parse_one")
-
-    legacy = {"schema_version": "1.0.0", "elements": [{"type": "paragraph"}], "warnings": []}
-    called = {"ptm": 0, "parse": 0}
+    sentinel = "PARSE_TO_MARKDOWN_OUTPUT_SENTINEL"
+    calls: list[Any] = []
 
     def _fake_ptm(path: Any) -> dict[str, Any]:
-        called["ptm"] += 1
-        return {"markdown": "should-not-appear", "page_routes": [], "warnings": []}
-
-    def _fake_parse(path: Any) -> dict[str, Any]:
-        called["parse"] += 1
-        return legacy
+        calls.append(path)
+        return {"markdown": sentinel, "page_routes": [], "warnings": []}
 
     monkeypatch.setattr(parse_one, "parse_to_markdown", _fake_ptm)
-    monkeypatch.setattr(parse_one, "parse", _fake_parse)
-    monkeypatch.setattr(sys, "argv", ["parse_one.py", "--input", str(DIGITAL), "--format", "json"])
-
-    parse_one.main()
-
-    out = capsys.readouterr().out
-    parsed = json.loads(out)
-    assert parsed == legacy
-    assert called["parse"] == 1
-    # parse_to_markdown must NOT run on the json path.
-    assert called["ptm"] == 0
+    for argv in (["--input", str(DIGITAL)], ["--input", str(DIGITAL), "--format", "md"]):
+        monkeypatch.setattr(sys, "argv", ["parse_one.py", *argv])
+        parse_one.main()
+        assert sentinel in capsys.readouterr().out
+    assert calls == [DIGITAL, DIGITAL]
 
 
-def test_parse_one_both_writes_legacy_json_and_md(
+def test_parse_one_writes_md_into_an_output_dir(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    """--format both writes legacy element JSON + markdown-first .md."""
     parse_one = _load_script("parse_one")
-
-    legacy = {"schema_version": "1.0.0", "elements": [{"type": "heading"}], "warnings": []}
-
-    monkeypatch.setattr(parse_one, "parse", lambda p: legacy)
     monkeypatch.setattr(
         parse_one,
         "parse_to_markdown",
-        lambda p: {"markdown": "MD_BOTH_OUTPUT", "page_routes": [], "warnings": []},
+        lambda p: {"markdown": "MD_OUTPUT", "page_routes": [], "warnings": []},
     )
     out_dir = tmp_path / "out"
+    out_dir.mkdir()
     monkeypatch.setattr(
-        sys,
-        "argv",
-        ["parse_one.py", "--input", str(DIGITAL), "--format", "both", "--output", str(out_dir)],
+        sys, "argv", ["parse_one.py", "--input", str(DIGITAL), "--output", str(out_dir)]
     )
-
     parse_one.main()
-
-    json_path = out_dir / (DIGITAL.stem + ".json")
-    md_path = out_dir / (DIGITAL.stem + ".md")
-    assert json.loads(json_path.read_text()) == legacy
-    assert md_path.read_text() == "MD_BOTH_OUTPUT"
+    assert (out_dir / (DIGITAL.stem + ".md")).read_text() == "MD_OUTPUT"
 
 
 # ===========================================================================

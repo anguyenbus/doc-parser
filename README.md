@@ -31,14 +31,15 @@ export BEDROCK_VLM_MODEL=au.anthropic.claude-sonnet-4-6   # latest Sonnet
 
 ```bash
 # one document → markdown (stdout, or --output out/)
-uv run python scripts/parse_one.py --input report.pdf --format md
+uv run python scripts/parse_one.py --input report.pdf
 
 # a folder or S3 prefix → one .md each
 uv run python scripts/parse_batch.py --input ./inbox --output ./out --concurrency 4
 uv run python scripts/parse_batch.py --input s3://bucket/in --output s3://bucket/out --budget-usd 5.00
 ```
 
-`--format`: `md` · `json` (legacy element JSON, current default) · `both`. Batch also
+Both parse each file whole with `parse_to_markdown`; production uses the page
+pipeline (`scripts/parse_pages.py`; see [deploy/README.md](deploy/README.md)). Batch also
 writes `route_stats.csv` + `failures.json` and prints a cost summary. Knobs:
 `PARSER_CONCURRENCY`, `PARSER_RENDER_DPI` (144), `PARSER_MAX_PAGES`, `--timeout-per-file`,
 `--budget-usd`.

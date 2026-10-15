@@ -2,9 +2,9 @@
 document.py — the markdown-first parsing path (roadmap item 26).
 
 ``parse_to_markdown(file_path)`` produces one clean, RAG-ready Markdown string
-per document via a per-page-gated pipeline, plus routing telemetry. It mirrors
-``parser_service.parse()``'s never-raises contract: all failures are captured in
-``warnings[]`` and reflected in ``page_routes`` — it does NOT raise.
+per document via a per-page-gated pipeline, plus routing telemetry. It never
+raises: all failures are captured in ``warnings[]`` and reflected in
+``page_routes``.
 
 Architecture (Route B, adopted 2026-05-31 after benchmark evidence reversed the
 Task-Group-1 spike decision — see planning/spike-route-decision.md):
@@ -230,7 +230,7 @@ def parse_to_markdown(file_path: Path, escalate: bool = True) -> dict[str, Any]:
     """Parse a document into a single RAG-ready markdown string + telemetry.
 
     Never raises — all failures are captured in ``warnings[]`` and reflected in
-    ``page_routes`` (mirroring ``parser_service.parse()``'s contract).
+    ``page_routes``.
 
     Args:
         file_path: Path to the document to parse.

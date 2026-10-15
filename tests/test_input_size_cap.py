@@ -6,8 +6,8 @@ the discarded whole-file hash read on the markdown (production) path.
 
 Layers:
   A. Pure helpers — input_size_error, max_input_bytes, sha256_file.
-  B. Guard integration — parse() and parse_to_markdown reject oversized input
-     before Docling, and the markdown path never invokes the converter.
+  B. Guard integration — parse_to_markdown rejects oversized input before
+     Docling and never invokes the converter.
   C. Decoupling — parse_to_markdown no longer depends on empty_output.
 """
 
@@ -19,7 +19,6 @@ from pathlib import Path
 
 import pytest
 
-from parser_service.legacy.element_json import parse
 from parser_service.parsing import document as markdown_pipeline
 from parser_service.parsing import elements
 from parser_service.parsing.document import parse_to_markdown
@@ -72,7 +71,7 @@ def test_input_size_error_missing_file_returns_none(tmp_path: Path) -> None:
 
 def test_sha256_file_matches_oneshot(tmp_path: Path) -> None:
     """Streaming hash equals a one-shot hash for a multi-chunk (>1 MiB) file."""
-    data = (b"abcdefgh" * 200_003)  # ~1.6 MiB, not a chunk multiple
+    data = b"abcdefgh" * 200_003  # ~1.6 MiB, not a chunk multiple
     f = tmp_path / "blob.bin"
     f.write_bytes(data)
     assert sha256_file(f) == hashlib.sha256(data).hexdigest()
@@ -103,18 +102,6 @@ def test_parse_to_markdown_rejects_oversized_before_converter(
     assert result["page_routes"] == []
     codes = [w["code"] for w in result["warnings"]]
     assert codes == ["input_too_large"]
-
-
-def test_parse_rejects_oversized_before_docling(monkeypatch: pytest.MonkeyPatch) -> None:
-    """parse() returns an empty, schema-valid skeleton with an input_too_large warning."""
-    monkeypatch.setenv("PARSER_MAX_INPUT_MB", "0.0001")
-    out = parse(DIGITAL_PDF)
-    assert out["elements"] == []
-    assert out["pages"] == []
-    codes = [w["code"] for w in out["warnings"]]
-    assert "input_too_large" in codes
-    # Skeleton still carries a real content hash (64 hex chars).
-    assert len(out["source"]["sha256"]) == 64
 
 
 def test_default_cap_allows_normal_fixture() -> None:

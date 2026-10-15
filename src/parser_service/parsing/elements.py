@@ -4,8 +4,7 @@ elements.py — shared helpers of the element-JSON contract.
 Map Docling items to eval-harness elements (``docling_item_to_element``), build the
 output skeleton (``empty_output``), record warnings, classify a file by extension and
 MIME type, and bound the raw input size. Used by the markdown pipeline
-(``parsing/document.py``) and the legacy element-JSON parser
-(``legacy/element_json.py``).
+(``parsing/document.py``).
 """
 
 from __future__ import annotations

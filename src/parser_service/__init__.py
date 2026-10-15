@@ -4,15 +4,13 @@ parser_service package.
 Subpackages: ``formats`` (detect a file's kind, guard and parse it), ``parsing`` (Docling,
 the quality gate, escalation engines, markdown), ``pipeline`` (intake, units, status,
 stitch), ``service`` (the KServe page service and its worker), ``storage`` and
-``delivery`` (publish, jobs). ``legacy`` holds the element-JSON ``parse()`` for the eval
-harness, exposed here as ``parser_service.parse`` and imported only when first used.
+``delivery`` (publish, jobs).
 """
 
 from __future__ import annotations
 
 import logging
 import os
-from typing import Any
 
 from PIL import Image
 
@@ -24,14 +22,3 @@ logging.basicConfig(level=os.environ.get("PARSER_LOG_LEVEL", "INFO"))
 # image); the pdfium render path is bounded separately in render.py. Default
 # 128 MP sits above any realistic legitimate scan (600-DPI A3 ~= 70 MP).
 Image.MAX_IMAGE_PIXELS = int(os.environ.get("PARSER_MAX_IMAGE_PIXELS", 128_000_000))
-
-__all__ = ["parse"]
-
-
-def __getattr__(name: str) -> Any:
-    """``parser_service.parse`` loads the legacy element-JSON parser on first use only."""
-    if name == "parse":
-        from parser_service.legacy.element_json import parse
-
-        return parse
-    raise AttributeError(f"module 'parser_service' has no attribute {name!r}")
