@@ -97,6 +97,14 @@ def test_vlm_model_is_required_only_for_the_vlm_engine() -> None:
         ("PARSER_ESCALATION_ARBITRATION", "on"),
         ("PARSER_STORE_LOCATION", "gs://bucket/prefix"),
         ("PARSER_STORE_LOCATION", "s3://"),
+        ("PARSER_DOCX_MAX_RATIO", "0"),
+        ("PARSER_DOCX_MAX_PARAGRAPHS", "many"),
+        ("PARSER_DOCX_MAX_EXPANDED_MB", "-300"),
+        ("PARSER_MAX_DOCX_MB", "0"),
+        ("PARSER_DEADLINE_HTML_S", "soon"),
+        ("PARSER_DEADLINE_EMAIL_S", "0"),  # shared by eml and msg: reported once
+        ("PARSER_MAX_EMAIL_MB", "-1"),
+        ("PARSER_IMAGES_MIN_PIXELS", "0"),
     ],
 )
 def test_each_invalid_value_is_reported_by_name(name: str, value: str) -> None:
@@ -242,3 +250,104 @@ def test_bad_executor_settings_are_reported() -> None:
     problems = _problems(store_location="/w", escalate=False, environ=env)
     assert "PARSER_EXECUTOR must be local or kserve, got 'ray'" in problems
     assert any(p.startswith("PARSER_KSERVE_CONCURRENCY must be an integer") for p in problems)
+
+
+_DRIVER = {
+    "store_location": "s3://b/parser/",
+    "escalate": False,
+    "executor": "kserve",
+    "kserve_url": "http://svc",
+}
+_SERVICE_ENV = {
+    "PARSER_STORE_LOCATION": "s3://b/parser/",
+    "BEDROCK_VLM_MODEL": MODEL,
+}
+
+
+@pytest.mark.parametrize("kwargs", [_DRIVER, {"escalate": True}], ids=["driver", "service"])
+def test_settings_refuse_request_timeout_below_deadline_plus_margin(
+    kwargs: dict[str, object],
+) -> None:
+    base = {"AWS_REGION": REGION, **_SERVICE_ENV}
+
+    defaults = load_settings(**kwargs, environ=base)  # type: ignore[arg-type]
+    assert (
+        defaults.deadline_pdf_page_s,
+        defaults.remote_request_timeout_s,
+        defaults.worker_start_timeout_s,
+    ) == (600, 900, 300)
+
+    edge = load_settings(
+        **kwargs,  # type: ignore[arg-type]
+        environ={**base, "PARSER_DEADLINE_PDF_PAGE_S": "780"},
+    )
+    assert (edge.deadline_pdf_page_s, edge.remote_request_timeout_s) == (780, 900)
+
+    for env in (
+        {"PARSER_DEADLINE_PDF_PAGE_S": "781"},
+        {"PARSER_DEADLINE_PDF_PAGE_S": "780", "PARSER_REMOTE_REQUEST_TIMEOUT_S": "899"},
+    ):
+        problems = _problems(**kwargs, environ={**base, **env})
+        assert len(problems) == 1
+        assert problems[0].startswith(
+            "PARSER_REMOTE_REQUEST_TIMEOUT_S must be at least the largest parse deadline plus 120 s"
+        )
+
+    for name in (
+        "PARSER_DEADLINE_PDF_PAGE_S",
+        "PARSER_REMOTE_REQUEST_TIMEOUT_S",
+        "PARSER_WORKER_START_TIMEOUT_S",
+    ):
+        for raw in ("0", "-5", "1.5", "ten", ""):
+            problems = _problems(**kwargs, environ={**base, name: raw})
+            assert problems == [f"{name} must be an integer of 1 or more, got {raw!r}"]
+
+
+def test_enabled_kinds_are_known_and_have_a_handler_in_this_image(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """PARSER_ENABLED_KINDS ships with every handled kind; a kind whose handler has
+    not shipped is refused, so it cannot be turned on before its code exists."""
+    from parser_service import settings as settings_module
+    from parser_service import unit_handlers
+    from parser_service.sniff import KINDS
+
+    kwargs: dict[str, object] = {"store_location": "/w", "escalate": False}
+    assert load_settings(**kwargs, environ={}).enabled_kinds == KINDS  # type: ignore[arg-type]
+    env = {"PARSER_ENABLED_KINDS": " PDF , pdf,"}
+    assert load_settings(**kwargs, environ=env).enabled_kinds == ("pdf",)  # type: ignore[arg-type]
+
+    # Since Group 6 every known kind has a handler and a deadline in this image, so
+    # every one of them can be enabled ...
+    env = {"PARSER_ENABLED_KINDS": ",".join(KINDS)}
+    assert load_settings(**kwargs, environ=env).enabled_kinds == KINDS  # type: ignore[arg-type]
+
+    # ... and the refusal is shown on an image built without one: eml's handler and
+    # deadline are taken out.
+    monkeypatch.delitem(unit_handlers.HANDLERS, "eml")
+    monkeypatch.delitem(settings_module.DEADLINE_ENV, "eml")
+    assert _problems(**kwargs, environ={"PARSER_ENABLED_KINDS": "pdf,eml"}) == [
+        "PARSER_ENABLED_KINDS enables eml, which has no handler in this image"
+    ]
+    assert _problems(**kwargs, environ={"PARSER_ENABLED_KINDS": "pdf,xlsx"}) == [
+        "PARSER_ENABLED_KINDS names unknown kind(s) xlsx; known: pdf, docx, html, txt, eml, msg"
+    ]
+    assert _problems(**kwargs, environ={"PARSER_ENABLED_KINDS": " , "}) == [
+        "PARSER_ENABLED_KINDS must name at least one kind, got ' , '"
+    ]
+
+    # Once a group registers the handler and its deadline, the kind can be enabled,
+    # and its deadline joins the request-timeout check.
+    monkeypatch.setitem(unit_handlers.HANDLERS, "eml", lambda *args: ("ok", None, None, "", {}))
+    assert _problems(**kwargs, environ={"PARSER_ENABLED_KINDS": "pdf,eml"}) == [
+        "PARSER_ENABLED_KINDS enables eml, which has no parse deadline"
+    ]
+    monkeypatch.setitem(settings_module.DEADLINE_ENV, "eml", ("PARSER_DEADLINE_EMAIL_S", 120))
+    env = {"PARSER_ENABLED_KINDS": "pdf,eml"}
+    assert load_settings(**kwargs, environ=env).enabled_kinds == ("pdf", "eml")  # type: ignore[arg-type]
+    env = {**env, "PARSER_DEADLINE_PDF_PAGE_S": "10", "PARSER_DEADLINE_EMAIL_S": "781"}
+    [problem] = _problems(**kwargs, environ=env)
+    assert "PARSER_DEADLINE_EMAIL_S is 781" in problem
+    # A disabled kind's deadline is not part of the check.
+    env["PARSER_ENABLED_KINDS"] = "pdf"
+    assert load_settings(**kwargs, environ=env).enabled_kinds == ("pdf",)  # type: ignore[arg-type]

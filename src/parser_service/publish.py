@@ -8,6 +8,7 @@ consumer (a RAG ingestion job) builds against:
         pages/0001.md …      one file per ok page: that page's markdown, nothing else
         document.md          the whole document, a ``==== page N ===`` line before each page
         document.json        ids, coverage, config, and a per-page map with char spans
+                             (plus ``email``, the headers and attachment list, for eml/msg)
         _manifest.json       written LAST: every file above with its sha256 and size
     published/v1/events/dt=<YYYY-MM-DD>/<doc_id>--<version>--<type>.json
 
@@ -26,6 +27,12 @@ The rules that make it safe to consume:
   becomes a ``partial`` version carrying its ``coverage`` and ``missing_pages``,
   and the consumer decides whether to index it. Otherwise a ``failed`` event is
   written so a consumer is not left waiting.
+- Every ``document.json`` and every event names the file's ``kind`` (``pdf``,
+  ``docx``, ``html``, ``txt``, ``eml``, ``msg``), its ``unit`` (``page`` for a PDF,
+  else ``document``: the whole file is one unit, published as page 1), its
+  ``flags`` (for example ``images_not_ocrd``; a flag never changes the state) and
+  its ``handler_version``. Email headers and attachment names go in
+  ``document.json`` only, never in an event: events are fanned out widely.
 - The event log is append-only and its keys are deterministic, so a re-run never
   duplicates an event. It is what a consumer replays to backfill or reconcile;
   delivery (S3 -> EventBridge -> SQS on ``_manifest.json``) is infrastructure.
@@ -42,8 +49,14 @@ from typing import Any
 
 from parser_service.store import Store, StoreNotFoundError
 
+# Stays 1 while the new fields (kind, unit, flags, handler_version, email) are
+# additive; becomes 2 if consumers turn out to reject unknown fields (an open
+# question of roadmap item 15, a release gate of its sub-step 3).
 SCHEMA_VERSION = 1
 ROOT = "published/v1"
+
+# The kinds whose document.json carries ``email``.
+EMAIL_KINDS = ("eml", "msg")
 
 EVENT_PUBLISHED = "published"
 EVENT_PARTIAL = "partial"
@@ -142,36 +155,52 @@ def publish_document(
     state: str,
     source_name: str,
     source_sha256: str,
-    work_id: str,
+    work_id: str | None,
     config: dict[str, Any],
     config_hash: str,
     page_count: int,
     markdown: str,
     pages_meta: list[dict[str, Any]],
     page_texts: dict[int, str],
+    kind: str | None = "pdf",
+    unit: str = "page",
+    flags: list[str] | tuple[str, ...] = (),
+    handler_version: str | None = None,
+    email: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Publish one parsed file under ``request.doc_id``; return what was published.
 
     ``state`` is the file's state (``complete``, ``failed`` or ``in_progress``);
     ``markdown`` and ``pages_meta`` are the stitched document and its page map
-    (with gap markers when not complete); ``page_texts`` holds the markdown of
-    every ok page. An ``in_progress`` file publishes nothing.
+    (with gap markers when not complete; a not-ok entry may carry its
+    ``reason_code``); ``page_texts`` holds the markdown of every ok page. An
+    ``in_progress`` file publishes nothing. ``work_id`` is None for a file refused
+    at intake (only a ``failed`` event is written for it).
+
+    ``kind``, ``unit``, ``flags`` and ``handler_version`` describe the file (None
+    kind: intake found none) and go into ``document.json`` and every event.
+    ``email`` (``{"headers", "attachments"}``) is for ``eml`` and ``msg`` only and
+    goes into ``document.json`` only: no event ever carries it. Flags never change
+    the outcome: a flagged complete file is ``published``.
 
     Returns ``{"type", "version", "manifest_key", "event_key"}``; ``type`` is
     ``published``, ``partial``, ``failed`` or None.
     """
+    if email is not None and kind not in EMAIL_KINDS:
+        raise ValueError(f"email is for {' and '.join(EMAIL_KINDS)} only, not kind {kind!r}")
     ok_pages = sorted(n for n, _ in page_texts.items())
     missing = [p["page"] for p in pages_meta if p["state"] != "ok"]
     complete = state == "complete"
     if complete:
-        kind = EVENT_PUBLISHED
+        event_type = EVENT_PUBLISHED
     elif state == "failed":
-        kind = EVENT_PARTIAL if request.partial and ok_pages else EVENT_FAILED
+        event_type = EVENT_PARTIAL if request.partial and ok_pages else EVENT_FAILED
     else:
         return {"type": None, "version": None, "manifest_key": None, "event_key": None}
 
-    version = version_for(source_sha256, config_hash, kind, len(ok_pages))
+    version = version_for(source_sha256, config_hash, event_type, len(ok_pages))
     coverage = round(len(ok_pages) / page_count, 4) if page_count else 0.0
+    # Shared by document.json and the events. Never add ``email`` here.
     common = {
         "schema_version": SCHEMA_VERSION,
         "doc_id": request.doc_id,
@@ -182,13 +211,27 @@ def publish_document(
         "page_count": page_count,
         "coverage": coverage,
         "missing_pages": missing,
+        "kind": kind,
+        "unit": unit,
+        "flags": sorted({str(flag) for flag in flags}),
+        "handler_version": handler_version,
     }
 
-    if kind == EVENT_FAILED:
-        key = event_key(_now()[:10], request.doc_id, version, kind)
-        reasons = [{"page": p["page"], "state": p["state"], "reason": p["reason"]} for p in pages_meta if p["state"] != "ok"]
-        _write_once(store, key, _json_bytes({"type": kind, **common, "not_ok_pages": reasons, "at": _now()}))
-        return {"type": kind, "version": version, "manifest_key": None, "event_key": key}
+    if event_type == EVENT_FAILED:
+        key = event_key(_now()[:10], request.doc_id, version, event_type)
+        reasons = [
+            {
+                "page": p["page"],
+                "state": p["state"],
+                "reason": p["reason"],
+                "reason_code": p.get("reason_code"),
+            }
+            for p in pages_meta
+            if p["state"] != "ok"
+        ]
+        event = {"type": event_type, **common, "not_ok_pages": reasons, "at": _now()}
+        _write_once(store, key, _json_bytes(event))
+        return {"type": event_type, "version": version, "manifest_key": None, "event_key": key}
 
     prefix = _doc_prefix(request.doc_id, version)
     m_key = manifest_key(request.doc_id, version)
@@ -222,6 +265,8 @@ def publish_document(
                 for p in pages_meta
             ],
         }
+        if kind in EMAIL_KINDS:
+            document["email"] = email
         files.append(("document.json", _json_bytes(document)))
         entries = []
         for path, data in files:
@@ -238,11 +283,12 @@ def publish_document(
         }
         _write_once(store, m_key, _json_bytes(manifest))
         stored_manifest = _read_json(store, m_key)
+        assert stored_manifest is not None  # just written (or already there)
 
     published_at = stored_manifest["published_at"]
-    key = event_key(published_at[:10], request.doc_id, version, kind)
+    key = event_key(published_at[:10], request.doc_id, version, event_type)
     event = {
-        "type": kind,
+        "type": event_type,
         **common,
         "manifest": store.location(m_key),
         "document": store.location(f"{prefix}/document.json"),
@@ -250,7 +296,7 @@ def publish_document(
         "at": published_at,
     }
     _write_once(store, key, _json_bytes(event))
-    return {"type": kind, "version": version, "manifest_key": m_key, "event_key": key}
+    return {"type": event_type, "version": version, "manifest_key": m_key, "event_key": key}
 
 
 def publish_deletion(store: Store, doc_id: str, job_id: str | None) -> str:

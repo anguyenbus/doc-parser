@@ -2700,15 +2700,19 @@ version = "0.1.0"
 source = { editable = "." }
 dependencies = [
     { name = "boto3" },
+    { name = "charset-normalizer" },
     { name = "docling" },
+    { name = "mail-parser" },
     { name = "pillow" },
     { name = "pydantic" },
     { name = "pypdf" },
     { name = "pypdfium2" },
+    { name = "python-oxmsg" },
 ]
 
 [package.optional-dependencies]
 dev = [
+    { name = "markdown-it-py" },
     { name = "mypy" },
     { name = "openpyxl" },
     { name = "pre-commit" },
@@ -2720,17 +2724,22 @@ dev = [
 ]
 serve = [
     { name = "kserve" },
+    { name = "prometheus-client" },
 ]
 
 [package.metadata]
 requires-dist = [
     { name = "boto3", specifier = ">=1.35.2" },
+    { name = "charset-normalizer", specifier = ">=3.4" },
     { name = "docling", specifier = ">=2.138,<3" },
     { name = "kserve", marker = "extra == 'serve'", specifier = "==0.21.0" },
+    { name = "mail-parser", specifier = ">=4.8.0" },
+    { name = "markdown-it-py", marker = "extra == 'dev'", specifier = ">=3.0" },
     { name = "mypy", marker = "extra == 'dev'", specifier = ">=1.10" },
     { name = "openpyxl", marker = "extra == 'dev'", specifier = ">=3.1" },
     { name = "pillow", specifier = ">=10.0" },
     { name = "pre-commit", marker = "extra == 'dev'", specifier = ">=3.7" },
+    { name = "prometheus-client", marker = "extra == 'serve'", specifier = ">=0.20" },
     { name = "pydantic", specifier = ">=2.7" },
     { name = "pypdf", specifier = ">=6.14.2" },
     { name = "pypdfium2", specifier = ">=4.30" },
@@ -2738,6 +2747,7 @@ requires-dist = [
     { name = "pytest-asyncio", marker = "extra == 'dev'", specifier = ">=0.23" },
     { name = "pytest-cov", marker = "extra == 'dev'", specifier = ">=5.0" },
     { name = "python-docx", marker = "extra == 'dev'", specifier = ">=1.1" },
+    { name = "python-oxmsg", specifier = ">=0.0.2" },
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.4" },
 ]
 provides-extras = ["dev", "serve"]

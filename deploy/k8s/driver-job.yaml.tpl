@@ -36,7 +36,7 @@ spec:
         role: system
       containers:
         - name: driver
-          image: ${IMAGE_URI}
+          image: ${IMAGE_REF}
           imagePullPolicy: IfNotPresent
           command: ["python", "scripts/parse_pages.py"]
           args:

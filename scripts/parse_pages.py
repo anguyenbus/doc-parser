@@ -1,17 +1,19 @@
 """
 parse_pages.py
 
-Parse one PDF with the split-first page pipeline: split into one-page files,
-parse the pages in parallel (Docling first, escalation only when the gate
-promotes), and stitch one markdown file when every page is ok.
+Parse one file with the split-first page pipeline: intake sniffs the content to
+route it to a kind (a file no enabled kind handles fails alone with
+unsupported_type); a PDF is split into one-page files, any other kind is one unit;
+the units are parsed in parallel (Docling first, escalation only when the gate
+promotes), and one markdown file is stitched when every unit is ok.
 
 Usage:
-    uv run python scripts/parse_pages.py --input <file.pdf | s3://bucket/key.pdf> \
+    uv run python scripts/parse_pages.py --input <file | s3://bucket/key> \
         [--work-dir <dir | s3://bucket/prefix>] [--output <out.md>] [--workers 4] \
         [--no-escalate] [--partial] [--restart] \
         [--executor kserve --endpoint http://page-parser-predictor.doc-parser] [--concurrency 8]
 
-    # One PDF of a bundle, picked by index (a Kubernetes Indexed Job sets the index):
+    # One file of a bundle, picked by index (a Kubernetes Indexed Job sets the index):
     uv run python scripts/parse_pages.py --input-list <list.txt | s3://bucket/list.txt> \
         [--index N]   # default: $JOB_COMPLETION_INDEX
 
@@ -39,7 +41,7 @@ InferenceService at --endpoint / PARSER_KSERVE_URL, which writes its record to t
 same store. The split, the retry bookkeeping, the status and the stitch run here
 either way, and the kserve executor needs an s3:// store location.
 
-An --input-list file holds one PDF (path or s3:// URI) per line; blank lines and
+An --input-list file holds one file (path or s3:// URI) per line; blank lines and
 lines starting with # are skipped, and --index picks one (0-based).
 
 An s3:// input is downloaded to a temporary directory for the run. The settings
@@ -88,6 +90,7 @@ from parser_service.jobs import (  # noqa: E402
     record_doc,
     resolve_file,
 )
+from parser_service.observability import truncate  # noqa: E402
 from parser_service.page_pipeline import (  # noqa: E402
     FILE_COMPLETE,
     PipelineConfigMismatch,
@@ -99,22 +102,22 @@ from parser_service.settings import SettingsError, load_settings  # noqa: E402
 from parser_service.store import open_store  # noqa: E402
 
 
-def _fetch_s3_input(uri: str, region: str | None, directory: Path) -> Path:
-    """Download ``s3://bucket/key.pdf`` into ``directory`` under the key's base name.
+def _fetch_s3_input(uri: str, region: str | None, directory: Path) -> tuple[Path, str | None]:
+    """Download ``s3://bucket/key`` into ``directory`` under the key's base name.
 
-    The name is kept because the stem, with the content hash, is the file id. One
-    get, streamed to disk. A URI that is not a PDF key raises ``ValueError`` before
-    any call; a missing object raises ``FileNotFoundError``; any other S3 error
-    propagates.
+    Returns the path and the object's ``Content-Type`` (None when it has none),
+    which intake's sniff uses as the declared type. Any key is accepted: the
+    content decides the kind. The name is kept because the stem, with the content
+    hash, is the file id. One get, streamed to disk. A URI with no bucket or key
+    raises ``ValueError`` before any call; a missing object raises
+    ``FileNotFoundError``; any other S3 error propagates.
     """
     from botocore.exceptions import ClientError
 
     bucket, key = io_layer.parse_s3_uri(uri)
     name = key.rpartition("/")[2]
     if not bucket or not name:
-        raise ValueError(f"the input is not an s3://bucket/key.pdf URI: {uri}")
-    if Path(name).suffix.lower() != ".pdf":
-        raise ValueError(f"the page pipeline handles PDFs only, got {uri}")
+        raise ValueError(f"the input is not an s3://bucket/key URI: {uri}")
     try:
         response = io_layer.s3_client(region).get_object(Bucket=bucket, Key=key)
     except ClientError as exc:
@@ -124,7 +127,7 @@ def _fetch_s3_input(uri: str, region: str | None, directory: Path) -> Path:
     target = directory / name
     with target.open("wb") as handle:
         shutil.copyfileobj(response["Body"], handle)
-    return target
+    return target, response.get("ContentType") or None
 
 
 def _index(index: int | None, flag: str) -> int:
@@ -155,22 +158,24 @@ def _pick_from_job(job_uri: str, index: int | None, region: str | None) -> tuple
 
 
 def _pick_from_list(list_uri: str, index: int | None, region: str | None) -> str:
-    """The ``index``-th PDF named in the list at ``list_uri`` (a path or s3:// URI)."""
+    """The ``index``-th file named in the list at ``list_uri`` (a path or s3:// URI)."""
     index = _index(index, "--input-list")
     text = _read_text(list_uri, region)
     inputs = [line.strip() for line in text.splitlines()]
     inputs = [line for line in inputs if line and not line.startswith("#")]
     if not 0 <= index < len(inputs):
-        raise ValueError(f"index {index} is outside {list_uri}, which names {len(inputs)} PDFs")
+        raise ValueError(f"index {index} is outside {list_uri}, which names {len(inputs)} files")
     return inputs[index]
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Parse a PDF page by page and stitch it.")
+    parser = argparse.ArgumentParser(
+        description="Parse one file: a PDF page by page, any other kind as one unit; then stitch."
+    )
     which = parser.add_mutually_exclusive_group(required=True)
-    which.add_argument("--input", help="The PDF: a path or s3://bucket/key.pdf.")
+    which.add_argument("--input", help="The file: a path or s3://bucket/key.")
     which.add_argument(
-        "--input-list", help="A list of PDFs, one per line (a path or s3:// URI); see --index."
+        "--input-list", help="A list of files, one per line (a path or s3:// URI); see --index."
     )
     which.add_argument(
         "--job", help="An inbox job.json (a path or s3:// URI); see --index. Always publishes."
@@ -179,7 +184,7 @@ def main() -> None:
         "--index",
         type=int,
         default=None,
-        help="Which PDF of --input-list or document of --job (0-based; default "
+        help="Which file of --input-list or document of --job (0-based; default "
         "$JOB_COMPLETION_INDEX).",
     )
     parser.add_argument(
@@ -296,10 +301,13 @@ def main() -> None:
 
     try:
         with contextlib.ExitStack() as stack:
+            declared_type: str | None = None
             if input_is_s3:
                 # Removed when the block ends, whatever the outcome of the run.
                 directory = stack.enter_context(tempfile.TemporaryDirectory(prefix="parser-input-"))
-                source = _fetch_s3_input(args.input, settings.aws_region, Path(directory))
+                source, declared_type = _fetch_s3_input(
+                    args.input, settings.aws_region, Path(directory)
+                )
             else:
                 source = Path(args.input)
             result = parse_pdf_pages_in_store(
@@ -316,12 +324,14 @@ def main() -> None:
                 endpoint=settings.kserve_url,
                 concurrency=args.concurrency or settings.kserve_concurrency,
                 publish=publish,
+                request_timeout=settings.remote_request_timeout_s,
+                declared_type=declared_type,
             )
     except (FileNotFoundError, ValueError, PipelineConfigMismatch, RemotePageError) as exc:
         if job is not None and doc is not None:
-            record_doc(store, job, doc, {"state": "error", "error": str(exc)})
+            record_doc(store, job, doc, {"state": "error", "error": truncate(str(exc))})
             rebuild_job_status(store, job)
-        print(f"Error: {exc}", file=sys.stderr)
+        print(f"Error: {truncate(str(exc))}", file=sys.stderr)
         sys.exit(1)
 
     published = result.get("published")
@@ -335,10 +345,19 @@ def main() -> None:
                 "state": result["state"],
                 "file_id": result["file_id"],
                 "work_id": result["work_id"],
+                "kind": result["kind"],
+                "unit": result["unit"],
+                "detected_type": result["detected_type"],
+                "flags": result["flags"],
                 "page_count": result["page_count"],
                 "ok_pages": counts["ok"],
                 "not_ok_pages": [
-                    {"page": p["page"], "state": p["state"], "reason": p["reason"]}
+                    {
+                        "page": p["page"],
+                        "state": p["state"],
+                        "reason": p["reason"],
+                        "reason_code": p.get("reason_code"),
+                    }
                     for p in result["not_ok_pages"]
                 ],
                 "published": published["type"] if published else None,
@@ -356,7 +375,8 @@ def main() -> None:
         f"{counts['pending']} pending — {result['elapsed_seconds']}s",
         file=sys.stderr,
     )
-    print(f"work dir: {result['work_dir']}", file=sys.stderr)
+    if result["work_dir"] is not None:  # None: refused at intake, nothing under work/
+        print(f"work dir: {result['work_dir']}", file=sys.stderr)
     print(f"status: {result['status_path']}", file=sys.stderr)
     if published and published["type"]:
         where = published["manifest_key"] or published["event_key"]
@@ -366,7 +386,7 @@ def main() -> None:
         for page in result["not_ok_pages"]:
             retry = "will retry on re-run" if page["retryable"] else "attempt limit reached"
             print(
-                f"  page {page['page']}: {page['state']} — {page['reason']} ({retry})",
+                f"  page {page['page']}: {page['state']} — {truncate(page['reason'])} ({retry})",
                 file=sys.stderr,
             )
         if result["partial_path"]:

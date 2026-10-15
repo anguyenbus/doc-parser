@@ -186,3 +186,167 @@ def test_slugify_makes_a_valid_id() -> None:
     assert check_id(slugify("  Ünïcode name  "), "doc_id") == "n-code-name"
     with pytest.raises(ValueError):
         slugify("!!!")
+
+
+# ---------------------------------------------------------------------------
+# kind, unit, flags, handler version and email (Group 3b)
+# ---------------------------------------------------------------------------
+
+EMAIL = {
+    "headers": {
+        "from": "Header Marker <marker@example.com>",
+        "to": "someone@example.com",
+        "cc": None,
+        "date": "Tue, 14 Oct 2026 09:00:00 +1100",
+        "subject": "SUBJECT-MARKER",
+    },
+    "attachments": [{"name": "ATTACHMENT-MARKER.pdf", "type": "application/pdf", "size": 1234}],
+}
+
+
+def _single_unit(
+    monkeypatch: pytest.MonkeyPatch, kind: str, text: str, extra: dict[str, Any]
+) -> None:
+    """Enable ``kind`` with a test handler returning ``text`` and record fields ``extra``."""
+    from test_page_pipeline import _enable_test_kind
+
+    from parser_service import unit_handlers
+
+    _enable_test_kind(monkeypatch, kind)
+
+    def handler(path: Any, page_number: int, escalate: bool) -> Any:
+        return "ok", None, None, text, {"route": "docling-kept", **extra}
+
+    monkeypatch.setitem(unit_handlers.HANDLERS, kind, handler)
+
+
+def test_document_json_and_event_carry_kind_unit_flags_handler_version(
+    store: MemoryStore, monkeypatch: pytest.MonkeyPatch, tmp_path: Any
+) -> None:
+    # A PDF gets the new fields too.
+    _install_fake(monkeypatch, lambda n: _result(f"text of page {n}"))
+    published = _run(store)["published"]
+    prefix = f"published/v1/docs/{DOC}/{published['version']}"
+    document = _json(store, f"{prefix}/document.json")
+    [event] = _events(store)
+    for body in (document, event):
+        assert (body["kind"], body["unit"], body["flags"], body["handler_version"]) == (
+            "pdf",
+            "page",
+            [],
+            "1",
+        )
+        assert body["schema_version"] == 1 and "email" not in body
+
+    # A failed event names each missing page's reason_code.
+    failed_store = MemoryStore()
+    _install_fake(monkeypatch, _fail_page_2_until({"now": False}))
+    parse_pdf_pages_in_store(
+        THREE_PAGE, "unused", store=failed_store, workers=0, publish=PublishRequest(DOC)
+    )
+    [failed] = _events(failed_store)
+    assert failed["type"] == "failed" and failed["kind"] == "pdf"
+    assert [(p["page"], p["reason_code"]) for p in failed["not_ok_pages"]] == [(2, "exception")]
+
+    # An email: headers and attachments in document.json, never in the event; a flag
+    # does not stop it publishing as ``published``.
+    source = tmp_path / "mail.eml"
+    source.write_bytes(
+        b"From: a@example.com\r\nTo: b@example.com\r\nDate: Tue, 14 Oct 2026 09:00:00 +1100\r\n"
+        b"Message-ID: <1@example.com>\r\nSubject: hi\r\n\r\nbody\r\n"
+    )
+    _single_unit(monkeypatch, "eml", "# hi\n\nbody", {"flags": ["images_not_ocrd"], "email": EMAIL})
+    mail_store = MemoryStore()
+    result = parse_pdf_pages_in_store(
+        source, "unused", store=mail_store, workers=0, publish=PublishRequest("mail")
+    )
+    assert (result["state"], result["kind"], result["flags"]) == (
+        "complete",
+        "eml",
+        ["images_not_ocrd"],
+    )
+    published = result["published"]
+    assert published["type"] == "published"
+    document = _json(mail_store, f"published/v1/docs/mail/{published['version']}/document.json")
+    assert (document["kind"], document["unit"], document["flags"], document["handler_version"]) == (
+        "eml",
+        "document",
+        ["images_not_ocrd"],
+        "1",
+    )
+    assert document["email"] == EMAIL
+    [event] = _events(mail_store)
+    assert (event["kind"], event["unit"], event["flags"]) == (
+        "eml",
+        "document",
+        ["images_not_ocrd"],
+    )
+    assert "email" not in event
+    raw_event = mail_store.read(published["event_key"]).decode()
+    for marker in ("marker@example.com", "SUBJECT-MARKER", "ATTACHMENT-MARKER"):
+        assert marker not in raw_event
+
+    # publish_document refuses an email for any other kind.
+    with pytest.raises(ValueError, match="email"):
+        publish.publish_document(
+            MemoryStore(),
+            PublishRequest(DOC),
+            state="complete",
+            source_name="a.pdf",
+            source_sha256="0" * 64,
+            work_id="w",
+            config={},
+            config_hash="c",
+            page_count=1,
+            markdown="",
+            pages_meta=[],
+            page_texts={},
+            kind="pdf",
+            email=EMAIL,
+        )
+
+
+def test_single_unit_document_keeps_page_marker_and_pages_0001(
+    store: MemoryStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from test_page_pipeline import DOCX
+
+    _single_unit(monkeypatch, "docx", "# Title\n\nBody text.", {})
+
+    result = parse_pdf_pages_in_store(
+        DOCX, "unused", store=store, workers=0, publish=PublishRequest("memo")
+    )
+
+    assert (result["state"], result["unit"], result["page_count"]) == ("complete", "document", 1)
+    prefix = f"published/v1/docs/memo/{result['published']['version']}"
+    markdown = store.read(f"{prefix}/document.md").decode()
+    assert markdown == "==== page 1 ===\n\n# Title\n\nBody text.\n"
+    assert store.read(f"{prefix}/pages/0001.md") == b"# Title\n\nBody text.\n"
+    document = _json(store, f"{prefix}/document.json")
+    assert (document["kind"], document["unit"], document["flags"]) == ("docx", "document", [])
+    assert document["page_marker"] == "==== page {number} ==="
+    [page] = document["pages"]
+    assert (page["page"], page["file"], page["char_span"]) == (
+        1,
+        "pages/0001.md",
+        [0, len(markdown) - 1],
+    )
+    assert "email" not in document  # not an email kind
+
+    file_id = result["file_id"]
+    output = _json(store, f"out/{file_id}/output.json")
+    assert (output["kind"], output["unit"], output["flags"]) == ("docx", "document", [])
+    status = _json(store, f"out/{file_id}/status.json")
+    assert (status["kind"], status["unit"], status["detected_type"], status["flags"]) == (
+        "docx",
+        "document",
+        "docx",
+        [],
+    )
+    record = _json(store, f"work/{result['work_id']}/results/0001.json")
+    assert (record["kind"], record["unit"], record["flags"], record["handler_version"]) == (
+        "docx",
+        "document",
+        [],
+        "1",
+    )

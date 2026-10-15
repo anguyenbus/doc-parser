@@ -4,7 +4,7 @@ jobs.py — a bundle of documents dropped in the inbox, and its status for peopl
 A producer uploads a bundle and writes ``job.json`` LAST, as the trigger:
 
     inbox/<source_system>/<job_id>/
-        <any>.pdf …
+        <any file> …
         job.json
 
     {
@@ -29,8 +29,14 @@ One driver runs one document (a Kubernetes Indexed Job: index = position in
 
 Each document's file has a single writer, so drivers never overwrite each other;
 the summary is derived and any driver (or ``rebuild_job_status``) can rebuild it.
-The job's coverage is counted against the true page total: it stays None until
-every document has been split and its page count is known.
+
+Coverage counts units. A PDF's unit is a page; every other kind (and a file
+refused at intake) is one ``document`` unit. ``pages_total``/``pages_ok`` count
+the pages of page docs (an outcome with no ``unit`` is one), and
+``documents_total``/``documents_ok`` count the document docs and the complete
+ones. Coverage is ``(pages_ok + documents_ok) / (pages_total + documents_total)``
+against the true totals: it stays None until every document has been taken in
+and its unit and count are known.
 """
 
 from __future__ import annotations
@@ -43,6 +49,9 @@ from typing import Any
 
 from parser_service.publish import check_id
 from parser_service.store import Store, StoreNotFoundError
+
+UNIT_PAGE = "page"
+UNIT_DOCUMENT = "document"
 
 ACTION_UPSERT = "upsert"
 ACTION_DELETE = "delete"
@@ -92,8 +101,10 @@ def parse_job(text: str, location: str) -> Job:
             raise ValueError(f"{where}.action must be {ACTION_UPSERT} or {ACTION_DELETE}, got {action!r}")
         file = raw.get("file")
         if action == ACTION_UPSERT:
-            if not isinstance(file, str) or not file.lower().endswith(".pdf"):
-                raise ValueError(f"{where}.file must name a PDF, got {file!r}")
+            # Any file: its content decides the kind at intake, and a file no kind
+            # handles fails alone (unsupported_type), never the whole job.
+            if not isinstance(file, str) or not file.strip():
+                raise ValueError(f"{where}.file must name a file, got {file!r}")
             if ".." in file.split("/"):
                 raise ValueError(f"{where}.file must not contain '..', got {file!r}")
         metadata = raw.get("metadata", {})
@@ -126,7 +137,11 @@ def _json_bytes(obj: Any) -> bytes:
 
 
 def record_doc(store: Store, job: Job, doc: JobDoc, outcome: dict[str, Any]) -> None:
-    """Store one document's latest outcome (``state`` and anything else worth showing)."""
+    """Store one document's latest outcome (``state`` and anything else worth showing).
+
+    A parsed file's outcome carries its ``kind``, ``unit``, ``detected_type`` and
+    ``flags``, with ``page_count`` and ``ok_pages`` (its units, and the ok ones).
+    """
     body = {"doc_id": doc.doc_id, "action": doc.action, **outcome}
     body["updated_at"] = datetime.now(tz=UTC).isoformat()
     store.write(_doc_key(job.job_id, doc.doc_id), _json_bytes(body))
@@ -138,6 +153,10 @@ def rebuild_job_status(store: Store, job: Job) -> dict[str, Any]:
     ``state``: ``complete`` when every document is complete (or deleted);
     ``in_progress`` while any has no outcome yet or is in progress; else
     ``failed`` (finished, but not every document complete; see ``docs``).
+
+    ``pages_*`` count page docs (``unit`` ``page``, or no unit) and
+    ``documents_*`` the document docs (ok: state ``complete``). The totals and
+    ``coverage`` are None until every upsert doc has a known count.
     """
     docs: list[dict[str, Any]] = []
     for doc in job.docs:
@@ -160,9 +179,15 @@ def rebuild_job_status(store: Store, job: Job) -> dict[str, Any]:
 
     parsed = [d for d in docs if d.get("action") == ACTION_UPSERT]
     known = [d for d in parsed if isinstance(d.get("page_count"), int)]
-    pages_total = sum(d["page_count"] for d in known)
-    pages_ok = sum(int(d.get("ok_pages", 0)) for d in known)
-    all_known = len(known) == len(parsed)
+    page_docs = [d for d in known if (d.get("unit") or UNIT_PAGE) == UNIT_PAGE]
+    document_docs = [d for d in known if d.get("unit") == UNIT_DOCUMENT]
+    pages_total = sum(d["page_count"] for d in page_docs)
+    pages_ok = sum(int(d.get("ok_pages", 0)) for d in page_docs)
+    documents_total = len(document_docs)
+    documents_ok = sum(1 for d in document_docs if d.get("state") == "complete")
+    # Every upsert doc has a count, and a unit this summary knows how to count.
+    all_known = len(known) == len(parsed) and len(page_docs) + len(document_docs) == len(known)
+    units_total = pages_total + documents_total
     status = {
         "job_id": job.job_id,
         "job": job.location,
@@ -171,7 +196,11 @@ def rebuild_job_status(store: Store, job: Job) -> dict[str, Any]:
         "docs_by_state": by_state,
         "pages_total": pages_total if all_known else None,
         "pages_ok": pages_ok,
-        "coverage": round(pages_ok / pages_total, 4) if all_known and pages_total else None,
+        "documents_total": documents_total if all_known else None,
+        "documents_ok": documents_ok,
+        "coverage": (
+            round((pages_ok + documents_ok) / units_total, 4) if all_known and units_total else None
+        ),
         "docs": docs,
         "updated_at": datetime.now(tz=UTC).isoformat(),
     }

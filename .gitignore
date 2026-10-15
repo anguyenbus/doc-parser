@@ -234,3 +234,5 @@ agent-os/
 docker_eval/
 *.whl
 eval_runs/
+# 107-page test input for deploy/scripts/30_run_test.sh T2-T4 (BIG_PDF); kept out of git
+/247136389-5MB.pdf

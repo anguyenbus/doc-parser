@@ -40,11 +40,19 @@ ENV PATH=/opt/venv/bin:$PATH \
     PYTHONUNBUFFERED=1 \
     OMP_NUM_THREADS=2
 COPY tests/fixtures/scanned.pdf /tmp/warm/scanned.pdf
+# An image page forces a real OCR pass, so RapidOCR downloads its torch models now.
+# The runtime user cannot write to site-packages, and a scanned PDF page may skip OCR.
+COPY tests/fixtures/screenshot.png /tmp/warm/screenshot.png
 RUN python -c "\
 from pathlib import Path; \
-from parser_service.kserve_predictor import WARMUP_PDF; \
+from parser_service.page_worker import WARMUP_PDF; \
 from parser_service.markdown_pipeline import parse_to_markdown; \
-[parse_to_markdown(Path(p), escalate=False) for p in (WARMUP_PDF, '/tmp/warm/scanned.pdf')]" \
+[parse_to_markdown(Path(p), escalate=False) for p in (WARMUP_PDF, '/tmp/warm/scanned.pdf', '/tmp/warm/screenshot.png')]" \
+ && python -c "\
+import pathlib, rapidocr; \
+models = pathlib.Path(rapidocr.__file__).parent / 'models'; \
+missing = [n for n in ('PP-OCRv6_det_small.pth', 'PP-OCRv6_rec_small.pth', 'ch_ppocr_mobile_v2.0_cls_mobile.pth') if not (models / n).is_file()]; \
+assert not missing, f'OCR models not baked into the image: {missing}'" \
  && rm -rf /tmp/warm \
  && chmod -R a+rX /opt/hf /opt/venv
 ENV HF_HUB_OFFLINE=1

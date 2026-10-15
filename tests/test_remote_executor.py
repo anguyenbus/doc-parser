@@ -40,10 +40,12 @@ FILE_ID = file_id_for(THREE_PAGE)
 WORK_ID = work_id_for(THREE_PAGE)
 
 # What the scripted server does with one request: serve it like the predictor,
-# answer with a status code, or count an attempt and drop the connection (a pod
-# killed mid-page).
+# answer with a status code, count an attempt and drop the connection (a pod
+# killed mid-page), or count an attempt and answer 500 (the predictor's parse
+# worker died mid-page: no record).
 SERVE = "serve"
 CRASH = "crash"
+DIED = "died"
 Behaviour = Callable[[int, int], "str | int"]  # (page, n-th request for it) -> action
 
 
@@ -71,10 +73,14 @@ class PageService:
             self.connection_headers.append(handler.headers.get("Connection"))
             nth = sum(1 for r in self.requests if r["page"] == page)
         action = self.behaviour(page, nth)
-        if action == CRASH:
+        if action in (CRASH, DIED):
             attempts = page_pipeline._attempts_key(instance["work_id"], page)
             current = page_pipeline._read_attempts(self.store, instance["work_id"], page)
             self.store.write(attempts, str(current + 1).encode())
+        if action == DIED:
+            self._reply(handler, 500, {"error": "parse worker 123 died during the parse"})
+            return
+        if action == CRASH:
             handler.close_connection = True
             handler.connection.shutdown(2)
             return
@@ -203,6 +209,29 @@ def test_a_page_that_kills_every_pod_is_finalized_failed(
     assert not_ok["page"] == 2 and not_ok["state"] == "failed"
     assert not_ok["reason"].startswith("no_result_after_2_attempts")
     assert not (tmp_path / f"out/{FILE_ID}/output.md").exists()
+
+
+@pytest.mark.parametrize("deaths", [1, 2])
+def test_a_500_after_a_worker_death_is_sent_again_or_finalized(
+    tmp_path: Path, fake_parse: list[int], deaths: int
+) -> None:
+    """The driver side of ``test_kserve_predictor.py::
+    test_worker_death_returns_500_writes_no_record_and_driver_resends``."""
+    service = PageService(
+        LocalStore(tmp_path), lambda page, n: DIED if page == 2 and n <= deaths else SERVE
+    )
+    with running(service) as endpoint:
+        result = _remote(tmp_path, endpoint, max_attempts=2)
+
+    assert [r["page"] for r in service.requests].count(2) == 2
+    if deaths == 1:  # resent, parsed on the second attempt
+        assert result["state"] == "complete"
+        record = json.loads((tmp_path / f"work/{WORK_ID}/results/0002.json").read_text())
+        assert record["attempt"] == 2 and record["state"] == "ok"
+    else:  # every attempt died: finalized failed at the limit
+        assert result["state"] == "failed"
+        [not_ok] = result["not_ok_pages"]
+        assert not_ok["page"] == 2 and not_ok["reason"].startswith("no_result_after_2_attempts")
 
 
 def test_a_refused_request_stops_the_run_loudly(tmp_path: Path, fake_parse: list[int]) -> None:

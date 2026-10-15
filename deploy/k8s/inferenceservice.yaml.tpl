@@ -46,7 +46,7 @@ spec:
     terminationGracePeriodSeconds: 180
     containers:
       - name: kserve-container
-        image: ${IMAGE_URI}
+        image: ${IMAGE_REF}
         imagePullPolicy: IfNotPresent
         envFrom:
           - configMapRef:
@@ -60,8 +60,15 @@ spec:
         resources:
           requests: { cpu: "2", memory: 4Gi }
           limits: { cpu: "2", memory: 6Gi }
-        # The server only starts listening after load() has parsed the warm-up
-        # page, so ready means the models are loaded.
+        # The models load in the page service's parse worker. The server only
+        # starts listening after load() has seen that worker parse the warm-up
+        # page, so ready means the models are loaded. The readiness endpoint
+        # follows the worker: after a parse timeout or a worker death it answers
+        # 503 until the respawned worker is warm (the pod leaves the Service for
+        # that time; predict also answers 503, which the driver treats as busy).
+        # Three failed worker starts in a row: the service sends itself SIGTERM
+        # and the container restarts. The startup probe (60 x 5 s) covers one
+        # worker start under PARSER_WORKER_START_TIMEOUT_S (300 s).
         readinessProbe:
           httpGet: { path: /v1/models/page-parser, port: 8080 }
           periodSeconds: 5

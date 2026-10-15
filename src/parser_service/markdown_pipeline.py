@@ -48,6 +48,7 @@ from __future__ import annotations
 import logging
 import mimetypes
 import os
+import re
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -111,13 +112,25 @@ def enable_converter_reuse() -> None:
     _reuse_converter = True
 
 
-def _document_converter() -> Any:
-    """Return a Docling ``DocumentConverter`` (fresh unless reuse is enabled).
+def _document_converter(kind: str | None = None) -> Any:
+    """Return a Docling ``DocumentConverter``.
+
+    With no ``kind``: today's all-format converter, fresh unless reuse is enabled.
+    With a ``kind`` (``docx``, ``html``, ``eml`` or ``msg``, the page pipeline's
+    Docling single-unit kinds): a converter cached for this process whose
+    ``allowed_formats`` is that one format, so a file sniffed as DOCX can only
+    reach the Word backend, and an email only the email backend (spec D6).
 
     Wrapped in a helper so tests can monkeypatch the converter (to force a
     conversion failure) without importing Docling at module load.
     """
     global _cached_converter
+    if kind is not None:
+        converter = _kind_converters.get(kind)
+        if converter is None:
+            converter = _kind_converters[kind] = _single_format_converter(kind)
+        return converter
+
     from docling.document_converter import DocumentConverter
 
     if not _reuse_converter:
@@ -125,6 +138,70 @@ def _document_converter() -> Any:
     if _cached_converter is None:
         _cached_converter = DocumentConverter()
     return _cached_converter
+
+
+# One converter per single-unit kind, built on first use (see ``_document_converter``).
+_kind_converters: dict[str, Any] = {}
+
+
+def _single_format_converter(kind: str) -> Any:
+    """A ``DocumentConverter`` that accepts only ``kind``'s format.
+
+    Every fetch option stays off: the HTML backend never loads a remote or local
+    resource (``<img>``, ``<link>``, ``<script>``, ``<iframe>``, ``cid:``) and
+    never fetches image data, so converting HTML makes no network request; the
+    Word backend never follows a linked (not embedded) resource.
+
+    ``eml`` and ``msg`` share Docling's email backend (``.msg`` read through
+    python-oxmsg) with ``list_attachments`` on: the output ends with one
+    ``name (type)`` line per attachment, and attachment content is never
+    converted. The backend converts an HTML-only body with its own
+    ``HTMLBackendOptions``, whose fetch options default to off, so converting an
+    email makes no network request either.
+    """
+    from docling.datamodel.backend_options import (
+        EmailBackendOptions,
+        HTMLBackendOptions,
+        MsWordBackendOptions,
+    )
+    from docling.datamodel.base_models import InputFormat
+    from docling.document_converter import (
+        DocumentConverter,
+        EmailFormatOption,
+        FormatOption,
+        HTMLFormatOption,
+        WordFormatOption,
+    )
+
+    option: FormatOption
+    if kind == "docx":
+        input_format = InputFormat.DOCX
+        option = WordFormatOption(
+            backend_options=MsWordBackendOptions.model_validate(
+                {"enable_remote_fetch": False, "enable_local_fetch": False}
+            )
+        )
+    elif kind == "html":
+        input_format = InputFormat.HTML
+        option = HTMLFormatOption(
+            backend_options=HTMLBackendOptions.model_validate(
+                {"enable_remote_fetch": False, "enable_local_fetch": False, "fetch_images": False}
+            )
+        )
+    elif kind in ("eml", "msg"):
+        input_format = InputFormat.EMAIL
+        option = EmailFormatOption(
+            backend_options=EmailBackendOptions.model_validate(
+                {
+                    "list_attachments": True,
+                    "enable_remote_fetch": False,
+                    "enable_local_fetch": False,
+                }
+            )
+        )
+    else:
+        raise ValueError(f"no single-format converter for kind {kind!r}")
+    return DocumentConverter(allowed_formats=[input_format], format_options={input_format: option})
 
 
 def _scan_fastpath_enabled() -> bool:
@@ -810,11 +887,18 @@ def _image_to_markdown(
 
 
 def _whole_doc_to_markdown(
-    path: Path, container: dict[str, Any], page_routes: list[dict[str, Any]]
+    path: Path,
+    container: dict[str, Any],
+    page_routes: list[dict[str, Any]],
+    kind: str | None = None,
 ) -> str:
     """DOCX/XLSX/HTML → whole-doc ``export_to_markdown()``, gate skipped.
 
     Structured formats Docling reads reliably; treated as one logical page.
+    ``kind`` (``docx``, ``html``, ``eml`` or ``msg``) converts with that kind's
+    single-format converter (the page pipeline's handlers); None uses today's converter (the
+    batch ``parse_to_markdown``). Both get the output fixes of
+    ``_fix_whole_doc_markdown``.
 
     NOTE (Route B exception): unlike the PDF/image paths, these two formats keep
     Docling's whole-document ``export_to_markdown`` rather than ``render_markdown``
@@ -825,16 +909,34 @@ def _whole_doc_to_markdown(
     exact pre-existing behavior for these formats; the renderer choice that the
     benchmarks measured was on the PDF path.
     """
+    markdown, _doc = _convert_whole_doc(path, container, page_routes, kind)
+    return markdown
+
+
+def _convert_whole_doc(
+    path: Path,
+    container: dict[str, Any],
+    page_routes: list[dict[str, Any]],
+    kind: str | None = None,
+) -> tuple[str, Any]:
+    """``_whole_doc_to_markdown``, also returning the Docling document (None on failure).
+
+    A conversion failure appends a ``docling_failed`` warning and returns
+    ``("", None)``; it never raises.
+    """
     try:
-        converter = _document_converter()
+        converter = _document_converter() if kind is None else _document_converter(kind)
         result = converter.convert(str(path))
         doc = result.document
     except Exception as exc:  # noqa: BLE001
-        logger.warning("Docling conversion failed for %s: %s", path.name, exc)
+        # The page pipeline runs this in its parse worker: at most 500 characters of
+        # exception text in a log line (spec D9).
+        logger.warning("Docling conversion failed for %s: %s", path.name, str(exc)[:500])
         _append_warning(container, "docling_failed", str(exc), scope="document")
-        return ""
+        return "", None
 
-    markdown: str = doc.export_to_markdown().strip()
+    is_docx = kind == "docx" or (kind is None and _input_format(result) == "docx")
+    markdown = _fix_whole_doc_markdown(doc.export_to_markdown(), doc, is_docx)
     page_routes.append(
         {
             "page_index": 0,
@@ -843,7 +945,99 @@ def _whole_doc_to_markdown(
             "n_chars": len(markdown),
         }
     )
-    return markdown
+    return markdown, doc
+
+
+def _input_format(result: Any) -> str | None:
+    """The Docling input format of a conversion result (``"docx"``, ``"html"``, ...)."""
+    fmt = getattr(getattr(result, "input", None), "format", None)
+    return None if fmt is None else str(getattr(fmt, "value", fmt))
+
+
+def _fix_whole_doc_markdown(markdown: str, doc: Any, is_docx: bool) -> str:
+    """The two output fixes of spec D6 over ``export_to_markdown`` text.
+
+    (a) A blank line between a list and a table that directly follows it, so the
+    table renders as a table and not as text inside the last list item.
+    (b) DOCX only: the footnotes and endnotes (Docling puts both in the furniture
+    layer with label ``footnote``) appended in document order under a
+    ``## Footnotes`` heading, one paragraph each. Headers, footers and every other
+    furniture item stay out.
+    """
+    markdown = _separate_lists_from_tables(markdown).strip()
+    if not is_docx:
+        return markdown
+    notes = _footnote_texts(doc)
+    if not notes:
+        return markdown
+    section = "\n\n".join(["## Footnotes", *notes])
+    return f"{markdown}\n\n{section}" if markdown else section
+
+
+# A list item line: optional indent, then ``-``, ``*``, ``+``, ``N.`` or ``N)`` and
+# a space (or the end of the line).
+_LIST_LINE = re.compile(r"^\s*(?:[-*+]|\d{1,9}[.)])(?:\s|$)")
+_FENCE = re.compile(r"^\s{0,3}(```|~~~)")
+
+
+def _separate_lists_from_tables(markdown: str) -> str:
+    """Insert a blank line where a list line (or its indented continuation) is
+    directly followed by a table line (one starting with ``|``).
+
+    In CommonMark a table row right after a list item is a lazy continuation of
+    that item's paragraph, so the table is lost. After a nested list item Docling
+    also indents the table's first row (only that row) to the item's level; such a
+    row, followed by a row at column 0, is moved back to column 0 as well. A table
+    whose rows are all indented is left inside its list item. Lines inside fenced
+    code blocks are left alone.
+    """
+    lines = markdown.split("\n")
+    out: list[str] = []
+    in_list = False
+    fence: str | None = None
+    for index, line in enumerate(lines):
+        fence_match = _FENCE.match(line)
+        if fence is not None:
+            if fence_match and fence_match.group(1) == fence:
+                fence = None
+            out.append(line)
+            continue
+        if fence_match:
+            fence = fence_match.group(1)
+            in_list = False
+            out.append(line)
+            continue
+        if in_list and line.lstrip().startswith("|"):
+            following = lines[index + 1] if index + 1 < len(lines) else ""
+            if line.startswith("|") or following.startswith("|"):
+                out.extend(["", line.lstrip()])
+                in_list = False
+                continue
+        if _LIST_LINE.match(line):
+            in_list = True
+        elif not line.strip() or not line[0].isspace():
+            in_list = False  # a blank line or a non-indented line ends the list
+        out.append(line)
+    return "\n".join(out)
+
+
+def _footnote_texts(doc: Any) -> list[str]:
+    """The text of each furniture-layer ``footnote`` item, in document order."""
+    from docling_core.types.doc.common.content_layer import ContentLayer
+    from docling_core.types.doc.labels import DocItemLabel
+
+    texts: list[str] = []
+    for item, _level in doc.iterate_items(
+        included_content_layers={ContentLayer.BODY, ContentLayer.FURNITURE}
+    ):
+        if (
+            getattr(item, "label", None) == DocItemLabel.FOOTNOTE
+            and getattr(item, "content_layer", None) == ContentLayer.FURNITURE
+        ):
+            text = str(getattr(item, "text", "") or "").strip()
+            if text:
+                texts.append(text)
+    return texts
 
 
 # ---------------------------------------------------------------------------

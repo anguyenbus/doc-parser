@@ -1,13 +1,20 @@
 """
-page_pipeline.py — split-first, per-page PDF parsing with resume and a fail-closed stitch.
+page_pipeline.py — split-first, per-unit parsing with resume and a fail-closed stitch.
 
-``parse_pdf_pages_in_store(source, location)`` is the page-level counterpart of
-``markdown_pipeline.parse_to_markdown``; ``parse_pdf_pages(source, work_root)`` is
-the same on a local directory:
+``parse_file_in_store(source, location)`` (old name ``parse_pdf_pages_in_store``) is
+the unit-level counterpart of ``markdown_pipeline.parse_to_markdown``;
+``parse_pdf_pages(source, work_root)`` is the same on a local directory:
 
-  1. SPLIT   store ``source.pdf``, then the PDF's one-page files (pypdf), then
-             ``manifest.json`` LAST (source hash, true page count, pinned pipeline
-             config).
+  0. INTAKE  sniff the file's first bytes (``sniff.py``) to route it to a kind.
+             No kind, or a kind missing from ``PARSER_ENABLED_KINDS``, fails the
+             file with ``unsupported_type``; a single-unit file over its raw cap
+             fails with ``too_large``. Neither writes anything under ``work/``.
+  1. SPLIT   a PDF: store ``source.pdf``, then its one-page files (pypdf), then
+             ``manifest.json`` LAST (kind, unit, source hash, true page count,
+             pinned pipeline config). A single-unit kind (txt, docx, html, eml,
+             msg) is one unit, the file itself: store ``source.<ext>``, then the
+             manifest (``unit`` ``document``, ``page_count`` 1). Routing after
+             intake reads the manifest's ``kind``, never the file name.
   2. PARSE   each one-page file with the unchanged ``parse_to_markdown`` — Docling
              first, gate, escalation to VLM/Textract only when promoted — in a pool
              of worker processes. Each page writes ``results/NNNN.json`` (the page
@@ -28,7 +35,10 @@ finished iff its result JSON exists, and a stored result is never overwritten
 under ``max_attempts`` has its record moved to ``results/NNNN.attempt-K.json`` and
 runs again. The attempt counter is written BEFORE each try, so a page that kills
 its worker (no exception, no record) still becomes ``failed`` once the limit is
-reached.
+reached. A record also carries ``reason_code`` (the text of ``reason`` before the
+first ``:``). A deterministic failure (``timeout`` and the other codes in
+``FINAL_REASON_CODES``) stores the ``limits`` behind it and is final: it is never
+re-run while those limits keep their values (``_is_final``).
 
 Keys under the store location. ``work/`` is keyed by content and config (work id
 = ``<source sha256>/<config hash>``), so the same bytes under any name are split
@@ -38,8 +48,10 @@ name gets its own status and output. ``work/`` is the part a lifecycle rule may
 expire; ``out/`` is self-contained. ``published/`` (``publish.py``) is the
 versioned hand-off to consumers:
 
-    work/<work id>/source.pdf                    copy of the original; written first
-    work/<work id>/pages/0001.pdf …              the one-page files (1-based)
+    work/<work id>/source.<ext>                  copy of the original; written first. The
+                                                 extension is fixed by the kind; a single-unit
+                                                 kind's only unit is this file
+    work/<work id>/pages/0001.pdf …              a PDF's one-page files (1-based)
     work/<work id>/manifest.json                 written last by the split
     work/<work id>/attempts/0001 …               attempt counter, written before each try
     work/<work id>/results/0001.json             the page's record; exists = page finished
@@ -52,8 +64,9 @@ versioned hand-off to consumers:
                                                  LAST, after the outputs it reports
     published/v1/...                             on request: see ``publish.py``
 
-PDF only: office, HTML and image inputs have no page split and stay on
-``parse_to_markdown``.
+A manifest with no ``kind`` (written before kinds existed) is a PDF of pages. Each
+kind has its own pipeline config (``pipeline_config(kind)``, with the kind's
+handler version), so each kind's work has its own config hash.
 """
 
 from __future__ import annotations
@@ -73,23 +86,46 @@ import threading
 import time
 import urllib.error
 import urllib.request
+from collections.abc import Mapping
 from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_completed
 from concurrent.futures.process import BrokenProcessPool
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Protocol
 
+from parser_service.guards import DocxLimits, GuardRejection, check_docx
 from parser_service.markdown_pipeline import enable_converter_reuse, parse_to_markdown
+from parser_service.observability import (
+    extension_label,
+    kind_label,
+    log_event,
+    observe_unit,
+    truncate,
+)
+from parser_service.page_worker import Reply, Request, WorkerTimeout, _exception_reply
 from parser_service.parser_service import PARSER_VERSION, _sha256_file
-from parser_service.publish import PublishRequest, publish_document
+from parser_service.publish import EMAIL_KINDS, PublishRequest, publish_document
 from parser_service.render import render_page, text_layer_tokens
 from parser_service.route_stats import (
     ROUTE_DOCLING_KEPT,
     ROUTE_TEXTRACT_FALLBACK,
     ROUTE_VLM_FALLBACK,
 )
+from parser_service.settings import (
+    DEADLINE_ENV,
+    DEFAULT_MAX_OUTPUT_MB,
+    DEFAULT_REMOTE_REQUEST_TIMEOUT_S,
+    DOCX_GUARD_ENV,
+    ENABLED_KINDS_ENV,
+    MAX_OUTPUT_ENV,
+    RAW_CAP_ENV,
+    REMOTE_REQUEST_TIMEOUT_ENV,
+    split_kinds,
+)
+from parser_service.sniff import KIND_EXTENSIONS, KINDS, SNIFF_BYTES, Sniff, sniff
 from parser_service.store import LocalStore, Store, StoreNotFoundError, open_store
+from parser_service.unit_handlers import handler_version, parse_unit
 
 logger = logging.getLogger(__name__)
 
@@ -134,6 +170,10 @@ class PageRecordError(RuntimeError):
     """A page's stored result exists but cannot be used (unreadable, or lost in an archive)."""
 
 
+class KindNotEnabled(RuntimeError):
+    """The unit's kind is not in this page service's ``PARSER_ENABLED_KINDS`` (HTTP 409)."""
+
+
 def default_max_attempts() -> int:
     """Attempt limit per page (``PARSER_PAGE_MAX_ATTEMPTS``, default 3)."""
     return int(os.environ.get("PARSER_PAGE_MAX_ATTEMPTS", str(_DEFAULT_MAX_ATTEMPTS)))
@@ -155,16 +195,185 @@ def default_workers() -> int:
 DOCLING_VERSION: str = importlib.metadata.version("docling")
 
 
-def pipeline_config() -> dict[str, Any]:
-    """The settings that change page output. Pinned in the manifest at intake."""
-    return {
-        "parser_version": PARSER_VERSION,
-        "docling_version": DOCLING_VERSION,
-        "escalation_engine": os.environ.get("PARSER_ESCALATION_ENGINE", "vlm"),
-        "vlm_model": os.environ.get("BEDROCK_VLM_MODEL", ""),
-        "scan_fastpath": os.environ.get("PARSER_SCAN_FASTPATH", "").lower() in ("1", "true"),
-        "arbitration": os.environ.get("PARSER_ESCALATION_ARBITRATION", "").lower() in ("1", "true"),
+UNIT_PAGE = "page"
+UNIT_DOCUMENT = "document"
+
+
+def pipeline_config(kind: str = "pdf") -> dict[str, Any]:
+    """The settings that change a ``kind`` unit's output. Pinned in the manifest at intake.
+
+    A PDF page: the parser and Docling versions and the escalation settings. Every
+    other kind leaves the escalation settings out (a VLM model change does not
+    re-parse a DOCX), and txt, which never runs Docling, leaves Docling out too.
+    Each config names its kind and the kind's handler version
+    (``unit_handlers.HANDLER_VERSIONS``), so every kind gets its own hash and a
+    handler bump changes only its own kind's.
+    """
+    if kind not in KIND_EXTENSIONS:
+        raise ValueError(f"unknown kind {kind!r}")
+    if kind == "pdf":
+        config: dict[str, Any] = {
+            "parser_version": PARSER_VERSION,
+            "docling_version": DOCLING_VERSION,
+            "escalation_engine": os.environ.get("PARSER_ESCALATION_ENGINE", "vlm"),
+            "vlm_model": os.environ.get("BEDROCK_VLM_MODEL", ""),
+            "scan_fastpath": os.environ.get("PARSER_SCAN_FASTPATH", "").lower() in ("1", "true"),
+            "arbitration": os.environ.get("PARSER_ESCALATION_ARBITRATION", "").lower()
+            in ("1", "true"),
+        }
+    else:
+        config = {"parser_version": PARSER_VERSION}
+        if kind != "txt":
+            config["docling_version"] = DOCLING_VERSION
+    config["kind"] = kind
+    config["handler_version"] = handler_version(kind)
+    return config
+
+
+def manifest_kind(manifest: Mapping[str, Any]) -> str:
+    """The kind of a manifest's file. No ``kind`` (written before kinds existed) is pdf."""
+    return str(manifest.get("kind") or "pdf")
+
+
+def unit_of(kind: str) -> str:
+    """What one unit of ``kind`` is: a ``page`` of a PDF, else the whole ``document``."""
+    return UNIT_PAGE if kind == "pdf" else UNIT_DOCUMENT
+
+
+def enabled_kinds() -> tuple[str, ...]:
+    """The kinds intake routes (``PARSER_ENABLED_KINDS``, default every handled kind).
+
+    ``settings.load_settings`` validates the value at start-up; here it is only
+    split, like the other call-time reads.
+    """
+    return split_kinds(os.environ.get(ENABLED_KINDS_ENV))
+
+
+def raw_cap_bytes(kind: str) -> int | None:
+    """The raw size cap of a ``kind`` file in bytes (None: no cap). Read at call time.
+
+    The caps are in MB (1,000,000 bytes) in ``RAW_CAP_ENV``; PDFs have none here.
+    """
+    if kind not in RAW_CAP_ENV:
+        return None
+    name, default = RAW_CAP_ENV[kind]
+    return int(os.environ.get(name, str(default))) * 1_000_000
+
+
+def max_output_mb() -> int:
+    """The output cap of a single-unit document, in MB (``PARSER_MAX_OUTPUT_MB``)."""
+    return int(os.environ.get(MAX_OUTPUT_ENV, str(DEFAULT_MAX_OUTPUT_MB)))
+
+
+def output_cap_bytes(kind: str) -> int | None:
+    """The cap on one unit's markdown in bytes, sent to the parser (None: no cap).
+
+    Single-unit kinds only: a PDF page's output is bounded by the page, so PDF
+    requests keep sending None. Read at call time.
+    """
+    if kind == "pdf":
+        return None
+    return max_output_mb() * 1_000_000
+
+
+# Reason codes of deterministic unit failures (D5). A record with one of them, and
+# with the ``limits`` behind it still equal to the current values, is final: it is
+# never archived or re-run. Every other failure (an exception, ``docling_failed``,
+# a worker or pod death) is retried under the attempt limit.
+FINAL_REASON_CODES = frozenset(
+    {"timeout", "zip_bomb", "too_complex", "output_too_large", "unsupported_type"}
+)
+
+
+def deadline_for(kind: str = "pdf") -> int:
+    """The parse deadline of one unit of ``kind``, in seconds. Read at call time.
+
+    Not part of ``pipeline_config``: a changed deadline never re-parses finished
+    work; it only releases ``timeout`` records stored under another value.
+    """
+    if kind not in DEADLINE_ENV:
+        raise ValueError(f"no parse deadline is defined for kind {kind!r}")
+    name, default = DEADLINE_ENV[kind]
+    return int(os.environ.get(name, str(default)))
+
+
+def remote_request_timeout() -> int:
+    """The driver's timeout for one page request (``PARSER_REMOTE_REQUEST_TIMEOUT_S``)."""
+    return int(os.environ.get(REMOTE_REQUEST_TIMEOUT_ENV, str(DEFAULT_REMOTE_REQUEST_TIMEOUT_S)))
+
+
+def docx_guard_limits() -> DocxLimits:
+    """The DOCX cost guard's thresholds (``DOCX_GUARD_ENV``). Read at call time.
+
+    ``settings.load_settings`` validates them at start-up. Not part of
+    ``pipeline_config``: a changed threshold never re-parses finished work; it
+    only releases ``zip_bomb`` and ``too_complex`` records stored under another
+    value (spec D5).
+    """
+    values = {
+        key: int(os.environ.get(name, str(default)))
+        for key, (name, default) in DOCX_GUARD_ENV.items()
     }
+    return DocxLimits(**values)
+
+
+def current_limits(kind: str = "pdf") -> dict[str, Any]:
+    """The current value of every limit a final record of ``kind`` can store.
+
+    Read from the environment at call time, like ``pipeline_config``. A stored
+    record's ``limits`` are compared with these values by ``_is_final``. A
+    single-unit kind also has the output cap (``output_too_large``), and a DOCX
+    the six guard thresholds (``zip_bomb``, ``too_complex``). A kind whose
+    handler has not shipped yet may have no deadline: it then has no
+    ``deadline_s`` (no ``timeout`` record of it can exist).
+    """
+    limits: dict[str, Any] = {}
+    if kind in DEADLINE_ENV:
+        limits["deadline_s"] = deadline_for(kind)
+    if output_cap_bytes(kind) is not None:
+        limits["max_output_mb"] = max_output_mb()
+    if kind == "docx":
+        limits.update(asdict(docx_guard_limits()))
+    return limits
+
+
+def _guard_rejection(kind: str, unit_path: Path) -> GuardRejection | None:
+    """The service-side cost guard of one unit (spec D7): a rejection, or None to parse.
+
+    DOCX only; every other kind is bounded by its raw cap and deadline.
+    """
+    if kind != "docx":
+        return None
+    return check_docx(unit_path, docx_guard_limits())
+
+
+def _reason_code(reason: str | None) -> str | None:
+    """The machine-readable code of a ``"<code>: <detail>"`` reason (None for no reason)."""
+    if not reason:
+        return None
+    return reason.partition(":")[0].strip() or None
+
+
+def _flag_list(flags: Any) -> list[str]:
+    """``flags`` as a sorted list of distinct strings (none: an empty list)."""
+    return sorted({str(flag) for flag in flags or ()})
+
+
+def _is_final(record: Mapping[str, Any], limits_now: Mapping[str, Any]) -> bool:
+    """Whether a stored record is a deterministic failure that must not run again.
+
+    Final when its ``reason_code`` is in ``FINAL_REASON_CODES``, it has a ``limits``
+    mapping, and every stored limit equals its current value. A record written
+    before reason codes existed (no ``reason_code``) is never final. A raised (or
+    otherwise changed) limit releases the record: it is then retried like any
+    other non-ok record, under the same attempt counter.
+    """
+    if record.get("state") == STATE_OK or record.get("reason_code") not in FINAL_REASON_CODES:
+        return False
+    limits = record.get("limits")
+    if not isinstance(limits, dict):
+        return False
+    return all(key in limits_now and limits_now[key] == value for key, value in limits.items())
 
 
 def config_hash(config: dict[str, Any] | None = None) -> str:
@@ -206,8 +415,9 @@ def _manifest_key(work_id: str) -> str:
     return f"{_work_prefix(work_id)}/manifest.json"
 
 
-def _source_key(work_id: str) -> str:
-    return f"{_work_prefix(work_id)}/source.pdf"
+def _source_key(work_id: str, kind: str = "pdf") -> str:
+    """The stored original: ``source.<ext>``, the extension fixed by the kind."""
+    return f"{_work_prefix(work_id)}/source.{KIND_EXTENSIONS[kind]}"
 
 
 def _pages_prefix(work_id: str) -> str:
@@ -216,6 +426,18 @@ def _pages_prefix(work_id: str) -> str:
 
 def _page_pdf_key(work_id: str, page_number: int) -> str:
     return f"{_work_prefix(work_id)}/pages/{_name(page_number)}.pdf"
+
+
+def _unit_key(work_id: str, manifest: Mapping[str, Any], page_number: int) -> str:
+    """The file of one unit: a PDF's page file, or a single-unit kind's stored source.
+
+    The file ``store.local_file`` hands out keeps the key's base name, so its
+    extension always agrees with the manifest's kind.
+    """
+    kind = manifest_kind(manifest)
+    if kind == "pdf":
+        return _page_pdf_key(work_id, page_number)
+    return _source_key(work_id, kind)
 
 
 def _record_key(work_id: str, page_number: int) -> str:
@@ -324,14 +546,17 @@ def _work_id(sha256: str, config: str) -> str:
     return f"{sha256}/{config}"
 
 
-def work_id_for(source: Path) -> str:
+def work_id_for(source: Path, kind: str | None = None) -> str:
     """The id of a source's work in the store: ``<sha256>/<config hash>``.
 
     Keyed by content and config, never by name: the same bytes under any name are
     split and parsed once per config; each name still gets its own
-    ``out/<file id>/``.
+    ``out/<file id>/``. The config is ``kind``'s (default: the kind the file
+    sniffs as, pdf when it has none).
     """
-    return _work_id(_sha256_file(source), config_hash())
+    if kind is None:
+        kind = _sniff_source(Path(source)).kind or "pdf"
+    return _work_id(_sha256_file(source), config_hash(pipeline_config(kind)))
 
 
 def file_id_for(source: Path) -> str:
@@ -377,8 +602,8 @@ def _page_bytes(reader: Any, page_number: int) -> bytes:
     return buf.getvalue()
 
 
-def _restore_expired(store: Store, work_id: str, source: Path, page_count: int) -> None:
-    """Re-create page files (and ``source.pdf``) that are gone though the manifest is not.
+def _restore_expired(store: Store, work_id: str, source: Path, manifest: Mapping[str, Any]) -> None:
+    """Re-create ``source.<ext>`` (and a PDF's page files) gone though the manifest is not.
 
     An S3 lifecycle rule expires objects one by one, by age, and the page files are
     older than the manifest. The run always has the original in hand, so whatever
@@ -386,8 +611,12 @@ def _restore_expired(store: Store, work_id: str, source: Path, page_count: int) 
     """
     from pypdf import PdfReader
 
-    if not store.exists(_source_key(work_id)):
-        store.write(_source_key(work_id), _read_source(source))
+    kind = manifest_kind(manifest)
+    if not store.exists(_source_key(work_id, kind)):
+        store.write(_source_key(work_id, kind), _read_source(source))
+    if kind != "pdf":
+        return  # a single-unit kind's only unit is the source itself
+    page_count = int(manifest["page_count"])
     present = set(store.list_keys(_pages_prefix(work_id)))
     missing = [n for n in range(1, page_count + 1) if _page_pdf_key(work_id, n) not in present]
     if not missing:
@@ -398,19 +627,21 @@ def _restore_expired(store: Store, work_id: str, source: Path, page_count: int) 
         store.write(_page_pdf_key(work_id, page_number), _page_bytes(reader, page_number))
 
 
-def _split(store: Store, work_id: str, source: Path) -> dict[str, Any]:
-    """Split ``source`` into one-page PDFs in the store and return the manifest.
+def _intake(store: Store, work_id: str, source: Path, kind: str) -> dict[str, Any]:
+    """Store ``source`` as ``kind`` units and return the manifest.
 
-    Order of writes: ``source.pdf`` (a copy of the original), the page files, then
-    the manifest LAST, so a crash mid-split leaves no manifest and the split is
-    simply redone. Idempotent: when a manifest already exists it is returned as is,
-    after checking the pinned config and re-creating any page file that has
-    expired. Raises on an unreadable or encrypted PDF, and
-    ``PipelineConfigMismatch`` when the file was started under a different config.
+    A PDF is split into one-page PDFs. Order of writes: ``source.pdf`` (a copy of
+    the original), the page files, then the manifest LAST, so a crash mid-split
+    leaves no manifest and the split is simply redone. A single-unit kind writes
+    ``source.<ext>``, then the manifest LAST (``unit`` ``document``,
+    ``page_count`` 1), with the same rules; it has no ``pages/``.
+
+    Idempotent: when a manifest already exists it is returned as is, after
+    checking the pinned config and re-creating any stored file that has expired.
+    Raises on an unreadable or encrypted PDF, and ``PipelineConfigMismatch`` when
+    the file was started under a different config.
     """
-    from pypdf import PdfReader  # local import; only needed for PDFs
-
-    config = pipeline_config()
+    config = pipeline_config(kind)
     existing = _read_json(store, _manifest_key(work_id))
     if isinstance(existing, dict):
         if existing.get("config") != config:
@@ -419,8 +650,24 @@ def _split(store: Store, work_id: str, source: Path) -> dict[str, Any]:
                 f"{existing.get('config')} but the current config is {config}; finish it "
                 "under the original settings or restart it"
             )
-        _restore_expired(store, work_id, source, int(existing["page_count"]))
+        _restore_expired(store, work_id, source, existing)
         return existing
+
+    if kind != "pdf":
+        store.write(_source_key(work_id, kind), _read_source(source))
+        manifest = {
+            "source_name": source.name,
+            "source_sha256": _sha256_file(source),
+            "kind": kind,
+            "unit": UNIT_DOCUMENT,
+            "page_count": 1,
+            "config": config,
+            "created_at": datetime.now(tz=UTC).isoformat(),
+        }
+        _put_json(store, _manifest_key(work_id), manifest)
+        return manifest
+
+    from pypdf import PdfReader  # local import; only needed for PDFs
 
     reader = PdfReader(str(source))
     if reader.is_encrypted:
@@ -436,12 +683,19 @@ def _split(store: Store, work_id: str, source: Path) -> dict[str, Any]:
     manifest = {
         "source_name": source.name,
         "source_sha256": _sha256_file(source),
+        "kind": "pdf",
+        "unit": UNIT_PAGE,
         "page_count": page_count,
         "config": config,
         "created_at": datetime.now(tz=UTC).isoformat(),
     }
     _put_json(store, _manifest_key(work_id), manifest)
     return manifest
+
+
+def _split(store: Store, work_id: str, source: Path) -> dict[str, Any]:
+    """``_intake`` of a PDF: split ``source`` into one-page PDFs, return the manifest."""
+    return _intake(store, work_id, source, "pdf")
 
 
 def split_pdf(source: Path, work_dir: Path) -> dict[str, Any]:
@@ -481,7 +735,7 @@ def _is_blank_page(page_pdf: Path) -> bool:
         dark = sum(histogram[:_BLANK_DARK_LEVEL])
         return total > 0 and dark / total <= _BLANK_MAX_DARK_FRACTION
     except Exception as exc:  # noqa: BLE001
-        logger.warning("blank-page probe failed for %s: %s", page_pdf.name, exc)
+        logger.warning("blank-page probe failed for %s: %s", page_pdf.name, truncate(str(exc)))
         return False
 
 
@@ -524,8 +778,18 @@ def _write_record(
     markdown: str,
     attempt: int,
     extra: dict[str, Any] | None = None,
+    *,
+    reason_code: str | None = None,
+    limits: dict[str, Any] | None = None,
+    kind: str = "pdf",
 ) -> dict[str, Any]:
     """Write the page's record (the commit marker), then its readable ``.md`` copy.
+
+    ``reason_code`` defaults to the text of ``reason`` before the first ``:``.
+    ``limits`` (the limit values behind a deterministic failure, see ``_is_final``)
+    is stored only when given. Every record names its ``kind`` (from the
+    manifest), ``unit``, ``handler_version`` and ``flags`` (``extra["flags"]`` from
+    the handler, else an empty list; a flag never changes the state).
 
     First write wins: the record is written only if the page has none. The writer
     that created it then writes the ``.md`` copy; any other writer gets the stored
@@ -537,6 +801,7 @@ def _write_record(
         "page": page_number,
         "state": state,
         "reason": reason,
+        "reason_code": reason_code if reason_code is not None else _reason_code(reason),
         "markdown": markdown,
         "parser_version": PARSER_VERSION,
         "n_chars": len(markdown),
@@ -546,9 +811,15 @@ def _write_record(
         "finished_at": datetime.now(tz=UTC).isoformat(),
         "worker_pid": os.getpid(),
         "worker_host": socket.gethostname(),
+        "kind": kind,
+        "unit": unit_of(kind),
+        "handler_version": handler_version(kind),
     }
+    if limits is not None:
+        record["limits"] = dict(limits)
     if extra:
         record.update(extra)
+    record["flags"] = _flag_list(record.get("flags"))
     if store.write_if_absent(_record_key(work_id, page_number), _json_bytes(record)):
         _put_text(store, markdown_key, markdown)
         return record
@@ -593,8 +864,28 @@ def _parse_page(
     )
 
 
+class ParseRunner(Protocol):
+    """Runs one parse out of process under a deadline (``page_worker.ParseWorker``).
+
+    ``run`` returns the worker's reply, or raises ``WorkerTimeout`` (the worker
+    was killed and reaped) or ``WorkerDied`` (it died on its own).
+    """
+
+    @property
+    def pid(self) -> int | None: ...
+
+    def run(self, request: Request, deadline_s: float) -> Reply: ...
+
+
 def _process_page(
-    store: Store, work_id: str, page_number: int, escalate: bool, max_attempts: int
+    store: Store,
+    work_id: str,
+    page_number: int,
+    escalate: bool,
+    max_attempts: int,
+    *,
+    runner: ParseRunner | None = None,
+    kind: str = "pdf",
 ) -> dict[str, Any]:
     """Parse one page and write its record.
 
@@ -607,25 +898,151 @@ def _process_page(
     A page that already has a record is returned as stored, without touching the
     attempt counter or parsing: a stored result is never replaced by a page task. A
     stored record that cannot be read raises ``PageRecordError`` before any parse.
+
+    ``runner`` None parses in this process (the local executor). With a runner
+    (the page service's parse worker) the parse runs there under
+    ``deadline_for(kind)``: past the deadline the worker is killed and ONE
+    ``failed`` record with ``reason_code`` ``timeout`` is written (first write
+    wins: a record another pod wrote meanwhile is returned instead). A worker that
+    dies on its own writes no record and raises ``WorkerDied``; the attempt stays
+    counted, and the caller's retry path decides.
+
+    Before either, the cost guard (spec D7, DOCX only) runs here, in the calling
+    process, after the attempt is counted: a rejection is ONE ``failed`` record
+    (``zip_bomb`` or ``too_complex``, with its ``limits``) and the unit never
+    reaches the parser.
     """
     existing = _load_record_checked(store, work_id, page_number)
     if existing is not None:
         return existing
     attempt = _read_attempts(store, work_id, page_number) + 1
     if attempt > max_attempts:
-        return _finalize_exhausted(store, work_id, page_number)
+        return _finalize_exhausted(store, work_id, page_number, kind)
     _put_text(store, _attempts_key(work_id, page_number), str(attempt))
 
-    with store.local_file(_page_pdf_key(work_id, page_number)) as page_pdf:
+    with store.local_file(_unit_key(work_id, {"kind": kind}, page_number)) as unit_path:
+        guard_started = time.perf_counter()
+        rejection = _guard_rejection(kind, unit_path)
+        if rejection is not None:
+            guard_code, detail, guard_limits = rejection
+            logger.error("page %d: refused by the %s guard: %s", page_number, kind, guard_code)
+            record = _write_record(
+                store,
+                work_id,
+                page_number,
+                STATE_FAILED,
+                f"{guard_code}: {detail}",
+                "",
+                attempt,
+                {
+                    "elapsed_seconds": round(time.perf_counter() - guard_started, 3),
+                    "parse_worker_pid": None,
+                },
+                reason_code=guard_code,
+                limits=guard_limits,
+                kind=kind,
+            )
+            observe_unit(record, work_id=work_id, input_bytes=unit_path.stat().st_size)
+            return record
+        if runner is not None:
+            return _run_in_worker(
+                store, work_id, page_number, escalate, attempt, runner, kind, unit_path
+            )
         started = time.perf_counter()
+        input_bytes = unit_path.stat().st_size
         try:
-            state, reason, markdown, extra = _parse_page(page_pdf, page_number, escalate)
+            state, reason, reason_code, markdown, reply_extra = parse_unit(
+                kind, unit_path, page_number, escalate, output_cap_bytes(kind)
+            )
         except Exception as exc:  # noqa: BLE001 — a page error is a record, not a crash
-            logger.exception("page %d failed", page_number)
-            state, reason = STATE_FAILED, f"exception: {type(exc).__name__}: {exc}"
-            markdown, extra = "", {}
+            # Exception text may quote the document: the type in the log, and at
+            # most 500 characters in the record, as the parse worker does (D9).
+            logger.error("page %d: parse raised %s", page_number, type(exc).__name__)
+            state, reason, reason_code, markdown, reply_extra = _exception_reply(exc)
+        extra = dict(reply_extra)
+        limits = extra.pop("limits", None)
         extra["elapsed_seconds"] = round(time.perf_counter() - started, 3)
-        return _write_record(store, work_id, page_number, state, reason, markdown, attempt, extra)
+        extra["parse_worker_pid"] = os.getpid()
+        record = _write_record(
+            store,
+            work_id,
+            page_number,
+            state,
+            reason,
+            markdown,
+            attempt,
+            extra,
+            reason_code=reason_code,
+            limits=limits,
+            kind=kind,
+        )
+        observe_unit(record, work_id=work_id, input_bytes=input_bytes)
+        return record
+
+
+def _run_in_worker(
+    store: Store,
+    work_id: str,
+    page_number: int,
+    escalate: bool,
+    attempt: int,
+    runner: ParseRunner,
+    kind: str,
+    unit_path: Path,
+) -> dict[str, Any]:
+    """Step 5 of spec D4: parse in the worker under the deadline, then write the record.
+
+    ``WorkerDied`` propagates with no record written.
+    """
+    deadline = deadline_for(kind)
+    parse_worker_pid = runner.pid
+    # The worker applies the output cap before it replies (none for a PDF page).
+    request: Request = (kind, str(unit_path), page_number, escalate, output_cap_bytes(kind))
+    input_bytes = unit_path.stat().st_size
+    started = time.perf_counter()
+    try:
+        state, reason, reason_code, markdown, extra = runner.run(request, deadline)
+    except WorkerTimeout:
+        logger.error(
+            "page %d: no result after %d s (%s); worker killed", page_number, deadline, kind
+        )
+        record = _write_record(
+            store,
+            work_id,
+            page_number,
+            STATE_FAILED,
+            f"timeout: no result after {deadline} s ({kind})",
+            "",
+            attempt,
+            {
+                "elapsed_seconds": round(time.perf_counter() - started, 3),
+                "parse_worker_pid": None,
+            },
+            reason_code="timeout",
+            limits={"deadline_s": deadline},
+            kind=kind,
+        )
+        observe_unit(record, work_id=work_id, input_bytes=input_bytes)
+        return record
+    fields = dict(extra)
+    limits = fields.pop("limits", None)
+    fields["elapsed_seconds"] = round(time.perf_counter() - started, 3)
+    fields["parse_worker_pid"] = parse_worker_pid
+    record = _write_record(
+        store,
+        work_id,
+        page_number,
+        state,
+        reason,
+        markdown,
+        attempt,
+        fields,
+        reason_code=reason_code,
+        limits=limits,
+        kind=kind,
+    )
+    observe_unit(record, work_id=work_id, input_bytes=input_bytes)
+    return record
 
 
 @dataclass(frozen=True)
@@ -698,12 +1115,20 @@ def _archive_for_retry(store: Store, work_id: str, page_number: int) -> bool:
     return True
 
 
-def _finalize_exhausted(store: Store, work_id: str, page_number: int) -> dict[str, Any]:
-    """Record a page that used every attempt without producing a result."""
+def _finalize_exhausted(
+    store: Store, work_id: str, page_number: int, kind: str | None = None
+) -> dict[str, Any]:
+    """Record a page that used every attempt without producing a result.
+
+    ``kind`` None reads it from the manifest (the remote executor's caller has none).
+    """
     existing = _load_record_checked(store, work_id, page_number)
     if existing is not None:
         return existing
     attempts = _read_attempts(store, work_id, page_number)
+    if kind is None:
+        manifest = _read_json(store, _manifest_key(work_id))
+        kind = manifest_kind(manifest if isinstance(manifest, dict) else {})
     return _write_record(
         store,
         work_id,
@@ -712,6 +1137,7 @@ def _finalize_exhausted(store: Store, work_id: str, page_number: int) -> dict[st
         f"no_result_after_{attempts}_attempts: the worker died or was killed on this page",
         "",
         attempts,
+        kind=kind,
     )
 
 
@@ -737,12 +1163,13 @@ def _process_page_task(
     page_number: int,
     escalate: bool,
     max_attempts: int,
+    kind: str = "pdf",
 ) -> dict[str, Any]:
     """``_process_page`` for a worker process, which opens its own store."""
     store = _WORKER_STORES.get((location, region))
     if store is None:
         store = _WORKER_STORES[(location, region)] = open_store(location, region=region)
-    return _process_page(store, work_id, page_number, escalate, max_attempts)
+    return _process_page(store, work_id, page_number, escalate, max_attempts, kind=kind)
 
 
 def _run_pool(
@@ -753,6 +1180,7 @@ def _run_pool(
     workers: int,
     escalate: bool,
     max_attempts: int,
+    kind: str = "pdf",
 ) -> set[int]:
     """Run ``pages`` in a process pool; return the pages whose task returned.
 
@@ -769,7 +1197,9 @@ def _run_pool(
         initargs=(threads,),
     ) as pool:
         futures = {
-            pool.submit(_process_page_task, location, region, work_id, n, escalate, max_attempts): n
+            pool.submit(
+                _process_page_task, location, region, work_id, n, escalate, max_attempts, kind
+            ): n
             for n in pages
         }
         for future in as_completed(futures):
@@ -779,7 +1209,12 @@ def _run_pool(
             except BrokenProcessPool:
                 continue
             except Exception as exc:  # noqa: BLE001
-                logger.error("page %d: task raised %s: %s", page_number, type(exc).__name__, exc)
+                logger.error(
+                    "page %d: task raised %s: %s",
+                    page_number,
+                    type(exc).__name__,
+                    truncate(str(exc)),
+                )
                 finished.add(page_number)
                 continue
             finished.add(page_number)
@@ -787,7 +1222,7 @@ def _run_pool(
                 "page %d: %s%s",
                 page_number,
                 record.get("state"),
-                f" ({record.get('reason')})" if record.get("reason") else "",
+                f" ({truncate(record.get('reason'))})" if record.get("reason") else "",
             )
     return finished
 
@@ -801,6 +1236,7 @@ def _run_pages(
     workers: int,
     escalate: bool,
     max_attempts: int,
+    kind: str = "pdf",
 ) -> None:
     """Process ``pages`` once each, surviving worker deaths.
 
@@ -813,13 +1249,15 @@ def _run_pages(
     if workers <= 0:
         enable_converter_reuse()
         for page_number in pages:
-            _process_page(store, work_id, page_number, escalate, max_attempts)
+            _process_page(store, work_id, page_number, escalate, max_attempts, kind=kind)
         return
 
     remaining = list(pages)
     while remaining:
         before = {n: _read_attempts(store, work_id, n) for n in remaining}
-        finished = _run_pool(location, region, work_id, remaining, workers, escalate, max_attempts)
+        finished = _run_pool(
+            location, region, work_id, remaining, workers, escalate, max_attempts, kind
+        )
         remaining = [n for n in remaining if n not in finished]
         if not remaining:
             return
@@ -838,9 +1276,11 @@ def _run_pages(
         for page_number in in_doubt:
             while True:
                 if _read_attempts(store, work_id, page_number) >= max_attempts:
-                    _finalize_exhausted(store, work_id, page_number)
+                    _finalize_exhausted(store, work_id, page_number, kind)
                     break
-                if _run_pool(location, region, work_id, [page_number], 1, escalate, max_attempts):
+                if _run_pool(
+                    location, region, work_id, [page_number], 1, escalate, max_attempts, kind
+                ):
                     break
         remaining = [n for n in remaining if n not in in_doubt]
 
@@ -856,7 +1296,6 @@ KSERVE_MODEL_NAME = "page-parser"
 # 429: the pod is parsing another page; 503: the model is not ready yet. Neither
 # reached _process_page, so neither costs an attempt.
 _REMOTE_BUSY_CODES = (429, 503)
-_REMOTE_REQUEST_TIMEOUT = 900.0
 _REMOTE_BUSY_DEADLINE = 3600.0
 # Failed requests allowed beyond max_attempts before a page that never starts
 # (no attempt counted) is reported instead of retried forever.
@@ -874,41 +1313,67 @@ def kserve_predict_url(endpoint: str) -> str:
 
 
 def process_page_request(
-    store: Store, work_id: str, page_number: int, escalate: bool, max_attempts: int
+    store: Store,
+    work_id: str,
+    page_number: int,
+    escalate: bool,
+    max_attempts: int,
+    *,
+    runner: ParseRunner | None = None,
 ) -> dict[str, Any]:
-    """Serve one page request: the page service's side of the remote executor.
+    """Serve one unit request: the page service's side of the remote executor.
 
-    The file must already be split under ``store``, under this process's pipeline
-    config: a page parsed with other settings than the ones pinned at intake would
-    silently mix outputs, so a mismatch raises ``PipelineConfigMismatch``. A page
-    number outside the file raises ``ValueError``. Otherwise this is
+    The file must already be taken in under ``store``, under this process's
+    pipeline config for its kind: the work id's config hash must be the hash of
+    some kind's ``pipeline_config``, and the manifest's config must equal
+    ``pipeline_config(manifest kind)``. A unit parsed with other settings than
+    the ones pinned at intake would silently mix outputs, so a mismatch raises
+    ``PipelineConfigMismatch``. A kind missing from this pod's
+    ``PARSER_ENABLED_KINDS`` raises ``KindNotEnabled``. A page number outside the
+    file raises ``ValueError``. The unit is routed on the manifest's ``kind``.
+    Otherwise this is
     ``_process_page``: a page already recorded is returned as stored, and a
-    page-level failure is a ``failed`` record, never an exception.
+    page-level failure is a ``failed`` record, never an exception. With ``runner``
+    (the page service's parse worker) the parse runs there under the deadline, and
+    a worker death raises ``WorkerDied`` with no record written.
 
     Returns a summary of the record; the record itself is in the store.
     """
     requested_config = work_id.rpartition("/")[2]
-    if requested_config != config_hash():
+    known = {config_hash(pipeline_config(kind)): kind for kind in KINDS}
+    if requested_config not in known:
         raise PipelineConfigMismatch(
             f"{work_id} is work for config {requested_config} but this page service runs "
-            f"config {config_hash()} ({pipeline_config()})"
+            f"none of that hash (pdf: {config_hash()} {pipeline_config()})"
         )
     manifest = _read_json(store, _manifest_key(work_id))
     if not isinstance(manifest, dict):
         raise ValueError(f"{store.location(_work_prefix(work_id))} has no manifest; split it first")
-    if manifest.get("config") != pipeline_config():
+    kind = manifest_kind(manifest)
+    if kind not in KIND_EXTENSIONS:
+        raise ValueError(f"{work_id} has a manifest of unknown kind {kind!r}")
+    if known[requested_config] != kind or manifest.get("config") != pipeline_config(kind):
         raise PipelineConfigMismatch(
-            f"{work_id} was split with config {manifest.get('config')} but this page service "
-            f"runs {pipeline_config()}"
+            f"{work_id} was taken in with config {manifest.get('config')} but this page "
+            f"service runs {pipeline_config(kind)} for {kind}"
+        )
+    if kind not in enabled_kinds():
+        raise KindNotEnabled(
+            f"{work_id} is a {kind} file, and {kind} is not in this page service's "
+            f"{ENABLED_KINDS_ENV} ({','.join(enabled_kinds())})"
         )
     if not 1 <= page_number <= int(manifest["page_count"]):
         raise ValueError(f"{work_id} has {manifest['page_count']} pages, not page {page_number}")
-    record = _process_page(store, work_id, page_number, escalate, max_attempts)
+    record = _process_page(
+        store, work_id, page_number, escalate, max_attempts, runner=runner, kind=kind
+    )
     return {
         "work_id": work_id,
+        "kind": kind,
         "page": page_number,
         "state": record.get("state"),
         "reason": record.get("reason"),
+        "reason_code": record.get("reason_code"),
         "attempt": record.get("attempt"),
         "route": record.get("route"),
         "elapsed_seconds": record.get("elapsed_seconds"),
@@ -952,8 +1417,13 @@ def _remote_page(
     escalate: bool,
     max_attempts: int,
     stop: threading.Event,
+    request_timeout: float,
 ) -> dict[str, Any]:
     """Send one page until it has a result; return the summary or the record.
+
+    Each request waits at most ``request_timeout`` seconds
+    (``PARSER_REMOTE_REQUEST_TIMEOUT_S``), which settings keep above every parse
+    deadline, so a page that times out on the service is answered, not resent.
 
     - 200: the service parsed the page (or returned its stored record).
     - 429/503: the service did not start it. Retried with jittered backoff at no
@@ -965,7 +1435,7 @@ def _remote_page(
       the limit means the page is finalized ``failed``; otherwise it is sent again.
       A page whose requests keep failing without it ever starting raises.
     """
-    timeout, busy_deadline = _REMOTE_REQUEST_TIMEOUT, _REMOTE_BUSY_DEADLINE
+    timeout, busy_deadline = request_timeout, _REMOTE_BUSY_DEADLINE
     busy_since: float | None = None
     backoff = 0.5
     errors = 0
@@ -1019,6 +1489,7 @@ def _run_pages_remote(
     concurrency: int,
     escalate: bool,
     max_attempts: int,
+    request_timeout: float,
 ) -> None:
     """Process ``pages`` once each on the page service at ``endpoint``.
 
@@ -1032,7 +1503,15 @@ def _run_pages_remote(
     with ThreadPoolExecutor(max_workers=max(1, min(concurrency, len(pages)))) as pool:
         futures = {
             pool.submit(
-                _remote_page, store, url, work_id, n, escalate, max_attempts, stop
+                _remote_page,
+                store,
+                url,
+                work_id,
+                n,
+                escalate,
+                max_attempts,
+                stop,
+                request_timeout,
             ): n
             for n in pages
         }
@@ -1069,6 +1548,8 @@ def build_status(
     *,
     records: dict[int, dict[str, Any] | None] | None = None,
     write: bool = True,
+    limits_now: Mapping[str, Any] | None = None,
+    detected_type: str | None = None,
 ) -> dict[str, Any]:
     """Rebuild ``out/<file_id>/status.json`` from the page records under ``work/<work_id>``.
 
@@ -1077,8 +1558,18 @@ def build_status(
     writes it last.
 
     ``source_name`` is the name of the file being run (default: the name the
-    content was first split under, from the manifest).
+    content was first split under, from the manifest). ``detected_type`` is the
+    intake sniff's result for it (None: not sniffed by this caller).
+
+    A page is ``retryable`` when it is not ok, is under the attempt limit, and is
+    not final (``_is_final`` against ``limits_now``, default ``current_limits``).
+    The file's ``kind`` and ``unit`` come from the manifest; its ``flags`` are the
+    union of the units' flags.
     """
+    kind = manifest_kind(manifest)
+    if limits_now is None:
+        limits_now = current_limits(kind)
+    flags: set[str] = set()
     pages: list[dict[str, Any]] = []
     for page_number in range(1, int(manifest["page_count"]) + 1):
         record = (records or {}).get(page_number) if records is not None else _load_record(
@@ -1086,14 +1577,19 @@ def build_status(
         )
         attempts = _read_attempts(store, work_id, page_number)
         state = record["state"] if record is not None else STATE_PENDING
+        if record is not None:
+            flags.update(_flag_list(record.get("flags")))
         pages.append(
             {
                 "page": page_number,
                 "state": state,
                 "reason": record.get("reason") if record is not None else None,
+                "reason_code": record.get("reason_code") if record is not None else None,
                 "route": record.get("route") if record is not None else None,
                 "attempts": attempts,
-                "retryable": state != STATE_OK and attempts < max_attempts,
+                "retryable": state != STATE_OK
+                and attempts < max_attempts
+                and not (record is not None and _is_final(record, limits_now)),
             }
         )
 
@@ -1113,6 +1609,10 @@ def build_status(
         "source_name": source_name or manifest["source_name"],
         "source_sha256": manifest["source_sha256"],
         "work_id": work_id,
+        "kind": kind,
+        "unit": unit_of(kind),
+        "detected_type": detected_type,
+        "flags": sorted(flags),
         "page_count": manifest["page_count"],
         "counts": counts,
         "not_ok_pages": [p for p in pages if p["state"] != STATE_OK],
@@ -1205,6 +1705,9 @@ def stitch(
         "source_name": status["source_name"],
         "source_sha256": manifest["source_sha256"],
         "work_id": work_id,
+        "kind": manifest_kind(manifest),
+        "unit": unit_of(manifest_kind(manifest)),
+        "flags": list(status.get("flags", [])),
         "page_count": manifest["page_count"],
         "config": manifest["config"],
         "counts": status["counts"],
@@ -1220,11 +1723,189 @@ def stitch(
 
 
 # ---------------------------------------------------------------------------
+# Intake
+# ---------------------------------------------------------------------------
+
+# An OLE2 file's directory can start past the first 64 KiB; one that sniffs as a
+# plain ``ole2`` (no kind) is sniffed again with up to this much of the file.
+_OLE2_SNIFF_BYTES = 8 * 1024 * 1024
+
+# Intake reason codes: decided by the driver for the whole file, with no record.
+INTAKE_UNSUPPORTED = "unsupported_type"
+INTAKE_TOO_LARGE = "too_large"
+
+
+def _sniff_source(source: Path, declared_type: str | None = None) -> Sniff:
+    """Sniff a local file from its head, its name and its declared content type."""
+    with source.open("rb") as handle:
+        head = handle.read(SNIFF_BYTES)
+        found = sniff(head, source.name, declared_type)
+        if found.detected_type == "ole2" and len(head) == SNIFF_BYTES:
+            head += handle.read(_OLE2_SNIFF_BYTES - SNIFF_BYTES)
+            found = sniff(head, source.name, declared_type)
+    return found
+
+
+def _intake_rejection(found: Sniff, size: int) -> tuple[str, str] | None:
+    """``(reason_code, reason)`` when intake refuses the file, else None (spec D1).
+
+    No kind, or a kind missing from ``PARSER_ENABLED_KINDS``: ``unsupported_type``.
+    A file over its kind's raw cap: ``too_large``. Both are decided again on every
+    run, so a kind enabled later, or a raised cap, takes effect at once.
+    """
+    if found.kind is None:
+        return INTAKE_UNSUPPORTED, (
+            f"{INTAKE_UNSUPPORTED}: detected {found.detected_type}, which no kind handles"
+        )
+    if found.kind not in enabled_kinds():
+        return INTAKE_UNSUPPORTED, (
+            f"{INTAKE_UNSUPPORTED}: kind {found.kind} (detected {found.detected_type}) is not "
+            f"in {ENABLED_KINDS_ENV}"
+        )
+    cap = raw_cap_bytes(found.kind)
+    if cap is not None and size > cap:
+        return INTAKE_TOO_LARGE, (
+            f"{INTAKE_TOO_LARGE}: {size} bytes, over the {found.kind} cap of {cap} bytes"
+        )
+    return None
+
+
+def _reject_at_intake(
+    store: Store,
+    source: Path,
+    sha256: str,
+    found: Sniff,
+    reason_code: str,
+    reason: str,
+    started: float,
+    publish: PublishRequest | None = None,
+) -> dict[str, Any]:
+    """Fail a file refused at intake: write ``out/<file id>/status.json`` only.
+
+    Nothing is written under ``work/`` (there is no work id): the refusal is
+    decided again on every run, so no stale record can outlive it. With
+    ``publish``, a ``failed`` event is written too. Its version hashes the source
+    with the config ``{"intake": reason_code, "kind": kind}``, so a re-run of the
+    same refusal writes no second event.
+    """
+    file_id = _file_id(source.stem, sha256)
+    unit = {
+        "page": 1,
+        "state": STATE_FAILED,
+        "reason": reason,
+        "reason_code": reason_code,
+        "route": None,
+        "attempts": 0,
+        "retryable": False,
+    }
+    counts = {STATE_OK: 0, STATE_DEGRADED: 0, STATE_FAILED: 1, STATE_PENDING: 0}
+    status = {
+        "state": FILE_FAILED,
+        "source_name": source.name,
+        "source_sha256": sha256,
+        "work_id": None,
+        "kind": found.kind,
+        "unit": UNIT_DOCUMENT,
+        "detected_type": found.detected_type,
+        "flags": [],
+        "page_count": 1,
+        "counts": counts,
+        "not_ok_pages": [unit],
+        "pages": [unit],
+        "updated_at": datetime.now(tz=UTC).isoformat(),
+    }
+    published = None
+    if publish is not None:
+        intake_config = {"intake": reason_code, "kind": found.kind}
+        published = publish_document(
+            store,
+            publish,
+            state=FILE_FAILED,
+            source_name=source.name,
+            source_sha256=sha256,
+            work_id=None,
+            config=intake_config,
+            config_hash=config_hash(intake_config),
+            page_count=1,
+            markdown="",
+            pages_meta=[unit],
+            page_texts={},
+            kind=found.kind,
+            unit=UNIT_DOCUMENT,
+            flags=[],
+            handler_version=None,
+        )
+    _put_json(store, _status_key(file_id), status)
+    logger.error("%s: refused at intake: %s", source.name, reason_code)
+    return {
+        "state": FILE_FAILED,
+        "file_id": file_id,
+        "work_id": None,
+        "kind": found.kind,
+        "unit": UNIT_DOCUMENT,
+        "detected_type": found.detected_type,
+        "flags": [],
+        "reason_code": reason_code,
+        "work_dir": None,
+        "out_dir": store.location(_out_prefix(file_id)),
+        "page_count": 1,
+        "counts": counts,
+        "not_ok_pages": [unit],
+        "pages": [unit],
+        "status_path": store.location(_status_key(file_id)),
+        "output_path": None,
+        "partial_path": None,
+        "output_key": None,
+        "partial_key": None,
+        "published": published,
+        "elapsed_seconds": round(time.perf_counter() - started, 3),
+    }
+
+
+def _file_event_fields(
+    source: Path, found: Sniff, file_id: str, size: int, publish: PublishRequest | None
+) -> dict[str, Any]:
+    """The fields ``file_intake`` and ``file_done`` share (spec D9). Never the name."""
+    return {
+        "job_id": publish.job_id if publish is not None else None,
+        "doc_id": publish.doc_id if publish is not None else None,
+        "file_id": file_id,
+        "kind": kind_label(found.kind),
+        "detected_type": found.detected_type,
+        "extension": extension_label(source.name),
+        "mismatch": found.mismatch,
+        "input_bytes": size,
+    }
+
+
+def _log_file_done(fields: Mapping[str, Any], result: Mapping[str, Any], output_chars: int) -> None:
+    """The driver's ``file_done`` event: the file's outcome, intake rejections included.
+
+    ``reason_code`` is the intake refusal, else the first unit that is not ok's
+    code, else null.
+    """
+    reason_code = result.get("reason_code") or next(
+        (p.get("reason_code") for p in result["not_ok_pages"]), None
+    )
+    log_event(
+        "file_done",
+        **fields,
+        work_id=result["work_id"],
+        unit=result["unit"],
+        state=result["state"],
+        reason_code=reason_code,
+        flags=result["flags"],
+        output_chars=output_chars,
+        elapsed_seconds=result["elapsed_seconds"],
+    )
+
+
+# ---------------------------------------------------------------------------
 # Public entry point
 # ---------------------------------------------------------------------------
 
 
-def parse_pdf_pages_in_store(
+def parse_file_in_store(
     source: Path,
     location: str,
     region: str | None = None,
@@ -1239,11 +1920,19 @@ def parse_pdf_pages_in_store(
     endpoint: str | None = None,
     concurrency: int | None = None,
     publish: PublishRequest | None = None,
+    request_timeout: float | None = None,
+    declared_type: str | None = None,
 ) -> dict[str, Any]:
-    """Split a PDF, parse its pages in parallel, and stitch when every page is ok.
+    """Take in a file, parse its units in parallel, and stitch when every unit is ok.
+
+    Intake sniffs the file (``sniff.py``) to route it to a kind. A file with no
+    kind, or a kind missing from ``PARSER_ENABLED_KINDS``, fails alone with
+    ``unsupported_type``; a single-unit file over its kind's raw cap fails with
+    ``too_large``. Neither writes under ``work/``: only ``out/<file id>/status.json``.
+    A PDF is split into pages; every other kind is one unit, the file itself.
 
     Args:
-        source: The PDF to parse (a local file).
+        source: The file to parse (a local file, any name: the content decides).
         location: The store location: a local directory or ``s3://bucket[/prefix]``.
             Worker processes each open their own store from it.
         region: AWS region for an S3 location (never read from the environment here).
@@ -1261,12 +1950,17 @@ def parse_pdf_pages_in_store(
             the same store. Split, archive, status and stitch stay here either way.
         endpoint: The page service base URL (``http://host[:port]``), for kserve.
         concurrency: Page requests in flight, for kserve (default ``workers``).
+        request_timeout: Seconds one page request may take, for kserve (default
+            ``remote_request_timeout()``, from ``PARSER_REMOTE_REQUEST_TIMEOUT_S``).
         publish: Also publish the result to ``published/`` under this doc id
             (``publish.py``): a complete file as a version, an incomplete one as a
             ``partial`` version when the request allows it, else a ``failed`` event.
+        declared_type: The input's declared content type (an S3 object's
+            ``Content-Type``), or None; used by the sniff's text rule.
 
     Returns:
-        ``{"state", "file_id", "work_id", "work_dir", "out_dir", "page_count", "counts",
+        ``{"state", "file_id", "work_id", "kind", "unit", "detected_type", "flags", "work_dir",
+        "out_dir", "page_count", "counts",
         "not_ok_pages", "pages", "status_path", "output_path", "partial_path",
         "output_key", "partial_key", "published", "elapsed_seconds"}``. ``state`` is ``complete``
         only when every page is ok; ``output_path`` is None otherwise. ``work_dir``
@@ -1274,15 +1968,17 @@ def parse_pdf_pages_in_store(
         from the store's ``location`` (a local path or an ``s3://`` URI); the
         ``*_key`` values are store keys.
 
-    Raises on an input that cannot be split at all (missing, not a PDF, encrypted)
-    and on ``PipelineConfigMismatch``; page-level failures never raise. A store
-    error propagates.
+        An intake rejection returns ``state`` ``failed`` with ``work_id`` and
+        ``work_dir`` None and the ``reason_code``; with ``publish`` it writes a
+        ``failed`` event (once per refusal, however often the file is re-run).
+
+    Raises on an input that cannot be split at all (missing, a PDF that pypdf
+    cannot read, encrypted) and on ``PipelineConfigMismatch``; unit-level failures
+    never raise. A store error propagates.
     """
     source = Path(source).resolve()
     if not source.is_file():
         raise FileNotFoundError(source)
-    if source.suffix.lower() != ".pdf":
-        raise ValueError(f"the page pipeline handles PDFs only, got {source.name}")
     if executor not in (EXECUTOR_LOCAL, EXECUTOR_KSERVE):
         raise ValueError(f"executor must be {EXECUTOR_LOCAL} or {EXECUTOR_KSERVE}, got {executor!r}")
     if executor == EXECUTOR_KSERVE and not endpoint:
@@ -1294,12 +1990,40 @@ def parse_pdf_pages_in_store(
 
     started = time.perf_counter()
     sha256 = _sha256_file(source)
-    work_id, file_id = _work_id(sha256, config_hash()), _file_id(source.stem, sha256)
+    found = _sniff_source(source, declared_type)
+    if found.mismatch:
+        logger.warning(
+            "%s: the name or declared type disagrees with the content (detected %s, kind %s)",
+            source.name,
+            found.detected_type,
+            found.kind,
+        )
+    size = source.stat().st_size
+    rejection = _intake_rejection(found, size)
+    file_id = _file_id(source.stem, sha256)
+    event_fields = _file_event_fields(source, found, file_id, size, publish)
+    log_event("file_intake", **event_fields, reason_code=rejection[0] if rejection else None)
+    if rejection is not None:
+        if rejection[0] == INTAKE_TOO_LARGE:
+            log_event(
+                "guard_reject",
+                **event_fields,
+                reason_code=INTAKE_TOO_LARGE,
+                limits={"raw_cap_bytes": raw_cap_bytes(str(found.kind))},
+            )
+        refused = _reject_at_intake(store, source, sha256, found, *rejection, started, publish)
+        _log_file_done(event_fields, refused, 0)
+        return refused
+    kind = found.kind
+    assert kind is not None
+    config = pipeline_config(kind)
+    work_id = _work_id(sha256, config_hash(config))
     if restart:
         # The work is shared by every name with these bytes: they all start again.
         store.delete_prefix(f"{_work_prefix(work_id)}/")
         store.delete_prefix(f"{_out_prefix(file_id)}/")
-    manifest = _split(store, work_id, source)
+    manifest = _intake(store, work_id, source, kind)
+    limits_now = current_limits(kind)
 
     todo: list[int] = []
     for page_number in range(1, int(manifest["page_count"]) + 1):
@@ -1307,8 +2031,11 @@ def parse_pdf_pages_in_store(
         record = _load_record_checked(store, work_id, page_number)
         if record is not None and record.get("state") == STATE_OK:
             continue
+        # A deterministic failure under unchanged limits is final: never re-run.
+        if record is not None and _is_final(record, limits_now):
+            continue
         if _read_attempts(store, work_id, page_number) >= max_attempts:
-            _finalize_exhausted(store, work_id, page_number)
+            _finalize_exhausted(store, work_id, page_number, kind)
             continue
         # failed or degraded, under the limit: archive it so the page's next result
         # is again the first write. Done here, never in a page task. The step says
@@ -1320,9 +2047,11 @@ def parse_pdf_pages_in_store(
     remote = executor == EXECUTOR_KSERVE
     in_flight = (concurrency or max(1, workers)) if remote else workers
     logger.info(
-        "%s: %d pages, %d to process, %d already done, %s=%d",
+        "%s: %s, %d %s(s), %d to process, %d already done, %s=%d",
         source.name,
+        kind,
         manifest["page_count"],
+        unit_of(kind),
         len(todo),
         int(manifest["page_count"]) - len(todo),
         f"kserve {endpoint} concurrency" if remote else "workers",
@@ -1330,20 +2059,36 @@ def parse_pdf_pages_in_store(
     )
     if todo and remote:
         assert endpoint is not None
-        _run_pages_remote(store, endpoint, work_id, todo, in_flight, escalate, max_attempts)
+        timeout = remote_request_timeout() if request_timeout is None else request_timeout
+        _run_pages_remote(
+            store, endpoint, work_id, todo, in_flight, escalate, max_attempts, timeout
+        )
     elif todo:
-        _run_pages(store, location, region, work_id, todo, workers, escalate, max_attempts)
+        _run_pages(store, location, region, work_id, todo, workers, escalate, max_attempts, kind)
 
     # Records are read once and shared by the status, the stitch and the publish.
     # status.json is written LAST, so it never says complete before the outputs exist.
-    records = {n: _load_record(store, work_id, n) for n in range(1, int(manifest["page_count"]) + 1)}
+    records = {
+        n: _load_record(store, work_id, n) for n in range(1, int(manifest["page_count"]) + 1)
+    }
     status = build_status(
-        store, work_id, file_id, manifest, max_attempts, source.name, records=records, write=False
+        store,
+        work_id,
+        file_id,
+        manifest,
+        max_attempts,
+        source.name,
+        records=records,
+        write=False,
+        limits_now=limits_now,
+        detected_type=found.detected_type,
     )
     keys = stitch(store, work_id, file_id, manifest, status, partial=partial, records=records)
     published = None
     if publish is not None:
         markdown, pages_meta = _stitch_markdown(store, work_id, status, records)
+        reason_codes = {p["page"]: p["reason_code"] for p in status["pages"]}
+        first = records.get(1) or {}
         published = publish_document(
             store,
             publish,
@@ -1355,12 +2100,18 @@ def parse_pdf_pages_in_store(
             config_hash=config_hash(manifest["config"]),
             page_count=int(manifest["page_count"]),
             markdown=markdown,
-            pages_meta=pages_meta,
+            pages_meta=[{**m, "reason_code": reason_codes[m["page"]]} for m in pages_meta],
             page_texts={
                 n: str(r.get("markdown", ""))
                 for n, r in records.items()
                 if r is not None and r.get("state") == STATE_OK
             },
+            kind=kind,
+            unit=unit_of(kind),
+            flags=status["flags"],
+            handler_version=manifest["config"].get("handler_version"),
+            # An email's headers and attachment list, from its one unit's record.
+            email=first.get("email") if kind in EMAIL_KINDS else None,
         )
     _put_json(store, _status_key(file_id), status)
     if status["state"] != FILE_COMPLETE:
@@ -1368,12 +2119,16 @@ def parse_pdf_pages_in_store(
             "%s: %s — pages not ok: %s",
             source.name,
             status["state"],
-            [(p["page"], p["state"], p["reason"]) for p in status["not_ok_pages"]],
+            [(p["page"], p["state"], truncate(p["reason"])) for p in status["not_ok_pages"]],
         )
-    return {
+    result: dict[str, Any] = {
         "state": status["state"],
         "file_id": file_id,
         "work_id": work_id,
+        "kind": kind,
+        "unit": unit_of(kind),
+        "detected_type": found.detected_type,
+        "flags": status["flags"],
         "work_dir": store.location(_work_prefix(work_id)),
         "out_dir": store.location(_out_prefix(file_id)),
         "page_count": manifest["page_count"],
@@ -1388,6 +2143,13 @@ def parse_pdf_pages_in_store(
         "published": published,
         "elapsed_seconds": round(time.perf_counter() - started, 3),
     }
+    output_chars = sum(int(r.get("n_chars") or 0) for r in records.values() if r is not None)
+    _log_file_done(event_fields, result, output_chars)
+    return result
+
+
+# The old name, kept for the scripts and tests that use it.
+parse_pdf_pages_in_store = parse_file_in_store
 
 
 def parse_pdf_pages(
@@ -1399,12 +2161,12 @@ def parse_pdf_pages(
     partial: bool = False,
     restart: bool = False,
 ) -> dict[str, Any]:
-    """``parse_pdf_pages_in_store`` on a local directory.
+    """``parse_file_in_store`` on a local directory (any kind, despite the name).
 
     A thin wrapper for callers that hold a ``Path``: ``work_root`` is the store
     location, holding ``work/<work id>/`` per content and ``out/<file id>/`` per source file.
     """
-    return parse_pdf_pages_in_store(
+    return parse_file_in_store(
         source,
         str(Path(work_root).resolve()),
         workers=workers,

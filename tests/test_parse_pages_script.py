@@ -242,8 +242,9 @@ def test_missing_s3_object_and_non_pdf_key_exit_1_with_one_line(
     assert _main(script, monkeypatch, "--input", "s3://input-bucket/gone.pdf", *tail) == 1
     assert capsys.readouterr().err == "Error: s3://input-bucket/gone.pdf does not exist\n"
 
-    # Refused before any call: nothing is scripted for these.
-    for uri in ("s3://input-bucket/notes.docx", "s3://input-bucket/", "s3://input-bucket"):
+    # Refused before any call: nothing is scripted for these. (Any key is accepted
+    # since Group 3a: the content decides the kind, so notes.docx is no longer here.)
+    for uri in ("s3://input-bucket/", "s3://input-bucket"):
         assert _main(script, monkeypatch, "--input", uri, *tail) == 1
         err = capsys.readouterr().err
         assert err.startswith("Error: ") and err.count("\n") == 1
