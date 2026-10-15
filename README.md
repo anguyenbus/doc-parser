@@ -14,6 +14,7 @@ Textract**. Most pages stay on Docling (fast, cheap); the engine is the safety n
 - An engine is contacted **only when a page escalates** — so HTML/Office and clean
   digital PDFs run **fully offline**.
 
+How parsing works, end to end: [docs/how-document-parsing-works.md](docs/how-document-parsing-works.md).
 Module map & data flow: [docs/architecture.md](docs/architecture.md). Guided notebook:
 [notebooks/walkthrough.ipynb](notebooks/walkthrough.ipynb).
 
