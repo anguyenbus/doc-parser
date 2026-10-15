@@ -44,15 +44,12 @@ from kserve.errors import InvalidInput  # noqa: E402
 from prometheus_client import REGISTRY  # noqa: E402
 
 from parser_service import page_pipeline  # noqa: E402
+from parser_service.formats import pdf  # noqa: E402
+from parser_service.formats.result import Reply, exception_reply  # noqa: E402
 from parser_service.page_pipeline import KSERVE_MODEL_NAME, work_id_for  # noqa: E402
 from parser_service.service import worker as page_worker  # noqa: E402
 from parser_service.service.predictor import PageParserModel, parse_instance  # noqa: E402
-from parser_service.service.worker import (  # noqa: E402
-    ParseWorker,
-    Reply,
-    Request,
-    WorkerNotReady,
-)
+from parser_service.service.worker import ParseWorker, Request, WorkerNotReady  # noqa: E402
 from parser_service.storage.store import LocalStore  # noqa: E402
 
 WORK_ID = work_id_for(THREE_PAGE)
@@ -111,11 +108,9 @@ class InProcessWorker:
             raise WorkerNotReady("stopped")
         kind, unit_path, page_number, escalate, _cap = request
         try:
-            state, reason, markdown, extra = page_pipeline._parse_page(
-                Path(unit_path), page_number, escalate
-            )
+            state, reason, markdown, extra = pdf.parse_page(Path(unit_path), page_number, escalate)
         except Exception as exc:  # noqa: BLE001 — as the real worker does
-            return page_worker._exception_reply(exc)
+            return exception_reply(exc)
         return state, reason, None, markdown, extra
 
     def kill(self) -> None:
@@ -330,7 +325,7 @@ def test_one_page_at_a_time_under_concurrent_requests(
         release.wait(5)
         return _result("slow")
 
-    monkeypatch.setattr(page_pipeline, "parse_to_markdown", slow)
+    monkeypatch.setattr(pdf, "parse_to_markdown", slow)
     model = _in_process_model(store)
     model.load()
 

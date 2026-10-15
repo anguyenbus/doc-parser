@@ -33,7 +33,7 @@ HTML and email handlers load it on their first call, inside the parse worker.
 
 Empty output (spec D5). A single-unit handler whose conversion succeeds with empty
 or whitespace-only markdown replies ``ok`` with route ``empty_document``, never
-``failed`` ``empty_output``; PDF pages keep ``classify_page_result`` unchanged.
+``failed`` ``empty_output``; PDF pages keep ``pdf.classify_page_result`` unchanged.
 """
 
 from __future__ import annotations
@@ -45,10 +45,9 @@ from collections.abc import Callable
 from email.utils import getaddresses
 from html.parser import HTMLParser
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
-if TYPE_CHECKING:
-    from parser_service.service.worker import Reply
+from parser_service.formats.result import Reply, apply_output_cap
 
 # mail-parser logs attachment names at DEBUG, and Docling's email backend runs it
 # before any handler code here does. Hold its logger at WARNING from import, so
@@ -83,10 +82,12 @@ class NoHandlerError(LookupError):
 
 
 def _parse_pdf_page(path: Path, page_number: int, escalate: bool) -> Reply:
-    """A PDF page: today's ``_parse_page`` (blank probe, then ``parse_to_markdown``)."""
-    from parser_service import page_pipeline  # looked up at call time
+    """A PDF page: ``pdf.parse_page`` (blank probe, then ``parse_to_markdown``)."""
+    # Imported on use: it loads the Docling path, which a process that only reads
+    # settings (the page service's own process, the scripts' start-up check) avoids.
+    from parser_service.formats import pdf
 
-    state, reason, markdown, extra = page_pipeline._parse_page(path, page_number, escalate)
+    state, reason, markdown, extra = pdf.parse_page(path, page_number, escalate)
     return state, reason, None, markdown, extra
 
 
@@ -175,10 +176,15 @@ FLAG_IMAGES_NOT_OCRD = "images_not_ocrd"
 _MAX_REASON_CHARS = 500
 
 
+# The smallest embedded image, in pixels (width x height), that sets a document's
+# ``images_not_ocrd`` flag (spec D6). Read by the parse worker; a flag never
+# changes a unit's state, so this is neither a limit nor part of the config.
+IMAGES_MIN_PIXELS_ENV = "PARSER_IMAGES_MIN_PIXELS"
+DEFAULT_IMAGES_MIN_PIXELS = 40_000
+
+
 def images_min_pixels() -> int:
     """The ``images_not_ocrd`` threshold in pixels (``PARSER_IMAGES_MIN_PIXELS``), at call time."""
-    from parser_service.settings import DEFAULT_IMAGES_MIN_PIXELS, IMAGES_MIN_PIXELS_ENV
-
     return int(os.environ.get(IMAGES_MIN_PIXELS_ENV, str(DEFAULT_IMAGES_MIN_PIXELS)))
 
 
@@ -648,7 +654,5 @@ def parse_unit(
         raise NoHandlerError(f"no handler for kind {kind!r} in this image")
     reply = handler(Path(path), page_number, escalate)
     if output_cap is not None:
-        from parser_service.service.worker import _apply_output_cap
-
-        reply = _apply_output_cap(kind, reply, output_cap)
+        reply = apply_output_cap(kind, reply, output_cap)
     return reply

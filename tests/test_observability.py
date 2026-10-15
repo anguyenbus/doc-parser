@@ -26,8 +26,9 @@ from test_page_pipeline import THREE_PAGE, XLSX, _enable_test_kind, _install_fak
 
 from parser_service import observability, page_pipeline
 from parser_service.delivery.publish import PublishRequest
+from parser_service.formats.result import Reply
 from parser_service.formats.sniff import KINDS
-from parser_service.service.worker import Reply, Request
+from parser_service.service.worker import Request
 from parser_service.storage.store import LocalStore
 
 prometheus_client = pytest.importorskip("prometheus_client")

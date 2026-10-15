@@ -28,6 +28,7 @@ from test_page_pipeline import THREE_PAGE, _install_fake, _result
 from test_store_contract import CONTRACT_CASES
 
 from parser_service import page_pipeline
+from parser_service.formats import pdf
 from parser_service.page_pipeline import file_id_for, parse_pdf_pages_in_store, work_id_for
 from parser_service.storage.store import (
     LocalStore,
@@ -170,7 +171,7 @@ def test_page_file_scope_is_closed_after_success_and_after_a_parse_error(
         seen.append(path.parent)
         return by_page(int(path.stem))
 
-    monkeypatch.setattr(page_pipeline, "parse_to_markdown", fake)
+    monkeypatch.setattr(pdf, "parse_to_markdown", fake)
     memory = MemoryStore()
 
     result = _run(memory)

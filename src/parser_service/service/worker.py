@@ -49,8 +49,9 @@ import weakref
 from collections.abc import Callable
 from multiprocessing.connection import Connection
 from pathlib import Path
-from typing import Any
 
+from parser_service.formats.handlers import parse_unit
+from parser_service.formats.result import Reply, apply_output_cap, exception_reply
 from parser_service.settings import DEFAULT_WORKER_START_TIMEOUT_S
 
 logger = logging.getLogger(__name__)
@@ -67,8 +68,6 @@ _MAX_EXCEPTION_CHARS = 500
 
 # A request: (kind, unit_path, page_number, escalate, output_cap_bytes or None).
 Request = tuple[str, str, int, bool, int | None]
-# A reply: (state, reason, reason_code, markdown, extra record fields).
-Reply = tuple[str, str | None, str | None, str, dict[str, Any]]
 # A parse target: (kind, unit_path, page_number, escalate) -> Reply.
 ParseTarget = Callable[[str, str, int, bool], Reply]
 
@@ -120,41 +119,12 @@ def warm_up() -> None:
 
 
 def parse_request(kind: str, unit_path: str, page_number: int, escalate: bool) -> Reply:
-    """The production parse target: ``unit_handlers.parse_unit`` for the request's kind.
+    """The production parse target: ``handlers.parse_unit`` for the request's kind.
 
     A kind with no handler in this image raises, which ``_worker_main`` turns into
     a ``failed`` reply. The output cap is applied by ``_worker_main``.
     """
-    from parser_service.formats.handlers import parse_unit
-
     return parse_unit(kind, Path(unit_path), page_number, escalate)
-
-
-def _exception_reply(exc: BaseException) -> Reply:
-    text = f"{type(exc).__name__}: {exc}"[:_MAX_EXCEPTION_CHARS]
-    return "failed", f"exception: {text}", "exception", "", {}
-
-
-def _apply_output_cap(kind: str, reply: Reply, cap_bytes: int | None) -> Reply:
-    """Replace a single-unit reply whose markdown is over ``cap_bytes`` (spec D5).
-
-    PDF pages are never capped (a page's output is bounded by the page). The
-    stored ``limits`` are in MB (1,000,000 bytes), as the setting is.
-    """
-    if kind == "pdf" or cap_bytes is None:
-        return reply
-    size = len(reply[3].encode("utf-8"))
-    if size <= cap_bytes:
-        return reply
-    max_output_mb = cap_bytes / 1_000_000
-    limits = {"max_output_mb": int(max_output_mb) if max_output_mb.is_integer() else max_output_mb}
-    return (
-        "failed",
-        f"output_too_large: {size} bytes of markdown, over the cap of {cap_bytes}",
-        "output_too_large",
-        "",
-        {"output_bytes": size, "limits": limits},
-    )
 
 
 def _worker_main(conn: Connection, target: ParseTarget, warmup: Callable[[], None] | None) -> None:
@@ -183,14 +153,14 @@ def _worker_main(conn: Connection, target: ParseTarget, warmup: Callable[[], Non
             reply = target(kind, unit_path, page_number, escalate)
         except Exception as exc:  # noqa: BLE001 — a parse error is a reply, not a dead worker
             logger.error("page %s: parse raised %s", page_number, type(exc).__name__)
-            reply = _exception_reply(exc)
-        reply = _apply_output_cap(kind, reply, cap_bytes)
+            reply = exception_reply(exc)
+        reply = apply_output_cap(kind, reply, cap_bytes)
         try:
             conn.send(reply)
         except (EOFError, OSError):
             return
         except Exception as exc:  # noqa: BLE001 — e.g. an unpicklable field in extra
-            conn.send(_exception_reply(exc))
+            conn.send(exception_reply(exc))
 
 
 # ---------------------------------------------------------------------------

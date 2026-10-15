@@ -97,6 +97,14 @@ from typing import Any, Protocol
 from parser_service.delivery.publish import EMAIL_KINDS, PublishRequest, publish_document
 from parser_service.formats.guards import DocxLimits, GuardRejection, check_docx
 from parser_service.formats.handlers import handler_version, parse_unit
+from parser_service.formats.result import (
+    STATE_DEGRADED,
+    STATE_FAILED,
+    STATE_OK,
+    STATE_PENDING,
+    Reply,
+    exception_reply,
+)
 from parser_service.formats.sniff import KIND_EXTENSIONS, KINDS, SNIFF_BYTES, Sniff, sniff
 from parser_service.observability import (
     extension_label,
@@ -105,15 +113,9 @@ from parser_service.observability import (
     observe_unit,
     truncate,
 )
-from parser_service.parsing.document import enable_converter_reuse, parse_to_markdown
+from parser_service.parsing.document import enable_converter_reuse
 from parser_service.parsing.elements import sha256_file
-from parser_service.parsing.render import render_page, text_layer_tokens
-from parser_service.parsing.route_stats import (
-    ROUTE_DOCLING_KEPT,
-    ROUTE_TEXTRACT_FALLBACK,
-    ROUTE_VLM_FALLBACK,
-)
-from parser_service.service.worker import Reply, Request, WorkerTimeout, _exception_reply
+from parser_service.service.worker import Request, WorkerTimeout
 from parser_service.settings import (
     DEADLINE_ENV,
     DEFAULT_MAX_OUTPUT_MB,
@@ -130,12 +132,6 @@ from parser_service.version import PARSER_VERSION
 
 logger = logging.getLogger(__name__)
 
-# Page states. ``pending`` appears only in status.json (a page with no record yet).
-STATE_OK = "ok"
-STATE_DEGRADED = "degraded"
-STATE_FAILED = "failed"
-STATE_PENDING = "pending"
-
 # File states in status.json.
 FILE_COMPLETE = "complete"
 FILE_FAILED = "failed"
@@ -145,23 +141,6 @@ PAGE_MARKER = "==== page {number} ==="
 _PAGE_MARKER_RE = re.compile(r"^==== page \d+(?: \([^)\n]*\))? ===\n\n?", re.MULTILINE)
 
 _DEFAULT_MAX_ATTEMPTS = 3
-_ROUTE_BLANK = "blank"
-
-# parse_to_markdown warning codes that mean the page produced nothing usable.
-_FATAL_WARNING_CODES = (
-    "docling_failed",
-    "unhandled_exception",
-    "input_too_large",
-    "unsupported_type",
-    "page_unparseable",
-)
-
-# Blank-page probe: a page with no text layer is rendered small and counted as
-# blank when almost no pixel is darker than near-white.
-_BLANK_PROBE_DPI = 36
-_BLANK_DARK_LEVEL = 235
-_BLANK_MAX_DARK_FRACTION = 0.0005
-
 
 class PipelineConfigMismatch(RuntimeError):
     """The work directory was started under a different pipeline config."""
@@ -718,58 +697,6 @@ def split_pdf(source: Path, work_dir: Path) -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 
-def _is_blank_page(page_pdf: Path) -> bool:
-    """True iff the page has no text layer AND renders (almost) entirely white.
-
-    A blank page has nothing for Docling or an engine to recover; without this
-    probe it would come back empty and fail the whole file. Never raises — any
-    probe failure means "not blank" and the page takes the normal path.
-    """
-    try:
-        if text_layer_tokens(page_pdf).get(0, 0) > 0:
-            return False
-        from PIL import Image
-
-        image = Image.open(io.BytesIO(render_page(page_pdf, 0, dpi=_BLANK_PROBE_DPI)))
-        histogram = image.convert("L").histogram()
-        total = sum(histogram)
-        dark = sum(histogram[:_BLANK_DARK_LEVEL])
-        return total > 0 and dark / total <= _BLANK_MAX_DARK_FRACTION
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("blank-page probe failed for %s: %s", page_pdf.name, truncate(str(exc)))
-        return False
-
-
-def classify_page_result(result: dict[str, Any]) -> tuple[str, str | None]:
-    """Map one page's ``parse_to_markdown`` result to ``(state, reason)``.
-
-    ok        Docling kept by the gate, the engine's output shipped, or arbitration
-              kept Docling over a successful engine call.
-    degraded  the gate rejected Docling but its text was kept anyway: the engine
-              failed (``*-fallback-docling``) or the budget cap suppressed the call.
-    failed    nothing usable: Docling failed, the engine failed with no Docling
-              text to fall back to, or the page came back empty.
-    """
-    for warning in result.get("warnings", []):
-        code = warning.get("code")
-        if code in _FATAL_WARNING_CODES:
-            return STATE_FAILED, f"{code}: {warning.get('message', '')}"
-
-    routes = result.get("page_routes", [])
-    if not routes:
-        return STATE_FAILED, "no_route_recorded"
-    route = routes[0].get("route")
-    route_reason = routes[0].get("reason")
-
-    if route in (ROUTE_VLM_FALLBACK, ROUTE_TEXTRACT_FALLBACK):
-        return STATE_DEGRADED, f"{route}: {route_reason}"
-    if route == ROUTE_DOCLING_KEPT and route_reason == "budget_exhausted_no_escalation":
-        return STATE_DEGRADED, route_reason
-    if not str(result.get("markdown", "")).strip():
-        return STATE_FAILED, f"empty_output: route={route}"
-    return STATE_OK, None
-
-
 def _write_record(
     store: Store,
     work_id: str,
@@ -833,36 +760,6 @@ def _write_record(
             f"{store.location(_record_key(work_id, page_number))} but cannot be read as a record"
         )
     return stored
-
-
-def _parse_page(
-    page_pdf: Path, page_number: int, escalate: bool
-) -> tuple[str, str | None, str, dict[str, Any]]:
-    """Probe and parse one page file: ``(state, reason, markdown, record fields)``."""
-    if _is_blank_page(page_pdf):
-        return STATE_OK, None, "", {"route": _ROUTE_BLANK, "route_reason": "blank_page"}
-    result = parse_to_markdown(page_pdf, escalate=escalate)
-
-    state, reason = classify_page_result(result)
-    # The one-page file numbers its only page 0; store the real 0-based index.
-    routes = [{**r, "page_index": page_number - 1} for r in result.get("page_routes", [])]
-    warnings = [
-        {**w, "page_index": page_number - 1} if "page_index" in w else dict(w)
-        for w in result.get("warnings", [])
-    ]
-    return (
-        state,
-        reason,
-        str(result.get("markdown", "")),
-        {
-            "route": routes[0].get("route") if routes else None,
-            "route_reason": routes[0].get("reason") if routes else None,
-            "page_routes": routes,
-            "warnings": warnings,
-            "confidence": result.get("confidence", {}).get("document"),
-            "call_counts": result.get("call_counts", {}),
-        },
-    )
 
 
 class ParseRunner(Protocol):
@@ -959,7 +856,7 @@ def _process_page(
             # Exception text may quote the document: the type in the log, and at
             # most 500 characters in the record, as the parse worker does (D9).
             logger.error("page %d: parse raised %s", page_number, type(exc).__name__)
-            state, reason, reason_code, markdown, reply_extra = _exception_reply(exc)
+            state, reason, reason_code, markdown, reply_extra = exception_reply(exc)
         extra = dict(reply_extra)
         limits = extra.pop("limits", None)
         extra["elapsed_seconds"] = round(time.perf_counter() - started, 3)

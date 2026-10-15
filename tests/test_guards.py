@@ -39,7 +39,8 @@ from parser_service.formats.guards import (
     count_elements,
     docx_stats,
 )
-from parser_service.service.worker import Reply, Request
+from parser_service.formats.result import Reply
+from parser_service.service.worker import Request
 from parser_service.storage.store import LocalStore
 
 _W = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"

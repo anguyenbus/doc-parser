@@ -22,7 +22,8 @@ from test_parse_pages_script import _main, script  # noqa: F401  (fixture)
 from parser_service import page_pipeline
 from parser_service.delivery.jobs import job_status_key
 from parser_service.formats.handlers import parse_unit
-from parser_service.service.worker import ParseWorker, Reply, parse_request
+from parser_service.formats.result import Reply
+from parser_service.service.worker import ParseWorker, parse_request
 from parser_service.storage.store import LocalStore
 
 
@@ -201,8 +202,9 @@ def test_txt_never_calls_docling(tmp_path: Path) -> None:
     path.write_bytes("café\r\nline 2\n".encode("cp1252"))
     code = (
         "import sys\n"
-        "from parser_service.service.worker import _apply_output_cap, parse_request\n"
-        f"reply = _apply_output_cap('txt', parse_request('txt', {str(path)!r}, 1, False), 10**6)\n"
+        "from parser_service.formats.result import apply_output_cap\n"
+        "from parser_service.service.worker import parse_request\n"
+        f"reply = apply_output_cap('txt', parse_request('txt', {str(path)!r}, 1, False), 10**6)\n"
         "assert reply[0] == 'ok', reply\n"
         "heavy = sorted(m for m in sys.modules if m.split('.')[0] in ('docling', 'torch'))\n"
         "print(','.join(heavy) or 'none')\n"

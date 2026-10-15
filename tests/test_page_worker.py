@@ -27,13 +27,9 @@ from typing import Any
 import pytest
 
 from parser_service import page_pipeline
+from parser_service.formats.result import Reply
 from parser_service.page_pipeline import split_pdf, work_dir_for, work_id_for
-from parser_service.service.worker import (
-    ParseWorker,
-    Reply,
-    WorkerDied,
-    WorkerTimeout,
-)
+from parser_service.service.worker import ParseWorker, WorkerDied, WorkerTimeout
 from parser_service.storage.store import LocalStore
 
 FIXTURES = Path(__file__).parent / "fixtures"

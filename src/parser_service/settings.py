@@ -22,7 +22,11 @@ import os
 from collections.abc import Mapping
 from dataclasses import dataclass
 
-from parser_service.formats.handlers import has_handler
+from parser_service.formats.handlers import (
+    DEFAULT_IMAGES_MIN_PIXELS,
+    IMAGES_MIN_PIXELS_ENV,
+    has_handler,
+)
 from parser_service.formats.sniff import KINDS
 from parser_service.storage.store import location_kind
 
@@ -73,11 +77,6 @@ RAW_CAP_ENV: dict[str, tuple[str, int]] = {
 # no output cap. Provisional until the corpus inventory.
 MAX_OUTPUT_ENV = "PARSER_MAX_OUTPUT_MB"
 DEFAULT_MAX_OUTPUT_MB = 20
-# The smallest embedded image, in pixels (width x height), that sets a document's
-# ``images_not_ocrd`` flag (spec D6). Read by the parse worker; a flag never
-# changes a unit's state, so this is neither a limit nor part of the config.
-IMAGES_MIN_PIXELS_ENV = "PARSER_IMAGES_MIN_PIXELS"
-DEFAULT_IMAGES_MIN_PIXELS = 40_000
 # The DOCX cost guard's thresholds (spec D7), checked by the page service before a
 # DOCX reaches the parse worker: the key stored in a rejected record's ``limits``
 # -> (the environment key, its default). MB are 1,000,000 bytes; the ratio is

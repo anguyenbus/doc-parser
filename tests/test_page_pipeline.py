@@ -23,14 +23,16 @@ from typing import Any
 import pytest
 
 from parser_service import page_pipeline
+from parser_service.formats import pdf
+from parser_service.formats.pdf import classify_page_result
+from parser_service.formats.result import Reply
 from parser_service.page_pipeline import (
-    classify_page_result,
     parse_pdf_pages,
     split_pdf,
     strip_page_markers,
     work_dir_for,
 )
-from parser_service.service.worker import Reply, Request
+from parser_service.service.worker import Request
 
 FIXTURES = Path(__file__).parent / "fixtures"
 THREE_PAGE = FIXTURES / "three_page_digital.pdf"
@@ -62,7 +64,7 @@ def _install_fake(
         calls.append(page_number)
         return by_page(page_number)
 
-    monkeypatch.setattr(page_pipeline, "parse_to_markdown", fake)
+    monkeypatch.setattr(pdf, "parse_to_markdown", fake)
     return calls
 
 
