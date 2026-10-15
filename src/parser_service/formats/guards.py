@@ -1,5 +1,6 @@
 """
-guards.py — DOCX cost measurements, without decompressing more than one part.
+guards.py — the cost guards: DOCX without decompressing more than one part, images
+without decoding any pixel.
 
 Pure Python (``zipfile``, ``re``); it never imports Docling. Two building blocks,
 shared by the corpus inventory (``scripts/corpus_inventory.py``) and the DOCX cost
@@ -32,6 +33,13 @@ A rejection returns ``(reason_code, detail, limits)``, where ``limits`` holds th
 limit values behind it (the four ZIP limits, or the two count limits), stored in
 the unit's record so the failure is final until one of them changes (spec D5).
 Details hold numbers only, never a part name or document text.
+
+``check_image(path, max_megapixels)`` is the image cost guard. It reads the
+dimensions a PNG (``IHDR``, and ``acTL`` for an animated PNG's frame count) or a
+JPEG (the first ``SOF`` segment) declares, and rejects an image over
+``max_megapixels`` (width x height x frames) as ``too_complex`` before anything
+decodes it: a file of a few MB can declare an image that needs gigabytes. A header
+it cannot read passes; the parser then reports the file.
 
 Counting. A paragraph is ``<p`` and a table cell ``<tc``, each with any namespace
 prefix (or none), followed by whitespace, ``/`` or ``>``: ``<w:pPr>``, ``<w:pict>``
@@ -290,3 +298,112 @@ def check_docx(
     if counts.truncated:  # more bytes than the index declared: never parse them
         return REASON_ZIP_BOMB, "index mismatch", limits.zip_limits()
     return None
+
+
+# ---------------------------------------------------------------------------
+# Images
+# ---------------------------------------------------------------------------
+
+# How much of an image the guard reads: a JPEG's frame header comes after its APPn
+# segments (EXIF, ICC profile), each at most 64 KiB; a PNG's chunks before the
+# first IDAT are small.
+IMAGE_HEADER_BYTES = 1 << 20
+_PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
+# JPEG start-of-frame markers: C0-CF except DHT (C4), JPG (C8) and DAC (CC).
+_JPEG_SOF = frozenset(range(0xC0, 0xD0)) - {0xC4, 0xC8, 0xCC}
+# JPEG markers with no length field: TEM, RST0-7 and SOI.
+_JPEG_STANDALONE = frozenset({0x01, 0xD8, *range(0xD0, 0xD8)})
+
+
+@dataclass(frozen=True)
+class ImageHeader:
+    """The size an image's header declares."""
+
+    width: int
+    height: int
+    frames: int = 1
+
+    @property
+    def megapixels(self) -> float:
+        return self.width * self.height * self.frames / 1_000_000
+
+
+def _png_header(head: bytes) -> ImageHeader | None:
+    """``IHDR``'s size and ``acTL``'s frame count (1 without one), or None."""
+    if len(head) < 33 or head[12:16] != b"IHDR":
+        return None
+    width, height = int.from_bytes(head[16:20], "big"), int.from_bytes(head[20:24], "big")
+    frames = 1
+    pos = 8
+    while pos + 8 <= len(head):
+        length = int.from_bytes(head[pos : pos + 4], "big")
+        chunk = head[pos + 4 : pos + 8]
+        if chunk == b"IDAT":
+            break
+        if chunk == b"acTL" and pos + 12 <= len(head):
+            frames = max(1, int.from_bytes(head[pos + 8 : pos + 12], "big"))
+            break
+        pos += 12 + length
+    return ImageHeader(width, height, frames)
+
+
+def _jpeg_header(head: bytes) -> ImageHeader | None:
+    """The size in the first start-of-frame segment, or None (none in ``head``)."""
+    pos = 2
+    while pos + 4 <= len(head):
+        if head[pos] != 0xFF:
+            return None
+        marker = head[pos + 1]
+        if marker == 0xFF:  # a fill byte before the marker
+            pos += 1
+            continue
+        if marker in _JPEG_STANDALONE:
+            pos += 2
+            continue
+        if marker in (0xD9, 0xDA):  # end of image, or scan data before any frame
+            return None
+        length = int.from_bytes(head[pos + 2 : pos + 4], "big")
+        if marker in _JPEG_SOF:
+            if pos + 9 > len(head):
+                return None
+            height = int.from_bytes(head[pos + 5 : pos + 7], "big")
+            width = int.from_bytes(head[pos + 7 : pos + 9], "big")
+            return ImageHeader(width, height)
+        pos += 2 + length
+    return None
+
+
+def image_header(path: str | Path) -> ImageHeader | None:
+    """The size a PNG or JPEG declares, read from at most ``IMAGE_HEADER_BYTES``.
+
+    None for any other file, or a header that cannot be read.
+    """
+    with open(path, "rb") as f:
+        return image_header_of(f.read(IMAGE_HEADER_BYTES))
+
+
+def image_header_of(head: bytes) -> ImageHeader | None:
+    """``image_header`` of the first bytes of a file (None: not found in ``head``)."""
+    if head.startswith(_PNG_SIGNATURE):
+        return _png_header(head)
+    if head.startswith(b"\xff\xd8"):
+        return _jpeg_header(head)
+    return None
+
+
+def check_image(path: str | Path, max_megapixels: int) -> GuardRejection | None:
+    """The image cost guard: ``(reason_code, detail, limits)``, or None to parse.
+
+    ``too_complex`` when the header declares more than ``max_megapixels`` (width x
+    height x frames). Reads the header only; no pixel is decoded.
+    """
+    header = image_header(path)
+    if header is None or header.megapixels <= max_megapixels:
+        return None
+    frames = f" x {header.frames} frames" if header.frames > 1 else ""
+    return (
+        REASON_TOO_COMPLEX,
+        f"{header.width}x{header.height} pixels{frames}, {header.megapixels:.1f} megapixels "
+        f"over the limit of {max_megapixels}",
+        {"image_max_megapixels": max_megapixels},
+    )

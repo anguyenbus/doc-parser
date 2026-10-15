@@ -123,10 +123,15 @@ TEXT = b"Meeting notes\n\n- item one\n- item two\n"
         (_ole2("Book"), "a.xls", Sniff("xls", None, False)),
         (_ole2("PowerPoint Document"), "a.ppt", Sniff("ppt", None, False)),
         (_ole2("Contents"), "a.bin", Sniff("ole2", None, False)),
-        # rtf, image
+        # png, jpeg: the content decides; a disagreeing name only sets mismatch
+        (b"\x89PNG\r\n\x1a\n" + bytes(32), "a.png", Sniff("png", "png", False)),
+        (b"\x89PNG\r\n\x1a\n" + bytes(32), "scan", Sniff("png", "png", False)),
+        (b"\x89PNG\r\n\x1a\n" + bytes(32), "a.jpg", Sniff("png", "png", True)),
+        (b"\xff\xd8\xff\xe0" + bytes(32), "a.jpg", Sniff("jpeg", "jpeg", False)),
+        (b"\xff\xd8\xff\xe1" + bytes(32), "a.JPEG", Sniff("jpeg", "jpeg", False)),
+        (b"\xff\xd8\xff\xe0" + bytes(32), "a.png", Sniff("jpeg", "jpeg", True)),
+        # rtf, image (formats no kind handles)
         (b"{\\rtf1\\ansi Hello}", "a.rtf", Sniff("rtf", None, False)),
-        (b"\x89PNG\r\n\x1a\n" + bytes(32), "a.png", Sniff("image", None, False)),
-        (b"\xff\xd8\xff\xe0" + bytes(32), "a.jpg", Sniff("image", None, False)),
         (b"GIF89a" + bytes(32), "a.gif", Sniff("image", None, False)),
         (b"II*\x00" + bytes(32), "a.tif", Sniff("image", None, False)),
         (b"RIFF\x24\x00\x00\x00WEBPVP8 " + bytes(32), "a.webp", Sniff("image", None, False)),

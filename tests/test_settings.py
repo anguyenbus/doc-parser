@@ -105,6 +105,9 @@ def test_vlm_model_is_required_only_for_the_vlm_engine() -> None:
         ("PARSER_DEADLINE_EMAIL_S", "0"),  # shared by eml and msg: reported once
         ("PARSER_MAX_EMAIL_MB", "-1"),
         ("PARSER_IMAGES_MIN_PIXELS", "0"),
+        ("PARSER_IMAGE_MAX_MEGAPIXELS", "0"),
+        ("PARSER_MAX_IMAGE_MB", "-1"),  # shared by png and jpeg: reported once
+        ("PARSER_DEADLINE_IMAGE_S", "soon"),
     ],
 )
 def test_each_invalid_value_is_reported_by_name(name: str, value: str) -> None:
@@ -330,7 +333,7 @@ def test_enabled_kinds_are_known_and_have_a_handler_in_this_image(
         "PARSER_ENABLED_KINDS enables eml, which has no handler in this image"
     ]
     assert _problems(**kwargs, environ={"PARSER_ENABLED_KINDS": "pdf,xlsx"}) == [
-        "PARSER_ENABLED_KINDS names unknown kind(s) xlsx; known: pdf, docx, html, txt, eml, msg"
+        "PARSER_ENABLED_KINDS names unknown kind(s) xlsx; known: pdf, docx, html, txt, eml, msg, png, jpeg"
     ]
     assert _problems(**kwargs, environ={"PARSER_ENABLED_KINDS": " , "}) == [
         "PARSER_ENABLED_KINDS must name at least one kind, got ' , '"

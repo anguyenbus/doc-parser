@@ -49,6 +49,10 @@ DEADLINE_ENV: dict[str, tuple[str, int]] = {
     # eml and msg share one key (the email handler): provisional until the corpus inventory
     "eml": ("PARSER_DEADLINE_EMAIL_S", 120),
     "msg": ("PARSER_DEADLINE_EMAIL_S", 120),
+    # png and jpeg share one key (the image handler): one image is parsed like one
+    # scanned PDF page (OCR, then escalation), so it gets the PDF page's deadline
+    "png": ("PARSER_DEADLINE_IMAGE_S", 600),
+    "jpeg": ("PARSER_DEADLINE_IMAGE_S", 600),
 }
 # The driver's timeout for one page request.
 REMOTE_REQUEST_TIMEOUT_ENV = "PARSER_REMOTE_REQUEST_TIMEOUT_S"
@@ -71,6 +75,9 @@ RAW_CAP_ENV: dict[str, tuple[str, int]] = {
     # eml and msg share one key: provisional until the corpus inventory
     "eml": ("PARSER_MAX_EMAIL_MB", 50),
     "msg": ("PARSER_MAX_EMAIL_MB", 50),
+    # png and jpeg share one key: provisional until the corpus inventory
+    "png": ("PARSER_MAX_IMAGE_MB", 50),
+    "jpeg": ("PARSER_MAX_IMAGE_MB", 50),
 }
 # The cap on one single-unit document's markdown, in MB (1,000,000 bytes): over it
 # the parse worker replies ``output_too_large`` instead of the text. PDF pages have
@@ -89,6 +96,13 @@ DOCX_GUARD_ENV: dict[str, tuple[str, int]] = {
     "docx_max_paragraphs": ("PARSER_DOCX_MAX_PARAGRAPHS", 50_000),
     "docx_max_table_cells": ("PARSER_DOCX_MAX_TABLE_CELLS", 100_000),
 }
+# The image cost guard's threshold, checked by the page service before an image
+# reaches the parse worker: an image whose header declares more pixels is
+# ``too_complex``. Decoding costs about 27 MB per megapixel in the parse worker
+# (measured: 12 MP adds ~0.2 GB, 48 MP ~1.3 GB over Docling's ~2 GB floor), and a
+# small file can declare a huge image. Provisional until the corpus inventory.
+IMAGE_MAX_MEGAPIXELS_ENV = "PARSER_IMAGE_MAX_MEGAPIXELS"
+DEFAULT_IMAGE_MAX_MEGAPIXELS = 50
 # The request timeout must exceed the largest deadline by this much: room for the
 # source download, the guards, the kill of a timed-out worker and the record write.
 _DEADLINE_MARGIN_S = 120
@@ -196,14 +210,15 @@ def _enabled_kinds(env: Mapping[str, str], problems: list[str]) -> tuple[str, ..
 
 def _size_caps(env: Mapping[str, str], problems: list[str]) -> None:
     """Every raw cap in ``RAW_CAP_ENV``, the output cap, the image flag's pixel
-    threshold and every DOCX guard threshold in ``DOCX_GUARD_ENV`` is a positive
-    integer."""
+    threshold, every DOCX guard threshold in ``DOCX_GUARD_ENV`` and the image
+    guard's megapixel threshold is a positive integer."""
     for name, default in dict(RAW_CAP_ENV.values()).items():  # a shared key is read once
         _integer(env, name, 1, default, problems)
     _integer(env, MAX_OUTPUT_ENV, 1, DEFAULT_MAX_OUTPUT_MB, problems)
     _integer(env, IMAGES_MIN_PIXELS_ENV, 1, DEFAULT_IMAGES_MIN_PIXELS, problems)
     for name, default in DOCX_GUARD_ENV.values():
         _integer(env, name, 1, default, problems)
+    _integer(env, IMAGE_MAX_MEGAPIXELS_ENV, 1, DEFAULT_IMAGE_MAX_MEGAPIXELS, problems)
 
 
 def _deadlines(

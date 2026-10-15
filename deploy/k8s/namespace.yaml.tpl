@@ -52,6 +52,16 @@ data:
   # the kind is in PARSER_ENABLED_KINDS (code complete, not enabled).
   PARSER_DEADLINE_EMAIL_S: "120"
   PARSER_MAX_EMAIL_MB: "50"
+  # The same for one image: one deadline and one raw cap shared by png and jpeg
+  # (the image handler). An image is parsed like one scanned PDF page (OCR, then
+  # escalation), so it starts with the PDF page's deadline. Provisional.
+  PARSER_DEADLINE_IMAGE_S: "600"
+  PARSER_MAX_IMAGE_MB: "50"
+  # Image cost guard, checked by the page service before an image reaches the parse
+  # worker (header only, nothing decoded): an image declaring more megapixels
+  # (width x height x frames) is a final `too_complex` failure. Decoding costs about
+  # 27 MB per megapixel in the worker. Provisional until the corpus inventory.
+  PARSER_IMAGE_MAX_MEGAPIXELS: "50"
   # A DOCX, HTML or email document with an embedded image of at least this many
   # pixels (width x height) is flagged `images_not_ocrd` (images are not OCRed).
   # The flag never changes the unit's state; read by the parse worker.

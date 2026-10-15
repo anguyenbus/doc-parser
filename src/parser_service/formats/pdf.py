@@ -4,7 +4,7 @@ pdf.py — parse one PDF page (a one-page file made by the split).
 A blank page (no text layer, renders almost white) is ``ok`` with route ``blank``.
 Any other page goes through ``parse_to_markdown`` (Docling, the quality gate, and the
 escalation engine when the gate promotes it); ``classify_page_result`` maps its
-result to a unit state.
+result to a unit state. ``formats/image.py`` parses an image the same way.
 """
 
 from __future__ import annotations
@@ -26,7 +26,7 @@ from parser_service.parsing.route_stats import (
 
 logger = logging.getLogger(__name__)
 
-_ROUTE_BLANK = "blank"
+ROUTE_BLANK = "blank"
 
 # parse_to_markdown warning codes that mean the page produced nothing usable.
 _FATAL_WARNING_CODES = (
@@ -57,13 +57,22 @@ def _is_blank_page(page_pdf: Path) -> bool:
         from PIL import Image
 
         image = Image.open(io.BytesIO(render_page(page_pdf, 0, dpi=_BLANK_PROBE_DPI)))
-        histogram = image.convert("L").histogram()
-        total = sum(histogram)
-        dark = sum(histogram[:_BLANK_DARK_LEVEL])
-        return total > 0 and dark / total <= _BLANK_MAX_DARK_FRACTION
+        return is_blank_bitmap(image)
     except Exception as exc:  # noqa: BLE001
         logger.warning("blank-page probe failed for %s: %s", page_pdf.name, truncate(str(exc)))
         return False
+
+
+def is_blank_bitmap(image: Any) -> bool:
+    """True iff (almost) no pixel of a PIL image is darker than near-white.
+
+    The image should be about ``_BLANK_PROBE_DPI``: small enough to be quick, large
+    enough that text stays dark.
+    """
+    histogram = image.convert("L").histogram()
+    total = sum(histogram)
+    dark = sum(histogram[:_BLANK_DARK_LEVEL])
+    return bool(total > 0 and dark / total <= _BLANK_MAX_DARK_FRACTION)
 
 
 def classify_page_result(result: dict[str, Any]) -> tuple[str, str | None]:
@@ -101,26 +110,25 @@ def parse_page(
 ) -> tuple[str, str | None, str, dict[str, Any]]:
     """Probe and parse one page file: ``(state, reason, markdown, record fields)``."""
     if _is_blank_page(page_pdf):
-        return STATE_OK, None, "", {"route": _ROUTE_BLANK, "route_reason": "blank_page"}
+        return STATE_OK, None, "", {"route": ROUTE_BLANK, "route_reason": "blank_page"}
     result = parse_to_markdown(page_pdf, escalate=escalate)
-
     state, reason = classify_page_result(result)
     # The one-page file numbers its only page 0; store the real 0-based index.
-    routes = [{**r, "page_index": page_number - 1} for r in result.get("page_routes", [])]
+    return state, reason, str(result.get("markdown", "")), page_fields(result, page_number - 1)
+
+
+def page_fields(result: dict[str, Any], page_index: int) -> dict[str, Any]:
+    """The record fields of one page's ``parse_to_markdown`` result, at ``page_index``."""
+    routes = [{**r, "page_index": page_index} for r in result.get("page_routes", [])]
     warnings = [
-        {**w, "page_index": page_number - 1} if "page_index" in w else dict(w)
+        {**w, "page_index": page_index} if "page_index" in w else dict(w)
         for w in result.get("warnings", [])
     ]
-    return (
-        state,
-        reason,
-        str(result.get("markdown", "")),
-        {
-            "route": routes[0].get("route") if routes else None,
-            "route_reason": routes[0].get("reason") if routes else None,
-            "page_routes": routes,
-            "warnings": warnings,
-            "confidence": result.get("confidence", {}).get("document"),
-            "call_counts": result.get("call_counts", {}),
-        },
-    )
+    return {
+        "route": routes[0].get("route") if routes else None,
+        "route_reason": routes[0].get("reason") if routes else None,
+        "page_routes": routes,
+        "warnings": warnings,
+        "confidence": result.get("confidence", {}).get("document"),
+        "call_counts": result.get("call_counts", {}),
+    }

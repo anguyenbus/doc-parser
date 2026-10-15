@@ -16,18 +16,20 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
-from parser_service.formats.guards import DocxLimits, GuardRejection, check_docx
-from parser_service.formats.handlers import handler_version
+from parser_service.formats.guards import DocxLimits, GuardRejection, check_docx, check_image
+from parser_service.formats.handlers import IMAGE_KINDS, handler_version
 from parser_service.formats.result import (
     STATE_OK,
 )
 from parser_service.formats.sniff import KIND_EXTENSIONS
 from parser_service.settings import (
     DEADLINE_ENV,
+    DEFAULT_IMAGE_MAX_MEGAPIXELS,
     DEFAULT_MAX_OUTPUT_MB,
     DEFAULT_REMOTE_REQUEST_TIMEOUT_S,
     DOCX_GUARD_ENV,
     ENABLED_KINDS_ENV,
+    IMAGE_MAX_MEGAPIXELS_ENV,
     MAX_OUTPUT_ENV,
     RAW_CAP_ENV,
     REMOTE_REQUEST_TIMEOUT_ENV,
@@ -88,9 +90,11 @@ UNIT_DOCUMENT = "document"
 def pipeline_config(kind: str = "pdf") -> dict[str, Any]:
     """The settings that change a ``kind`` unit's output. Pinned in the manifest at intake.
 
-    A PDF page: the parser and Docling versions and the escalation settings. Every
-    other kind leaves the escalation settings out (a VLM model change does not
-    re-parse a DOCX), and txt, which never runs Docling, leaves Docling out too.
+    A PDF page: the parser and Docling versions and the escalation settings. An
+    image (png, jpeg) can escalate too, so it keeps the escalation settings that
+    apply to it (all but the PDF scan fast-path). Every other kind leaves them out
+    (a VLM model change does not re-parse a DOCX), and txt, which never runs
+    Docling, leaves Docling out too.
     Each config names its kind and the kind's handler version
     (``handlers.HANDLER_VERSIONS``), so every kind gets its own hash and a
     handler bump changes only its own kind's.
@@ -104,6 +108,15 @@ def pipeline_config(kind: str = "pdf") -> dict[str, Any]:
             "escalation_engine": os.environ.get("PARSER_ESCALATION_ENGINE", "vlm"),
             "vlm_model": os.environ.get("BEDROCK_VLM_MODEL", ""),
             "scan_fastpath": os.environ.get("PARSER_SCAN_FASTPATH", "").lower() in ("1", "true"),
+            "arbitration": os.environ.get("PARSER_ESCALATION_ARBITRATION", "").lower()
+            in ("1", "true"),
+        }
+    elif kind in IMAGE_KINDS:
+        config = {
+            "parser_version": PARSER_VERSION,
+            "docling_version": DOCLING_VERSION,
+            "escalation_engine": os.environ.get("PARSER_ESCALATION_ENGINE", "vlm"),
+            "vlm_model": os.environ.get("BEDROCK_VLM_MODEL", ""),
             "arbitration": os.environ.get("PARSER_ESCALATION_ARBITRATION", "").lower()
             in ("1", "true"),
         }
@@ -203,13 +216,23 @@ def docx_guard_limits() -> DocxLimits:
     return DocxLimits(**values)
 
 
+def image_max_megapixels() -> int:
+    """The image cost guard's threshold (``PARSER_IMAGE_MAX_MEGAPIXELS``). Read at call time.
+
+    Like the DOCX thresholds, not part of ``pipeline_config``: a changed value only
+    releases ``too_complex`` image records stored under another value.
+    """
+    return int(os.environ.get(IMAGE_MAX_MEGAPIXELS_ENV, str(DEFAULT_IMAGE_MAX_MEGAPIXELS)))
+
+
 def current_limits(kind: str = "pdf") -> dict[str, Any]:
     """The current value of every limit a final record of ``kind`` can store.
 
     Read from the environment at call time, like ``pipeline_config``. A stored
     record's ``limits`` are compared with these values by ``_is_final``. A
     single-unit kind also has the output cap (``output_too_large``), and a DOCX
-    the six guard thresholds (``zip_bomb``, ``too_complex``). A kind whose
+    the six guard thresholds (``zip_bomb``, ``too_complex``), an image the
+    megapixel threshold (``too_complex``). A kind whose
     handler has not shipped yet may have no deadline: it then has no
     ``deadline_s`` (no ``timeout`` record of it can exist).
     """
@@ -220,17 +243,21 @@ def current_limits(kind: str = "pdf") -> dict[str, Any]:
         limits["max_output_mb"] = max_output_mb()
     if kind == "docx":
         limits.update(asdict(docx_guard_limits()))
+    if kind in IMAGE_KINDS:
+        limits["image_max_megapixels"] = image_max_megapixels()
     return limits
 
 
 def _guard_rejection(kind: str, unit_path: Path) -> GuardRejection | None:
     """The service-side cost guard of one unit (spec D7): a rejection, or None to parse.
 
-    DOCX only; every other kind is bounded by its raw cap and deadline.
+    DOCX and images only; every other kind is bounded by its raw cap and deadline.
     """
-    if kind != "docx":
-        return None
-    return check_docx(unit_path, docx_guard_limits())
+    if kind == "docx":
+        return check_docx(unit_path, docx_guard_limits())
+    if kind in IMAGE_KINDS:
+        return check_image(unit_path, image_max_megapixels())
+    return None
 
 
 def _reason_code(reason: str | None) -> str | None:

@@ -80,7 +80,10 @@ def _corpus(root: Path) -> None:
     (root / "mail.eml").write_bytes(message.as_bytes())
     (root / "outlook.msg").write_bytes(_ole2_msg())
     (root / "data.csv").write_text(f"a,b\n{MARKER},1\n")
-    (root / "photo.png").write_bytes(b"\x89PNG\r\n\x1a\n" + bytes(64))
+    # A PNG header declaring 2000 x 1000 pixels (no pixel data: only the header is read).
+    ihdr = struct.pack(">II", 2000, 1000) + bytes([8, 2, 0, 0, 0])
+    png = b"\x89PNG\r\n\x1a\n" + struct.pack(">I", 13) + b"IHDR" + ihdr + bytes(4)
+    (root / "photo.png").write_bytes(png + bytes(64))
 
 
 def test_inventory_on_a_local_folder(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -102,7 +105,7 @@ def test_inventory_on_a_local_folder(tmp_path: Path, monkeypatch: pytest.MonkeyP
         "html": 1,
         "eml": 1,
         "msg": 1,
-        "image": 1,
+        "png": 1,
     }
     assert report["by_extension"] == {
         "docx": 1,
@@ -122,12 +125,24 @@ def test_inventory_on_a_local_folder(tmp_path: Path, monkeypatch: pytest.MonkeyP
         "html": 1,
         "eml": 1,
         "msg": 1,
-        "none": 3,
+        "png": 1,
+        "none": 2,
     }
     size_docx = report["size_bytes_by_kind"]["docx"]
     letter_size = (corpus / "letter.docx").stat().st_size
     assert size_docx == {"n": 2, "p50": letter_size, "p99": letter_size, "max": letter_size}
-    assert set(report["size_bytes_by_kind"]) == {"docx", "pdf", "txt", "html", "eml", "msg", "none"}
+    assert set(report["size_bytes_by_kind"]) == {
+        "docx",
+        "pdf",
+        "txt",
+        "html",
+        "eml",
+        "msg",
+        "png",
+        "none",
+    }
+    assert report["images"]["files"] == 1 and report["images"]["unreadable_header_files"] == 0
+    assert report["images"]["megapixels"]["max"] == 2.0
     assert report["docx"]["files"] == 2
     assert report["docx"]["paragraphs"]["max"] >= 3 + 4
     assert report["docx"]["table_cells"]["max"] == 4

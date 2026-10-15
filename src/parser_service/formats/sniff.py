@@ -17,14 +17,15 @@ Rules, in order (spec D1; the first that matches wins):
                      say Word, Excel, PowerPoint or none of them -> docx, else none
     msg/doc/xls/ppt/ole2  OLE2 header; the directory entries say MSG (``__substg1.0_``
                      streams), Word, Excel, PowerPoint or none of them -> msg, else none
-    rtf, image       ``{\\rtf``; PNG, JPEG, GIF, TIFF or WebP magic -> none
+    png, jpeg        PNG or JPEG magic                -> png, jpeg
+    rtf, image       ``{\\rtf``; GIF, TIFF or WebP magic -> none
     eml              text whose header block has >= 3 ``Name: value`` lines, From and
                      one of Date / Message-ID / Received / MIME-Version -> eml
     html             text with an HTML marker in the first 4 KiB -> the text rule
     text             no NUL, < 5% C0 control bytes -> the text rule
     binary           anything else                   -> none
 
-Binary kinds (pdf, docx, msg, eml) trust the content; a disagreeing extension only
+Binary kinds (pdf, docx, msg, eml, png, jpeg) trust the content; a disagreeing extension only
 sets ``mismatch``. Text and html content take the kind from the extension or the
 declared type (``.txt`` / ``text/plain`` -> txt, ``.html`` / ``.htm`` / ``text/html``
 -> html); when that disagrees with the content, the name wins and ``mismatch`` is
@@ -59,6 +60,8 @@ KIND_EXTENSIONS: dict[str, str] = {
     "txt": "txt",
     "eml": "eml",
     "msg": "msg",
+    "png": "png",
+    "jpeg": "jpg",
 }
 KINDS: tuple[str, ...] = tuple(KIND_EXTENSIONS)
 
@@ -68,6 +71,8 @@ _BINARY_KIND_EXTENSIONS: dict[str, frozenset[str]] = {
     "docx": frozenset({"docx"}),
     "msg": frozenset({"msg"}),
     "eml": frozenset({"eml"}),
+    "png": frozenset({"png"}),
+    "jpeg": frozenset({"jpg", "jpeg", "jpe", "jfif"}),
 }
 _TXT_EXTENSIONS = frozenset({"txt"})
 _HTML_EXTENSIONS = frozenset({"html", "htm"})
@@ -78,9 +83,10 @@ _ZIP_LOCAL = b"PK\x03\x04"
 _ZIP_CENTRAL = b"PK\x01\x02"
 _ZIP_EMPTY = b"PK\x05\x06"
 _OLE2_MAGIC = b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1"
+_PNG_MAGIC = b"\x89PNG\r\n\x1a\n"
+_JPEG_MAGIC = b"\xff\xd8\xff"
+# Image formats no kind handles.
 _IMAGE_MAGICS: tuple[bytes, ...] = (
-    b"\x89PNG\r\n\x1a\n",
-    b"\xff\xd8\xff",
     b"GIF87a",
     b"GIF89a",
     b"II*\x00",
@@ -154,6 +160,10 @@ def detect_type(head: bytes) -> str:
         return _ole2_type(head)
     if head.startswith(b"{\\rtf"):
         return "rtf"
+    if head.startswith(_PNG_MAGIC):
+        return "png"
+    if head.startswith(_JPEG_MAGIC):
+        return "jpeg"
     if head.startswith(_IMAGE_MAGICS) or (head[:4] == b"RIFF" and head[8:12] == b"WEBP"):
         return "image"
     text = head[:SNIFF_BYTES]

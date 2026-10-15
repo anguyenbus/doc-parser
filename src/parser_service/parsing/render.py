@@ -9,6 +9,7 @@ Public API:
   text_layer_tokens(pdf_path) -> dict[int, int]       # per-page embedded-text token counts
   page_has_images(page) -> bool                        # pypdf has-images probe (no decode)
   classify_for_fastpath(pdf_path) -> dict              # all-scanned fast-path classifier
+  fit_engine_image(data) -> bytes                      # an input image the engines accept
 
 Coordinate system:
   PDF uses bottom-left origin in points (1/72 inch).
@@ -307,3 +308,68 @@ def render_region(
     buf = io.BytesIO()
     cropped.save(buf, format="PNG")
     return buf.getvalue()
+
+
+# ---------------------------------------------------------------------------
+# Input images for the escalation engines
+# ---------------------------------------------------------------------------
+
+# The largest image both engines accept: Bedrock's Claude takes at most 3.75 MB and
+# 8000 px a side (Textract's synchronous API allows more), as PNG or JPEG.
+ENGINE_MAX_IMAGE_BYTES = 3_750_000
+ENGINE_MAX_IMAGE_SIDE = 8000
+_EXIF_ORIENTATION = 0x0112
+_ENGINE_JPEG_QUALITY = 90
+_ENGINE_SHRINK = 0.8
+
+
+def fit_engine_image(data: bytes) -> bytes:
+    """``data`` as an image both escalation engines accept.
+
+    Unchanged when it is already a PNG or JPEG within ``ENGINE_MAX_IMAGE_BYTES``
+    and ``ENGINE_MAX_IMAGE_SIDE`` with no EXIF rotation. Otherwise the image is
+    turned upright (an engine reads the pixels, not the EXIF orientation), flattened
+    onto white, shrunk to the side limit and encoded as PNG, or as JPEG (shrinking
+    further) when the PNG is over the byte limit. Never raises: an image it cannot
+    read is returned unchanged, and the engine call reports it.
+    """
+    try:
+        from PIL import Image, ImageOps
+
+        with Image.open(io.BytesIO(data)) as image:
+            orientation = image.getexif().get(_EXIF_ORIENTATION, 1)
+            if (
+                image.format in ("PNG", "JPEG")
+                and len(data) <= ENGINE_MAX_IMAGE_BYTES
+                and max(image.size) <= ENGINE_MAX_IMAGE_SIDE
+                and orientation in (None, 1)
+            ):
+                return data
+            frame = ImageOps.exif_transpose(image)
+            if frame.mode in ("RGBA", "LA", "PA") or "transparency" in frame.info:
+                rgba = frame.convert("RGBA")
+                white = Image.new("RGBA", rgba.size, (255, 255, 255, 255))
+                frame = Image.alpha_composite(white, rgba).convert("RGB")
+            else:
+                frame = frame.convert("RGB")
+        frame.thumbnail((ENGINE_MAX_IMAGE_SIDE, ENGINE_MAX_IMAGE_SIDE), Image.Resampling.LANCZOS)
+        out = io.BytesIO()
+        frame.save(out, format="PNG", optimize=True)
+        while out.tell() > ENGINE_MAX_IMAGE_BYTES:
+            out = io.BytesIO()
+            frame.save(out, format="JPEG", quality=_ENGINE_JPEG_QUALITY)
+            if out.tell() <= ENGINE_MAX_IMAGE_BYTES:
+                break
+            side = max(1, int(max(frame.size) * _ENGINE_SHRINK))
+            frame.thumbnail((side, side), Image.Resampling.LANCZOS)
+        logger.info(
+            "engine image re-encoded: %d bytes -> %d bytes, %dx%d",
+            len(data),
+            out.tell(),
+            frame.width,
+            frame.height,
+        )
+        return out.getvalue()
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("engine image fit failed, sending it unchanged: %s", str(exc)[:500])
+        return data

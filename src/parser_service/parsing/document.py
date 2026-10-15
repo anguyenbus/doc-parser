@@ -79,7 +79,12 @@ from parser_service.parsing.engines.vlm import (
 )
 from parser_service.parsing.markdown import render_markdown
 from parser_service.parsing.quality_gate import _measure_text_quality, evaluate_page
-from parser_service.parsing.render import classify_for_fastpath, render_page, text_layer_tokens
+from parser_service.parsing.render import (
+    classify_for_fastpath,
+    fit_engine_image,
+    render_page,
+    text_layer_tokens,
+)
 from parser_service.version import PARSER_VERSION
 
 logger = logging.getLogger(__name__)
@@ -824,7 +829,8 @@ def _image_to_markdown(
 
     Docling OCR → ``render_markdown`` over page 0's elements → ``evaluate_page`` →
     VLM only when the gate fires (or Docling extracted nothing). This is the gated
-    default, NOT always-VLM.
+    default, NOT always-VLM. The engine gets the image bytes unchanged when they
+    fit its limits, else an upright, shrunk re-encoding (``render.fit_engine_image``).
 
     NOTE (README discrepancy, deferred / out of scope): the README states images
     route VLM-only, but the gated Docling-first behavior is what ships here (it
@@ -877,7 +883,7 @@ def _image_to_markdown(
         docling_fallback=docling_fallback,
         reason=decision.reason,
         layer=decision.layer,
-        image_bytes=path.read_bytes(),
+        image_bytes=fit_engine_image(path.read_bytes()),
     )
 
 

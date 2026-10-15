@@ -2,7 +2,7 @@
 handlers.py — parse one unit of a routed kind, and the handler versions (spec D3, D6).
 
 A unit is one page of a PDF or one whole single-unit file (txt, docx, html, eml,
-msg). ``parse_unit`` dispatches on the kind read from the manifest, never on the
+msg, png, jpeg). ``parse_unit`` dispatches on the kind read from the manifest, never on the
 file name, and runs in the page service's parse worker (``service.worker``) or, for
 the local executor, in the page pipeline's own process.
 
@@ -13,6 +13,7 @@ enable it. A kind's task group adds its handler by adding an entry:
     HANDLERS["txt"] = _parse_txt                              # Group 4 (done)
     HANDLERS["docx"] = _parse_docx; HANDLERS["html"] = ...    # Group 5b (done)
     HANDLERS["eml"] = _parse_eml; HANDLERS["msg"] = _parse_msg  # Group 6 (done)
+    HANDLERS["png"] = HANDLERS["jpeg"] = _parse_image             # images
 
 (in practice, in the ``HANDLERS`` literal below). A handler takes
 ``(path, page_number, escalate)`` and returns a reply
@@ -23,17 +24,18 @@ sends back. ``reason_code`` None means "the text of ``reason`` before the first
 into a ``failed`` record.
 
 Versions. ``HANDLER_VERSIONS`` holds one version per handler (``email`` covers
-``eml`` and ``msg``) and goes into the kind's ``pipeline_config``, so a bump gives
+``eml`` and ``msg``, ``image`` covers ``png`` and ``jpeg``) and goes into the kind's ``pipeline_config``, so a bump gives
 that kind a new config hash and new work, and leaves every other kind alone.
 Bump a handler's version by hand whenever its output changes.
 
 Imports nothing heavy at module level: ``settings`` reads ``HANDLERS`` at start-up
 and must not load Docling. The TXT handler never loads Docling at all; the DOCX,
-HTML and email handlers load it on their first call, inside the parse worker.
+HTML, email and image handlers load it on their first call, inside the parse worker.
 
 Empty output (spec D5). A single-unit handler whose conversion succeeds with empty
 or whitespace-only markdown replies ``ok`` with route ``empty_document``, never
-``failed`` ``empty_output``; PDF pages keep ``pdf.classify_page_result`` unchanged.
+``failed`` ``empty_output``; PDF pages keep ``pdf.classify_page_result`` unchanged,
+and so do images, which are parsed as one page (``formats/image.py``).
 """
 
 from __future__ import annotations
@@ -61,9 +63,11 @@ HANDLER_VERSIONS: dict[str, str] = {
     "docx": "1",
     "html": "1",
     "email": "1",
+    "image": "1",
 }
 
-# The handler (and version) of each routed kind: eml and msg share the email one.
+# The handler (and version) of each routed kind: eml and msg share the email one,
+# png and jpeg the image one.
 HANDLER_NAMES: dict[str, str] = {
     "pdf": "pdf",
     "txt": "txt",
@@ -71,7 +75,12 @@ HANDLER_NAMES: dict[str, str] = {
     "html": "html",
     "eml": "email",
     "msg": "email",
+    "png": "image",
+    "jpeg": "image",
 }
+
+# The image kinds: parsed as one page and escalated like a PDF page.
+IMAGE_KINDS = ("png", "jpeg")
 
 # A handler: (unit path, page number, escalate) -> reply.
 UnitHandler = Callable[[Path, int, bool], "Reply"]
@@ -88,6 +97,15 @@ def _parse_pdf_page(path: Path, page_number: int, escalate: bool) -> Reply:
     from parser_service.formats import pdf
 
     state, reason, markdown, extra = pdf.parse_page(path, page_number, escalate)
+    return state, reason, None, markdown, extra
+
+
+def _parse_image(path: Path, page_number: int, escalate: bool) -> Reply:
+    """A PNG or JPEG: ``image.parse_image`` (blank probe, then ``parse_to_markdown``)."""
+    # Imported on use, like the PDF handler: it loads the Docling path.
+    from parser_service.formats import image
+
+    state, reason, markdown, extra = image.parse_image(path, page_number, escalate)
     return state, reason, None, markdown, extra
 
 
@@ -618,6 +636,8 @@ HANDLERS: dict[str, UnitHandler] = {
     "html": _parse_html,
     "eml": _parse_eml,
     "msg": _parse_msg,
+    "png": _parse_image,
+    "jpeg": _parse_image,
 }
 
 

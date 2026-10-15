@@ -15,13 +15,16 @@ Usage:
 
 Every file is sniffed from its first 64 KiB (an S3 range GET) with
 ``parser_service.formats.sniff``. Only files detected as DOCX are read in full, streamed to a
-temporary file, for ``parser_service.formats.guards.docx_stats``.
+temporary file, for ``parser_service.formats.guards.docx_stats``. A PNG or JPEG
+gets its declared megapixels from the same head (``guards.image_header_of``); a JPEG
+whose frame header lies past the head is read in full for it.
 
 Outputs:
     <out-dir>/inventory.json   aggregate: counts by detected type, by extension and by
                                routed kind; size p50/p99/max per kind and per detected
                                type; DOCX index and element-count percentiles; name and
-                               content mismatches; the .msg share; timing (if asked)
+                               content mismatches; the .msg share; image megapixel
+                               percentiles; timing (if asked)
     <out-dir>/inventory.md     the same as a markdown report
     --csv                      one row per file: key and numbers only, no document text.
                                It must be outside the repository (default: the system
@@ -63,7 +66,11 @@ from typing import Any
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
-from parser_service.formats.guards import docx_stats  # noqa: E402
+from parser_service.formats.guards import (  # noqa: E402
+    docx_stats,
+    image_header,
+    image_header_of,
+)
 from parser_service.formats.sniff import (  # noqa: E402
     KIND_EXTENSIONS,
     SNIFF_BYTES,
@@ -98,6 +105,7 @@ CSV_COLUMNS = (
     "docx_document_xml_bytes",
     "docx_paragraphs",
     "docx_table_cells",
+    "image_megapixels",
     "error",
     "parse_verdict",
     "parse_seconds",
@@ -132,6 +140,7 @@ class FileRow:
     kind: str = ""
     mismatch: bool = False
     docx: dict[str, Any] = field(default_factory=dict)
+    image_megapixels: float | None = None
     error: str = ""
     parse_verdict: str = ""
     parse_seconds: float | None = None
@@ -146,6 +155,7 @@ class FileRow:
             "detected_type": self.detected_type,
             "kind": self.kind,
             "mismatch": int(self.mismatch),
+            "image_megapixels": "" if self.image_megapixels is None else self.image_megapixels,
             "error": self.error,
             "parse_verdict": self.parse_verdict,
             "parse_seconds": "" if self.parse_seconds is None else round(self.parse_seconds, 3),
@@ -226,7 +236,8 @@ def open_source(prefix: str, region: str | None) -> LocalSource | S3Source:
 
 
 def measure_file(source: LocalSource | S3Source, key: str, size: int, scratch: Path) -> FileRow:
-    """Sniff one file, and for a DOCX stream it in full for ``docx_stats``."""
+    """Sniff one file; for a DOCX stream it in full for ``docx_stats``; for an image
+    read its declared megapixels."""
     row = FileRow(key=key, size_bytes=size, extension=extension_of(key))
     try:
         head, declared = source.head(key)
@@ -242,6 +253,17 @@ def measure_file(source: LocalSource | S3Source, key: str, size: int, scratch: P
                 row.docx = _docx_numbers(target)
             finally:
                 target.unlink(missing_ok=True)
+        elif result.detected_type in ("png", "jpeg"):
+            header = image_header_of(head)
+            if header is None and result.detected_type == "jpeg":
+                target = scratch / "header.jpg"
+                try:
+                    source.download(key, target)
+                    header = image_header(target)
+                finally:
+                    target.unlink(missing_ok=True)
+            if header is not None:
+                row.image_megapixels = round(header.megapixels, 2)
     except Exception as exc:  # noqa: BLE001 - one bad object must not stop the inventory
         row.error = type(exc).__name__
     return row
@@ -423,6 +445,7 @@ def aggregate(rows: list[FileRow], prefix: str) -> dict[str, Any]:
         by_kind.setdefault(row.kind or "none", []).append(row.size_bytes)
         by_type.setdefault(row.detected_type or "error", []).append(row.size_bytes)
     docx_rows = [row for row in rows if row.docx]
+    image_rows = [row for row in rows if row.detected_type in ("png", "jpeg")]
     msg_files = sum(1 for row in rows if row.detected_type == "msg")
     msg_bytes = sum(row.size_bytes for row in rows if row.detected_type == "msg")
     total_bytes = sum(row.size_bytes for row in rows)
@@ -463,6 +486,13 @@ def aggregate(rows: list[FileRow], prefix: str) -> dict[str, Any]:
             ),
             "encrypted_entry_files": sum(
                 1 for row in docx_rows if row.docx.get("docx_encrypted_entries")
+            ),
+        },
+        "images": {
+            "files": len(image_rows),
+            "unreadable_header_files": sum(1 for row in image_rows if row.image_megapixels is None),
+            "megapixels": _spread(
+                [row.image_megapixels for row in image_rows if row.image_megapixels is not None]
             ),
         },
         "mismatches": {"files": sum(mismatch_pairs.values()), "by_pair": dict(mismatch_pairs)},
@@ -523,6 +553,16 @@ def render_markdown(report: dict[str, Any]) -> str:
             f"names, {docx['encrypted_entry_files']} with encrypted entries)",
             "Measure",
             {name.removeprefix("docx_"): docx[name.removeprefix("docx_")] for name in _DOCX_FIELDS},
+        ),
+        "",
+    ]
+    images = report["images"]
+    lines += [
+        _spread_table(
+            f"Images ({images['files']} files; {images['unreadable_header_files']} with "
+            "no readable size)",
+            "Measure",
+            {"megapixels": images["megapixels"]},
         ),
         "",
     ]

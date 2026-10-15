@@ -506,20 +506,34 @@ def test_config_hash_changes_with_handler_version(monkeypatch: pytest.MonkeyPatc
     assert config_module.config_hash() == hashes["pdf"]  # the default is the PDF's
     escalation = {"escalation_engine", "vlm_model", "scan_fastpath", "arbitration"}
     assert escalation <= set(configs["pdf"])
+    # An image can escalate: it keeps every escalation setting but the PDF scan fast-path.
+    image_escalation = escalation - {"scan_fastpath"}
     for kind, config in configs.items():
         assert (config["kind"], config["handler_version"]) == (kind, "1")
-        if kind != "pdf":
+        if kind in ("png", "jpeg"):
+            assert escalation & set(config) == image_escalation
+        elif kind != "pdf":
             assert not escalation & set(config)
     assert "docling_version" not in configs["txt"] and "docling_version" in configs["docx"]
 
-    # A VLM model change re-parses PDFs only.
+    # A VLM model change re-parses PDFs and images only.
     monkeypatch.setenv("BEDROCK_VLM_MODEL", "another-model")
-    assert config_module.config_hash(config_module.pipeline_config("pdf")) != hashes["pdf"]
-    assert config_module.config_hash(config_module.pipeline_config("docx")) == hashes["docx"]
+    changed = {
+        kind
+        for kind in KINDS
+        if config_module.config_hash(config_module.pipeline_config(kind)) != hashes[kind]
+    }
+    assert changed == {"pdf", "png", "jpeg"}
     monkeypatch.delenv("BEDROCK_VLM_MODEL")
 
-    # A handler bump changes its own kinds' hashes and no other (email: eml and msg).
-    for handler, bumped in (("docx", {"docx"}), ("email", {"eml", "msg"}), ("pdf", {"pdf"})):
+    # A handler bump changes its own kinds' hashes and no other (email: eml and msg;
+    # image: png and jpeg).
+    for handler, bumped in (
+        ("docx", {"docx"}),
+        ("email", {"eml", "msg"}),
+        ("image", {"png", "jpeg"}),
+        ("pdf", {"pdf"}),
+    ):
         with monkeypatch.context() as patch:
             patch.setitem(unit_handlers.HANDLER_VERSIONS, handler, "2")
             changed = {

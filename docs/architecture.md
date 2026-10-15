@@ -15,7 +15,7 @@ flowchart TB
     L1["<b>1 · service/</b> — the KServe page service<br/>predictor.py · worker.py"]
     L2["<b>2 · pipeline/</b> — split-first page pipeline<br/>api.py · local_runner.py · remote_runner.py · status.py<br/>units.py · intake.py · runner.py · layout.py · config.py"]
     L3["<b>3 · settings.py</b> — start-up validation"]
-    L4["<b>4 · formats/</b> — what a file is, how to parse it<br/>sniff.py · guards.py · handlers.py · pdf.py · result.py"]
+    L4["<b>4 · formats/</b> — what a file is, how to parse it<br/>sniff.py · guards.py · handlers.py · pdf.py · image.py · result.py"]
     L5["<b>5 · parsing/</b> — parse one unit<br/>document.py · quality_gate.py · render.py · markdown.py<br/>elements.py · confidence.py · route_stats.py<br/>engines/ vlm.py · textract.py · retry.py"]
     L6["<b>6 · foundation</b><br/>storage/ store.py · aws.py — delivery/ publish.py · jobs.py<br/>observability.py · version.py"]
     LEG["<b>legacy/</b><br/>element_json.py · batch_io.py"]
@@ -48,13 +48,14 @@ first used) and the single-node batch script's I/O (`legacy/batch_io.py`). Insid
 | | `config.py` | Unit and file states, the per-kind pipeline config and its hash, enabled kinds, caps, deadlines, the final-failure rule |
 | top level | `settings.py` | Start-up validation of the environment for the scripts and the service |
 | `formats/` | `sniff.py` | A file's kind from its bytes (and the extension for txt and html) |
-| | `guards.py` | The DOCX cost guards: ZIP index and streamed element count |
-| | `handlers.py` | One handler per kind (pdf, docx, html, txt, eml, msg) and their versions |
+| | `guards.py` | The cost guards: DOCX (ZIP index and streamed element count) and images (declared megapixels, header only) |
+| | `handlers.py` | One handler per kind (pdf, docx, html, txt, eml, msg, png, jpeg) and their versions |
 | | `pdf.py` | One PDF page: blank-page probe, `parse_to_markdown`, `classify_page_result` |
+| | `image.py` | One PNG or JPEG, parsed as one page: blank probe, `parse_to_markdown`, the PDF page's classification |
 | | `result.py` | The unit result contract: states, `Reply`, `exception_reply`, `apply_output_cap` |
 | `parsing/` | `document.py` | `parse_to_markdown`: Docling first, the quality gate, escalation, Markdown |
 | | `quality_gate.py` | Keep Docling's page, or promote it to the escalation engine |
-| | `render.py` | Rasterise pages, count text-layer tokens, the scan fast-path probe |
+| | `render.py` | Rasterise pages, count text-layer tokens, the scan fast-path probe, fit an input image to the engines' limits |
 | | `markdown.py` | Elements to Markdown |
 | | `elements.py` | Docling items to eval-harness elements, the output skeleton, input size checks |
 | | `confidence.py`, `route_stats.py` | Advisory confidence scores; the route vocabulary and CSV fields |
@@ -81,9 +82,9 @@ flowchart TB
     subgraph SVC["page-service pod"]
         direction TB
         PR["service/predictor.py"] --> PPR["remote_runner.process_page_request<br/>config and kind checks"]
-        PPR --> U["pipeline/units.py<br/>attempt counter, DOCX guards"]
+        PPR --> U["pipeline/units.py<br/>attempt counter, DOCX and image guards"]
         U --> W["service/worker.py<br/>parse under the deadline"]
-        W --> H["formats/handlers.py<br/>pdf, docx, html, txt, eml, msg"]
+        W --> H["formats/handlers.py<br/>pdf, docx, html, txt, eml, msg, png, jpeg"]
         U --> REC["record in work/results/"]
     end
     R -- "POST /v1/models/page-parser:predict" --> PR
