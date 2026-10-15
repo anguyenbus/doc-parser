@@ -143,7 +143,8 @@ grader):
 
 ```bash
 uv tool install --force ./doc_bench-0.1.0-py3-none-any.whl
-scripts/run_benchmark.sh          # parse + grade, both engines
+scripts/run_benchmark_pages.sh    # the page pipeline production runs: parse + grade, both engines
+scripts/run_benchmark.sh          # the whole-document parser (no split), for comparison
 ```
 
 It grades markdown against bundled gold via **NED** (text similarity ↑) + **TEDS** (table

@@ -12,12 +12,14 @@ export AWS_REGION=ap-southeast-2
 export BEDROCK_VLM_MODEL=au.anthropic.claude-sonnet-4-6
 export PARSER_LOG_LEVEL=INFO
 
-W=eval_runs/bench2
+W=${W:-eval_runs/bench2}
 rm -rf "$W"; mkdir -p "$W"
 # Parse straight from the wheel's bundled source files — the installed wheel ships
 # exactly the manifest's docs, and parse_batch ignores the sibling .json gold, so
 # no staging is needed.
-FIX=$(.venv-docbench/bin/python -c "import doc_bench, pathlib; print(pathlib.Path(doc_bench.__file__).parent / 'fixtures')")
+# The doc-bench CLI is a uv tool; its own interpreter imports doc_bench.
+DOCBENCH_PY="$(dirname "$(readlink -f "$(command -v doc-bench)")")/python"
+FIX=$("$DOCBENCH_PY" -c "import doc_bench, pathlib; print(pathlib.Path(doc_bench.__file__).parent / 'fixtures')")
 
 for DS in dp_bench omnidocbench ato_bench; do
   IN="$FIX/$DS"

@@ -15,7 +15,12 @@ and against your **own** documents via `--data-dir`. Metrics are **NED + TEDS**.
 - **doc-bench (wheel) = the measuring instrument.** It bundles the stratified dataset
   (sources + gold + `manifest.json`) and the NED/TEDS grader. We never run our parser inside it.
 - **Host = the parser.** `parser_service` runs on the host (Docling + the escalation engine,
-  `vlm` or `textract`) and emits one prediction `<doc_id>.json` per document.
+  `vlm` or `textract`) and emits one prediction `<doc_id>.json` per document, through one of
+  two paths:
+  - **the page pipeline** (`bench_pages.py`): what production runs. Intake, split into
+    pages, one record per unit, fail-closed stitch. **Use this one** to measure what ships.
+  - **the whole-document parser** (`parse_batch.py`): `parse_to_markdown` on each file,
+    no split. The older benchmark, kept for comparison with past results.
 - **They meet via file-based grading.** `doc-bench --dataset X --predictions DIR` grades our
   predictions against the bundled gold, keyed by real `doc_id`.
 
@@ -26,7 +31,7 @@ flowchart LR
         G[doc-bench grade<br/>NED + TEDS]
     end
     subgraph host["host (parser)"]
-        S[stage source files] --> P["parse_batch.py<br/>Docling + vlm or textract"]
+        S[bundled source files] --> P["bench_pages.py (page pipeline)<br/>or parse_batch.py (whole document)<br/>Docling + vlm or textract"]
     end
     P -->|predictions/&lt;doc_id&gt;.json| G
     gold --> G
@@ -41,11 +46,11 @@ flowchart LR
 ```bash
 cd /home/admin/projects/doc-parser
 uv tool install --force ./doc_bench-0.1.0.tar.gz                                   # doc-bench* onto PATH
-uv pip install --python .venv-docbench/bin/python --reinstall --no-deps ./doc_bench-0.1.0.tar.gz
 ```
 
-The CLI install (`uv tool`) is isolated and on PATH; the `.venv-docbench` copy is used by the
-harness scripts. Confirm + export Bedrock/Textract env (same region for both):
+The CLI install (`uv tool`) is isolated and on PATH; the harness scripts find the bundled
+fixtures through that tool's own interpreter. Confirm + export Bedrock/Textract env (same
+region for both):
 
 ```bash
 doc-bench-list-datasets        # dp_bench / omnidocbench / ato_bench / …
@@ -55,16 +60,33 @@ export BEDROCK_VLM_MODEL=au.anthropic.claude-sonnet-4-6
 
 ---
 
-## Step 1 — One-command benchmark (recommended)
+## Step 1 — One-command benchmark
 
 ```bash
-scripts/run_benchmark.sh
+scripts/run_benchmark_pages.sh     # the page pipeline (recommended) -> eval_runs/bench_pages
+scripts/run_benchmark.sh           # the whole-document parser       -> eval_runs/bench2
+W=eval_runs/my_run scripts/run_benchmark_pages.sh   # any output folder (both scripts)
 ```
 
-Does, for all three bundled datasets × both engines (`vlm`, `textract`):
-**stage source files → parse → grade (bundled gold) → aggregate**, writing
-`eval_runs/bench2/benchmark_report.md` (per-doc NED/TEDS + route + latency, both engines).
-The manual steps below are only for running a stage by hand.
+Each does, for all three bundled datasets × both engines (`vlm`, `textract`):
+**parse → grade (bundled gold) → aggregate**, writing `<W>/benchmark_report.md` (per-doc
+NED/TEDS + route + latency, both engines). The manual steps below are only for running a
+stage by hand.
+
+Both run on this machine only: no cluster and no pods. The page pipeline runs with its
+local executor, the same parse code as the page service. The only remote calls are the
+escalation engine's, for the pages the gate promotes.
+
+What differs between the two paths:
+
+- **Failures.** The page pipeline delivers nothing for a file that does not complete (a page
+  `failed` or `degraded`), so its prediction is empty and scores 0, as production would. The
+  whole-document parser always returns its best markdown.
+- **Latency is not comparable between them.** `bench_pages.py` parses one file at a time
+  with the models loaded once (a warm-up runs first); `parse_batch.py` runs 4 files at once,
+  which compete for the CPU. Neither is production wall time, which depends on pods.
+- **VLM output varies from run to run** on the same page; compare engines and paths on the
+  Textract run or on `docling-kept` documents to see pipeline differences alone.
 
 ---
 
@@ -72,14 +94,23 @@ The manual steps below are only for running a stage by hand.
 
 ### 1. Locate the bundled source files (no staging needed)
 ```bash
-FIX=$(.venv-docbench/bin/python -c "import doc_bench, pathlib; print(pathlib.Path(doc_bench.__file__).parent / 'fixtures')")
-# $FIX/<dataset> holds the source files (the installed wheel ships exactly the
-# manifest's 5/5/1 docs; the sibling .json gold is ignored by parse_batch).
+DOCBENCH_PY="$(dirname "$(readlink -f "$(command -v doc-bench)")")/python"
+FIX=$("$DOCBENCH_PY" -c "import doc_bench, pathlib; print(pathlib.Path(doc_bench.__file__).parent / 'fixtures')")
+# $FIX/<dataset> holds the source files next to their .json gold, which both
+# bench_pages.py and parse_batch.py skip.
 ```
 The grader uses **bundled gold**, so the parser reads sources straight from `$FIX/<dataset>`.
 
 ### 2. Parse on the host (pick the engine)
 ```bash
+# The page pipeline (what production runs):
+PARSER_ESCALATION_ENGINE=textract uv run python scripts/bench_pages.py \
+  --input "$FIX/dp_bench" \
+  --output eval_runs/bench_pages/dp_bench/predictions_textract
+# writes <doc_id>.md + <doc_id>.json + route_stats.csv + failures.json; the page
+# pipeline's store goes next to it (predictions_textract_store/), re-parsed each run
+
+# The whole-document parser:
 PARSER_ESCALATION_ENGINE=textract uv run python scripts/parse_batch.py \
   --input "$FIX/dp_bench" \
   --output eval_runs/bench2/dp_bench/predictions_textract \
@@ -125,8 +156,8 @@ my_data/
 ```
 
 ```bash
-PARSER_ESCALATION_ENGINE=textract uv run python scripts/parse_batch.py \
-  --input my_data/pdfs --output my_preds --emit-test-json --concurrency 4
+PARSER_ESCALATION_ENGINE=textract uv run python scripts/bench_pages.py \
+  --input my_data/pdfs --output my_preds
 doc-bench --dataset dp_bench --data-dir my_data --predictions my_preds --output-dir my_results
 # OmniDocBench: --dataset omnidocbench --data-dir my_data
 ```
