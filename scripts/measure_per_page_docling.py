@@ -67,14 +67,14 @@ sys.path.insert(0, str(REPO_ROOT / "src"))
 
 # None of these imports loads Docling (``_document_converter`` imports it lazily),
 # so input validation in ``main`` still happens before any Docling import or work.
-from parser_service.markdown_pipeline import (  # noqa: E402
+from parser_service.parsing.document import (  # noqa: E402
     _document_converter,
     _elements_by_page,
     _render_page_markdown,
     _scan_fastpath_enabled,
 )
-from parser_service.quality_gate import evaluate_page  # noqa: E402
-from parser_service.render import classify_for_fastpath, text_layer_tokens  # noqa: E402
+from parser_service.parsing.quality_gate import evaluate_page  # noqa: E402
+from parser_service.parsing.render import classify_for_fastpath, text_layer_tokens  # noqa: E402
 
 logger = logging.getLogger(__name__)
 

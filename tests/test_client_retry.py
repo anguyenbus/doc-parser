@@ -28,12 +28,12 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from parser_service.textract_client import (
+from parser_service.parsing.engines.textract import (
     analyze_page,
     get_textract_call_count,
     reset_textract_call_count,
 )
-from parser_service.vlm_client import (
+from parser_service.parsing.engines.vlm import (
     call_vlm,
     get_vlm_call_count,
     reset_vlm_call_count,
@@ -52,7 +52,7 @@ class _ClientError(Exception):
 
 @pytest.fixture(autouse=True)
 def _no_sleep(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr("parser_service.retry.time.sleep", lambda s: None)
+    monkeypatch.setattr("parser_service.parsing.engines.retry.time.sleep", lambda s: None)
 
 
 @pytest.fixture(autouse=True)

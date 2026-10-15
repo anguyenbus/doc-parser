@@ -14,7 +14,7 @@ Run ONLY these tests (task 3.4):
 
 from __future__ import annotations
 
-from parser_service.route_stats import (
+from parser_service.parsing.route_stats import (
     ROUTE_TEXTRACT_REJECTED,
     ROUTE_VLM_REJECTED,
     route_record,

@@ -68,7 +68,7 @@ from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from typing import Any
 
-from parser_service.sniff import extension_of
+from parser_service.formats.sniff import extension_of
 
 logger = logging.getLogger("parser_service.events")
 

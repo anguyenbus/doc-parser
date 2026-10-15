@@ -19,14 +19,15 @@ from pathlib import Path
 
 import pytest
 
-from parser_service import markdown_pipeline, parser_service
-from parser_service.markdown_pipeline import parse_to_markdown
+from parser_service import parser_service
 from parser_service.parser_service import (
     _input_size_error,
     _max_input_bytes,
     _sha256_file,
     parse,
 )
+from parser_service.parsing import document as markdown_pipeline
+from parser_service.parsing.document import parse_to_markdown
 
 FIXTURES = Path(__file__).parent / "fixtures"
 DIGITAL_PDF = FIXTURES / "digital_simple.pdf"

@@ -106,8 +106,8 @@ def test_budget_tracker_no_trip_when_under() -> None:
 
 def test_escalate_false_makes_no_engine_calls(monkeypatch: pytest.MonkeyPatch) -> None:
     """With escalate=False every page stays Docling; call_vlm/analyze_page never fire."""
-    from parser_service import markdown_pipeline
-    from parser_service.quality_gate import Decision
+    from parser_service.parsing import document as markdown_pipeline
+    from parser_service.parsing.quality_gate import Decision
 
     monkeypatch.delenv("PARSER_ESCALATION_ENGINE", raising=False)
     # Force the gate to WANT to promote every page — escalate=False must still
@@ -124,8 +124,8 @@ def test_escalate_false_makes_no_engine_calls(monkeypatch: pytest.MonkeyPatch) -
     def _boom_textract(*a: object, **k: object) -> Any:
         raise AssertionError("analyze_page must not be called when escalate=False")
 
-    monkeypatch.setattr("parser_service.markdown_pipeline.call_vlm", _boom_vlm)
-    monkeypatch.setattr("parser_service.markdown_pipeline.analyze_page", _boom_textract)
+    monkeypatch.setattr("parser_service.parsing.document.call_vlm", _boom_vlm)
+    monkeypatch.setattr("parser_service.parsing.document.analyze_page", _boom_textract)
 
     result = markdown_pipeline.parse_to_markdown(DIGITAL, escalate=False)
 
@@ -142,8 +142,8 @@ def test_escalate_false_makes_no_engine_calls(monkeypatch: pytest.MonkeyPatch) -
 
 def test_escalate_true_is_default_and_escalates(monkeypatch: pytest.MonkeyPatch) -> None:
     """Default escalate=True still escalates (byte-identical to baseline behavior)."""
-    from parser_service import markdown_pipeline
-    from parser_service.quality_gate import Decision
+    from parser_service.parsing import document as markdown_pipeline
+    from parser_service.parsing.quality_gate import Decision
 
     monkeypatch.delenv("PARSER_ESCALATION_ENGINE", raising=False)
     monkeypatch.setattr(
@@ -153,12 +153,12 @@ def test_escalate_true_is_default_and_escalates(monkeypatch: pytest.MonkeyPatch)
     )
 
     def _call_vlm(image_bytes: bytes, mode: str) -> Any:
-        from parser_service import vlm_client
+        from parser_service.parsing.engines import vlm as vlm_client
 
         vlm_client._increment_vlm_call_count()
         return {"elements": [{"type": "paragraph", "text": "VLM_TEXT"}]}
 
-    monkeypatch.setattr("parser_service.markdown_pipeline.call_vlm", _call_vlm)
+    monkeypatch.setattr("parser_service.parsing.document.call_vlm", _call_vlm)
 
     result = markdown_pipeline.parse_to_markdown(DIGITAL)  # default escalate=True
     assert result["call_counts"]["vlm"] >= 1

@@ -1,6 +1,6 @@
 """Step-by-step confirmation of the document/page confidence score (§2.3).
 
-Runs the REAL scorer (`parser_service.confidence`) and the REAL `parse_to_markdown`
+Runs the REAL scorer (`parser_service.parsing.confidence`) and the REAL `parse_to_markdown`
 pipeline. No AWS / credentials: the only thing stubbed is the paid engine call
 (`call_vlm` / `analyze_page`) in the end-to-end step. Each step asserts the
 documented behavior, so the script exits non-zero on any regression.
@@ -16,9 +16,9 @@ _SRC = _ROOT / "src"
 if _SRC.is_dir() and str(_SRC) not in sys.path:
     sys.path.insert(0, str(_SRC))
 
-import parser_service.markdown_pipeline as mp  # noqa: E402
-from parser_service.confidence import document_confidence, page_confidence  # noqa: E402
-from parser_service.quality_gate import Decision  # noqa: E402
+import parser_service.parsing.document as mp  # noqa: E402
+from parser_service.parsing.confidence import document_confidence, page_confidence  # noqa: E402
+from parser_service.parsing.quality_gate import Decision  # noqa: E402
 
 _ORIG_EVALUATE = mp.evaluate_page  # restore between runs
 

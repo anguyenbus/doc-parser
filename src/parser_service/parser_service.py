@@ -37,7 +37,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel
 
-from parser_service.vlm_client import (
+from parser_service.parsing.engines.vlm import (
     call_vlm,
     reset_vlm_call_count,
 )
@@ -352,8 +352,8 @@ def _parse_pdf(path: Path, out: dict[str, Any], char_offset: int) -> tuple[dict[
     """
     from docling.document_converter import DocumentConverter
 
-    from parser_service.quality_gate import evaluate_page
-    from parser_service.render import render_page, render_region, text_layer_tokens
+    from parser_service.parsing.quality_gate import evaluate_page
+    from parser_service.parsing.render import render_page, render_region, text_layer_tokens
 
     converter = DocumentConverter()
     try:
@@ -643,7 +643,7 @@ def _parse_image(path: Path, out: dict[str, Any], char_offset: int) -> tuple[dic
     2. Two-layer quality gate (quality_gate.py) decides whether to keep or promote to VLM.
     3. VLM replaces Docling output only when a layer fires (or Docling extracted nothing).
     """
-    from parser_service.quality_gate import evaluate_page
+    from parser_service.parsing.quality_gate import evaluate_page
 
     out["pages"].append({"page_index": 0, "width": 0, "height": 0, "rotation": 0})
 

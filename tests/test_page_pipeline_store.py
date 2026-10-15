@@ -30,7 +30,7 @@ from test_store_contract import CONTRACT_CASES
 from parser_service import page_pipeline
 from parser_service.page_pipeline import file_id_for, parse_pdf_pages_in_store, work_id_for
 from parser_service.parser_service import PARSER_VERSION
-from parser_service.store import (
+from parser_service.storage.store import (
     LocalStore,
     Store,
     StoreNotFoundError,

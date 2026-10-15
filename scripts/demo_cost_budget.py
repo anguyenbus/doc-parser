@@ -15,10 +15,11 @@ for p in (_ROOT / "src", _ROOT / "scripts"):
     if p.is_dir() and str(p) not in sys.path:
         sys.path.insert(0, str(p))
 
-import parser_service.markdown_pipeline as mp  # noqa: E402
-from parser_service.quality_gate import Decision  # noqa: E402
-from parser_service.vlm_client import _increment_vlm_call_count  # noqa: E402
 import parse_batch as pb  # noqa: E402
+
+import parser_service.parsing.document as mp  # noqa: E402
+from parser_service.parsing.engines.vlm import _increment_vlm_call_count  # noqa: E402
+from parser_service.parsing.quality_gate import Decision  # noqa: E402
 
 FIX = _ROOT / "tests/fixtures"
 

@@ -1,5 +1,5 @@
 """
-test_retry.py — Task Group 1 tests for ``src/parser_service/retry.py``.
+test_retry.py — Task Group 1 tests for ``src/parser_service/parsing/engines/retry.py``.
 
 Pure, fully offline (NO network, NO boto3 import). ``time.sleep`` is patched so
 the suite runs in milliseconds. Covers transient/permanent classification,
@@ -13,8 +13,7 @@ from __future__ import annotations
 
 import pytest
 
-from parser_service.retry import is_transient, retry_call, with_retry
-
+from parser_service.parsing.engines.retry import is_transient, retry_call, with_retry
 
 # ---------------------------------------------------------------------------
 # Fake exceptions mirroring SDK shapes (no botocore dependency required)
@@ -54,13 +53,15 @@ class _ClientError(Exception):
 def _no_sleep(monkeypatch: pytest.MonkeyPatch) -> None:
     """Patch ``time.sleep`` in retry so no real time passes; record calls."""
     calls: list[float] = []
-    monkeypatch.setattr("parser_service.retry.time.sleep", lambda s: calls.append(s))
+    monkeypatch.setattr(
+        "parser_service.parsing.engines.retry.time.sleep", lambda s: calls.append(s)
+    )
     # Expose the recorded sleeps on the module for assertions.
-    monkeypatch.setattr("parser_service.retry._TEST_SLEEPS", calls, raising=False)
+    monkeypatch.setattr("parser_service.parsing.engines.retry._TEST_SLEEPS", calls, raising=False)
 
 
 def _sleeps() -> list[float]:
-    import parser_service.retry as r
+    import parser_service.parsing.engines.retry as r
 
     return getattr(r, "_TEST_SLEEPS", [])
 

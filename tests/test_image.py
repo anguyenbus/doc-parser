@@ -21,10 +21,10 @@ def force_promote(monkeypatch: pytest.MonkeyPatch) -> None:
     Whether Docling's OCR on screenshot.png passes the gate depends on the Docling and
     OCR model versions (2.138 grades it GOOD and keeps it), not on the code under test.
     """
-    from parser_service.quality_gate import Decision
+    from parser_service.parsing.quality_gate import Decision
 
     monkeypatch.setattr(
-        "parser_service.quality_gate.evaluate_page",
+        "parser_service.parsing.quality_gate.evaluate_page",
         lambda *_args, **_kwargs: Decision("promote_to_vlm", "forced by test", 1),
     )
 

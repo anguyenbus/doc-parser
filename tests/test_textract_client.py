@@ -22,7 +22,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from parser_service.textract_client import (
+from parser_service.parsing.engines.textract import (
     _blocks_to_elements,
     analyze_page,
     get_textract_call_count,
@@ -253,7 +253,7 @@ def test_analyze_page_live_real_textract() -> None:
     is passed (the ``live`` marker is registered in pyproject.toml). Requires
     AWS_REGION + instance-role/Textract access (verified in ap-southeast-2).
     """
-    from parser_service.render import render_page
+    from parser_service.parsing.render import render_page
 
     pdf = FIXTURES / "digital_simple.pdf"
     image_bytes = render_page(pdf, 0)

@@ -37,7 +37,7 @@ DIGITAL = FIXTURES / "digital_simple.pdf"
 
 def test_vlm_counter_is_thread_local_isolated() -> None:
     """Thread A's reset+increment on the VLM counter is isolated from thread B."""
-    from parser_service import vlm_client
+    from parser_service.parsing.engines import vlm as vlm_client
 
     results: dict[str, int] = {}
     barrier = threading.Barrier(2)
@@ -66,7 +66,7 @@ def test_vlm_counter_is_thread_local_isolated() -> None:
 
 def test_textract_counter_is_thread_local_isolated() -> None:
     """Thread A's reset+increment on the Textract counter is isolated from thread B."""
-    from parser_service import textract_client
+    from parser_service.parsing.engines import textract as textract_client
 
     results: dict[str, int] = {}
     barrier = threading.Barrier(2)
@@ -95,8 +95,8 @@ def test_textract_counter_is_thread_local_isolated() -> None:
 
 
 def _force_promote(monkeypatch: pytest.MonkeyPatch) -> None:
-    from parser_service import markdown_pipeline
-    from parser_service.quality_gate import Decision
+    from parser_service.parsing import document as markdown_pipeline
+    from parser_service.parsing.quality_gate import Decision
 
     monkeypatch.setattr(
         markdown_pipeline,
@@ -112,19 +112,19 @@ def _force_promote(monkeypatch: pytest.MonkeyPatch) -> None:
 
 def test_vlm_parse_returns_call_counts(monkeypatch: pytest.MonkeyPatch) -> None:
     """A VLM-escalating parse reports non-zero ``vlm`` and zero ``textract``."""
-    from parser_service import markdown_pipeline
+    from parser_service.parsing import document as markdown_pipeline
 
     monkeypatch.delenv("PARSER_ESCALATION_ENGINE", raising=False)
     _force_promote(monkeypatch)
 
     def _call_vlm(image_bytes: bytes, mode: str) -> Any:
         # Mirror the real client: bump the (thread-local) counter on success.
-        from parser_service import vlm_client
+        from parser_service.parsing.engines import vlm as vlm_client
 
         vlm_client._increment_vlm_call_count()
         return {"elements": [{"type": "paragraph", "text": "VLM_TEXT"}]}
 
-    monkeypatch.setattr("parser_service.markdown_pipeline.call_vlm", _call_vlm)
+    monkeypatch.setattr("parser_service.parsing.document.call_vlm", _call_vlm)
 
     result = markdown_pipeline.parse_to_markdown(DIGITAL)
 
@@ -136,18 +136,18 @@ def test_vlm_parse_returns_call_counts(monkeypatch: pytest.MonkeyPatch) -> None:
 
 def test_textract_parse_returns_call_counts(monkeypatch: pytest.MonkeyPatch) -> None:
     """A Textract-escalating parse reports non-zero ``textract`` and zero ``vlm``."""
-    from parser_service import markdown_pipeline
+    from parser_service.parsing import document as markdown_pipeline
 
     monkeypatch.setenv("PARSER_ESCALATION_ENGINE", "textract")
     _force_promote(monkeypatch)
 
     def _analyze_page(image_bytes: bytes) -> Any:
-        from parser_service import textract_client
+        from parser_service.parsing.engines import textract as textract_client
 
         textract_client._increment_textract_call_count()
         return {"elements": [{"type": "paragraph", "text": "TEXTRACT_TEXT"}]}
 
-    monkeypatch.setattr("parser_service.markdown_pipeline.analyze_page", _analyze_page)
+    monkeypatch.setattr("parser_service.parsing.document.analyze_page", _analyze_page)
 
     result = markdown_pipeline.parse_to_markdown(DIGITAL)
 
@@ -167,17 +167,17 @@ def test_return_is_additive_only(monkeypatch: pytest.MonkeyPatch) -> None:
     The gate is left at its real behavior (no forced promote) so this exercises a
     representative doc's real routing.
     """
-    from parser_service import markdown_pipeline
+    from parser_service.parsing import document as markdown_pipeline
 
     monkeypatch.delenv("PARSER_ESCALATION_ENGINE", raising=False)
 
     def _call_vlm(image_bytes: bytes, mode: str) -> Any:
-        from parser_service import vlm_client
+        from parser_service.parsing.engines import vlm as vlm_client
 
         vlm_client._increment_vlm_call_count()
         return {"elements": [{"type": "paragraph", "text": "VLM_TEXT"}]}
 
-    monkeypatch.setattr("parser_service.markdown_pipeline.call_vlm", _call_vlm)
+    monkeypatch.setattr("parser_service.parsing.document.call_vlm", _call_vlm)
 
     result = markdown_pipeline.parse_to_markdown(DIGITAL)
 
@@ -198,7 +198,7 @@ def test_return_is_additive_only(monkeypatch: pytest.MonkeyPatch) -> None:
 
 def test_parse_one_and_wrap_tolerate_new_key(monkeypatch: pytest.MonkeyPatch) -> None:
     """``["markdown"]`` reads and ``wrap_md_as_prediction`` still work with the new key."""
-    from parser_service import markdown_pipeline
+    from parser_service.parsing import document as markdown_pipeline
 
     monkeypatch.delenv("PARSER_ESCALATION_ENGINE", raising=False)
     result = markdown_pipeline.parse_to_markdown(DIGITAL)
@@ -230,8 +230,8 @@ def test_concurrent_parses_do_not_cross_contaminate(
     ``reset_vlm_call_count()`` at the start of ITS parse cannot corrupt this
     thread's final read.
     """
-    from parser_service import markdown_pipeline
-    from parser_service.quality_gate import Decision
+    from parser_service.parsing import document as markdown_pipeline
+    from parser_service.parsing.quality_gate import Decision
 
     monkeypatch.delenv("PARSER_ESCALATION_ENGINE", raising=False)
     # Force every page to promote so each page yields exactly one engine call.
@@ -244,12 +244,12 @@ def test_concurrent_parses_do_not_cross_contaminate(
     barrier = threading.Barrier(2)
 
     def _call_vlm(image_bytes: bytes, mode: str) -> Any:
-        from parser_service import vlm_client
+        from parser_service.parsing.engines import vlm as vlm_client
 
         vlm_client._increment_vlm_call_count()
         return {"elements": [{"type": "paragraph", "text": "VLM_TEXT"}]}
 
-    monkeypatch.setattr("parser_service.markdown_pipeline.call_vlm", _call_vlm)
+    monkeypatch.setattr("parser_service.parsing.document.call_vlm", _call_vlm)
 
     counts: dict[str, int] = {}
 

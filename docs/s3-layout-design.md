@@ -417,8 +417,8 @@ The `published` event:
 | Piece | File |
 |---|---|
 | `work/` and `out/` layout, split, page records, status, stitch | `src/parser_service/page_pipeline.py` |
-| `published/` versions, manifest, events, ids | `src/parser_service/publish.py` |
-| `job.json` and `ops/jobs/` | `src/parser_service/jobs.py` |
+| `published/` versions, manifest, events, ids | `src/parser_service/delivery/publish.py` |
+| `job.json` and `ops/jobs/` | `src/parser_service/delivery/jobs.py` |
 | The driver CLI (`--job`, `--publish`, `--publish-partial`, `--doc-id`) | `scripts/parse_pages.py` |
-| The page service (checks `work_id`, answers 409 for another config) | `src/parser_service/kserve_predictor.py` |
+| The page service (checks `work_id`, answers 409 for another config) | `src/parser_service/service/predictor.py` |
 | The Kubernetes driver Job (`--job=…`) | `deploy/k8s/driver-job.yaml.tpl` |

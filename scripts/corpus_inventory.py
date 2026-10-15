@@ -14,8 +14,8 @@ Usage:
     uv run python scripts/corpus_inventory.py --prefix <folder> --out-dir <report dir>
 
 Every file is sniffed from its first 64 KiB (an S3 range GET) with
-``parser_service.sniff``. Only files detected as DOCX are read in full, streamed to a
-temporary file, for ``parser_service.guards.docx_stats``.
+``parser_service.formats.sniff``. Only files detected as DOCX are read in full, streamed to a
+temporary file, for ``parser_service.formats.guards.docx_stats``.
 
 Outputs:
     <out-dir>/inventory.json   aggregate: counts by detected type, by extension and by
@@ -64,8 +64,13 @@ from typing import Any
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
 from parser_service import io_layer  # noqa: E402
-from parser_service.guards import docx_stats  # noqa: E402
-from parser_service.sniff import KIND_EXTENSIONS, SNIFF_BYTES, extension_of, sniff  # noqa: E402
+from parser_service.formats.guards import docx_stats  # noqa: E402
+from parser_service.formats.sniff import (  # noqa: E402
+    KIND_EXTENSIONS,
+    SNIFF_BYTES,
+    extension_of,
+    sniff,
+)
 
 log = logging.getLogger("corpus_inventory")
 

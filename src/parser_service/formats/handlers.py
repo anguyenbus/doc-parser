@@ -48,7 +48,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
-    from parser_service.page_worker import Reply
+    from parser_service.service.worker import Reply
 
 # mail-parser logs attachment names at DEBUG, and Docling's email backend runs it
 # before any handler code here does. Hold its logger at WARNING from import, so
@@ -294,7 +294,9 @@ def _parse_whole_doc(kind: str, path: Path) -> Reply:
     changes the state. An email (``eml``, ``msg``) also gets ``extra.email``, its
     headers and attachment list read from the message itself (``_email_facts``).
     """
-    from parser_service import markdown_pipeline  # Docling is imported lazily there
+    from parser_service.parsing import (
+        document as markdown_pipeline,  # Docling is imported lazily there
+    )
 
     container: dict[str, Any] = {"warnings": [], "elements": []}
     page_routes: list[dict[str, Any]] = []
@@ -646,7 +648,7 @@ def parse_unit(
         raise NoHandlerError(f"no handler for kind {kind!r} in this image")
     reply = handler(Path(path), page_number, escalate)
     if output_cap is not None:
-        from parser_service.page_worker import _apply_output_cap
+        from parser_service.service.worker import _apply_output_cap
 
         reply = _apply_output_cap(kind, reply, output_cap)
     return reply

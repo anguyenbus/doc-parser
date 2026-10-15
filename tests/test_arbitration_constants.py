@@ -32,7 +32,8 @@ DIGITAL = FIXTURES / "digital_simple.pdf"
 
 def test_rejected_route_constant_values() -> None:
     """The two new route constants have the exact rejected-kept-docling values."""
-    from parser_service import markdown_pipeline, route_stats
+    from parser_service.parsing import document as markdown_pipeline
+    from parser_service.parsing import route_stats
 
     assert markdown_pipeline._ROUTE_VLM_REJECTED == "vlm-rejected-kept-docling"
     assert (
@@ -44,7 +45,8 @@ def test_rejected_route_constant_values() -> None:
 
 def test_rejected_route_constants_match_across_modules() -> None:
     """markdown_pipeline and route_stats agree on both new route constants."""
-    from parser_service import markdown_pipeline, route_stats
+    from parser_service.parsing import document as markdown_pipeline
+    from parser_service.parsing import route_stats
 
     assert markdown_pipeline._ROUTE_VLM_REJECTED == route_stats.ROUTE_VLM_REJECTED
     assert (
@@ -60,8 +62,8 @@ def test_rejected_route_constants_match_across_modules() -> None:
 
 def _force_promote_layer1(monkeypatch: pytest.MonkeyPatch) -> None:
     """Force a Layer-1 (docling_low_grade) promotion on every page."""
-    from parser_service import markdown_pipeline
-    from parser_service.quality_gate import Decision
+    from parser_service.parsing import document as markdown_pipeline
+    from parser_service.parsing.quality_gate import Decision
 
     monkeypatch.setattr(
         markdown_pipeline,
@@ -76,7 +78,7 @@ def _patch_vlm(monkeypatch: pytest.MonkeyPatch, response: Any) -> None:
     def _mock(image_bytes: bytes, mode: str) -> Any:
         return response
 
-    monkeypatch.setattr("parser_service.markdown_pipeline.call_vlm", _mock)
+    monkeypatch.setattr("parser_service.parsing.document.call_vlm", _mock)
 
 
 def _patch_quality(
@@ -87,8 +89,8 @@ def _patch_quality(
     The engine markdown carries a unique sentinel so the mock can distinguish
     engine vs docling text.
     """
-    from parser_service import markdown_pipeline
-    from parser_service.quality_gate import QualitySignals
+    from parser_service.parsing import document as markdown_pipeline
+    from parser_service.parsing.quality_gate import QualitySignals
 
     def _mock(text: str) -> QualitySignals:
         if "ENGINE_SENTINEL" in text:
@@ -106,7 +108,7 @@ def test_fired_record_carries_new_and_backcompat_keys(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Arbitration ON + fired: record has new telemetry keys AND back-compat keys."""
-    from parser_service import markdown_pipeline
+    from parser_service.parsing import document as markdown_pipeline
 
     monkeypatch.setenv("PARSER_ESCALATION_ARBITRATION", "1")
     monkeypatch.delenv("PARSER_ESCALATION_ENGINE", raising=False)

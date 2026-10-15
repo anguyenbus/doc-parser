@@ -34,7 +34,7 @@ from parser_service.page_pipeline import (
     process_page_request,
     work_id_for,
 )
-from parser_service.store import LocalStore
+from parser_service.storage.store import LocalStore
 
 FILE_ID = file_id_for(THREE_PAGE)
 WORK_ID = work_id_for(THREE_PAGE)

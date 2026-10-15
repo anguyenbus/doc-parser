@@ -19,8 +19,8 @@ from pathlib import Path
 import pytest
 from PIL import Image
 
-from parser_service import render
-from parser_service.render import (
+from parser_service.parsing import render
+from parser_service.parsing.render import (
     _clamp_scale_to_budget,
     _max_render_pixels,
     render_page,

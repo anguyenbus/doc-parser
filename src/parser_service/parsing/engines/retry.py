@@ -35,7 +35,7 @@ import time
 from collections.abc import Callable
 from typing import Any, TypeVar
 
-logger = logging.getLogger("parser_service.retry")
+logger = logging.getLogger("parser_service.parsing.engines.retry")
 
 F = TypeVar("F", bound=Callable[..., Any])
 

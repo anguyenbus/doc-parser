@@ -55,7 +55,7 @@ from parser_service.settings import DEFAULT_WORKER_START_TIMEOUT_S
 
 logger = logging.getLogger(__name__)
 
-WARMUP_PDF = Path(__file__).parent / "assets" / "warmup.pdf"
+WARMUP_PDF = Path(__file__).parents[1] / "assets" / "warmup.pdf"
 WORKER_START_TIMEOUT_ENV = "PARSER_WORKER_START_TIMEOUT_S"
 
 # How long ``kill`` waits for the SIGKILLed worker to be reaped.
@@ -113,7 +113,7 @@ def warm_up() -> None:
 
     Loads the Docling models in the worker, so the first real request is warm.
     """
-    from parser_service.markdown_pipeline import enable_converter_reuse, parse_to_markdown
+    from parser_service.parsing.document import enable_converter_reuse, parse_to_markdown
 
     enable_converter_reuse()
     parse_to_markdown(WARMUP_PDF, escalate=False)
@@ -125,7 +125,7 @@ def parse_request(kind: str, unit_path: str, page_number: int, escalate: bool) -
     A kind with no handler in this image raises, which ``_worker_main`` turns into
     a ``failed`` reply. The output cap is applied by ``_worker_main``.
     """
-    from parser_service.unit_handlers import parse_unit
+    from parser_service.formats.handlers import parse_unit
 
     return parse_unit(kind, Path(unit_path), page_number, escalate)
 

@@ -10,7 +10,7 @@ from pathlib import Path
 
 import pytest
 
-from parser_service.render import render_page, render_region
+from parser_service.parsing.render import render_page, render_region
 
 FIXTURES = Path(__file__).parent / "fixtures"
 DIGITAL_PDF = FIXTURES / "digital_simple.pdf"

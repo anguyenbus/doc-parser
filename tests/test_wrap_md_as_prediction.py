@@ -108,7 +108,7 @@ def test_wrap_validates_against_wheel_schema_one_paragraph(
     validate_against_wheel: Validator,
 ) -> None:
     """The wrap conforms to the wheel schema with exactly one paragraph element."""
-    from parser_service.markdown_pipeline import wrap_md_as_prediction
+    from parser_service.parsing.document import wrap_md_as_prediction
 
     md = "# Title\n\nA paragraph of body text.\n\n- a\n- b"
     pred = wrap_md_as_prediction(md, DIGITAL)
@@ -137,8 +137,8 @@ def test_wrap_source_matches_empty_output(validate_against_wheel: Validator) -> 
     """Source has all four fields and matches what _empty_output produces."""
     import mimetypes
 
-    from parser_service.markdown_pipeline import wrap_md_as_prediction
     from parser_service.parser_service import _empty_output
+    from parser_service.parsing.document import wrap_md_as_prediction
 
     md = "hello world"
     pred = wrap_md_as_prediction(md, DIGITAL)
@@ -159,7 +159,7 @@ def test_wrap_source_matches_empty_output(validate_against_wheel: Validator) -> 
 
 def test_wrap_sha256_is_64_hex_and_no_extra_props(validate_against_wheel: Validator) -> None:
     """sha256 is 64 lowercase hex chars; no extra top-level/source keys leak."""
-    from parser_service.markdown_pipeline import wrap_md_as_prediction
+    from parser_service.parsing.document import wrap_md_as_prediction
 
     pred = wrap_md_as_prediction("body", DIGITAL)
     validate_against_wheel(pred)  # would fail if additionalProperties: false is violated
@@ -176,7 +176,7 @@ def test_wrap_sha256_is_64_hex_and_no_extra_props(validate_against_wheel: Valida
 
 def test_wrap_accepts_prebuilt_source_dict(validate_against_wheel: Validator) -> None:
     """A caller-supplied full source dict is accepted (path-or-dict contract)."""
-    from parser_service.markdown_pipeline import wrap_md_as_prediction
+    from parser_service.parsing.document import wrap_md_as_prediction
 
     source = {
         "doc_id": "fixed",

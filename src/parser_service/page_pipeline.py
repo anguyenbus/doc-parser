@@ -94,8 +94,10 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Protocol
 
-from parser_service.guards import DocxLimits, GuardRejection, check_docx
-from parser_service.markdown_pipeline import enable_converter_reuse, parse_to_markdown
+from parser_service.delivery.publish import EMAIL_KINDS, PublishRequest, publish_document
+from parser_service.formats.guards import DocxLimits, GuardRejection, check_docx
+from parser_service.formats.handlers import handler_version, parse_unit
+from parser_service.formats.sniff import KIND_EXTENSIONS, KINDS, SNIFF_BYTES, Sniff, sniff
 from parser_service.observability import (
     extension_label,
     kind_label,
@@ -103,15 +105,15 @@ from parser_service.observability import (
     observe_unit,
     truncate,
 )
-from parser_service.page_worker import Reply, Request, WorkerTimeout, _exception_reply
 from parser_service.parser_service import PARSER_VERSION, _sha256_file
-from parser_service.publish import EMAIL_KINDS, PublishRequest, publish_document
-from parser_service.render import render_page, text_layer_tokens
-from parser_service.route_stats import (
+from parser_service.parsing.document import enable_converter_reuse, parse_to_markdown
+from parser_service.parsing.render import render_page, text_layer_tokens
+from parser_service.parsing.route_stats import (
     ROUTE_DOCLING_KEPT,
     ROUTE_TEXTRACT_FALLBACK,
     ROUTE_VLM_FALLBACK,
 )
+from parser_service.service.worker import Reply, Request, WorkerTimeout, _exception_reply
 from parser_service.settings import (
     DEADLINE_ENV,
     DEFAULT_MAX_OUTPUT_MB,
@@ -123,9 +125,7 @@ from parser_service.settings import (
     REMOTE_REQUEST_TIMEOUT_ENV,
     split_kinds,
 )
-from parser_service.sniff import KIND_EXTENSIONS, KINDS, SNIFF_BYTES, Sniff, sniff
-from parser_service.store import LocalStore, Store, StoreNotFoundError, open_store
-from parser_service.unit_handlers import handler_version, parse_unit
+from parser_service.storage.store import LocalStore, Store, StoreNotFoundError, open_store
 
 logger = logging.getLogger(__name__)
 

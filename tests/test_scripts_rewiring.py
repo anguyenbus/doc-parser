@@ -276,7 +276,7 @@ def test_parse_batch_route_stats_csv_from_page_routes(
 
 def test_route_record_derives_from_page_routes() -> None:
     """route_record reads routes from page_routes (the exact vocabulary), not vlm_ prefixes."""
-    from parser_service import route_stats
+    from parser_service.parsing import route_stats
 
     page_routes = [
         {"page_index": 0, "route": "docling-kept", "reason": None},
@@ -294,7 +294,7 @@ def test_route_record_derives_from_page_routes() -> None:
 
 def test_route_record_all_docling_kept() -> None:
     """A doc with only docling-kept pages rolls up to docling-kept with 0 vlm pages."""
-    from parser_service import route_stats
+    from parser_service.parsing import route_stats
 
     page_routes = [{"page_index": i, "route": "docling-kept", "reason": None} for i in range(4)]
     rec = route_stats.route_record(page_routes, doc_id="clean")
@@ -305,7 +305,7 @@ def test_route_record_all_docling_kept() -> None:
 
 def test_route_record_all_fallback_is_vlm_failed() -> None:
     """When every promoted page falls back, the doc rolls up to vlm-failed."""
-    from parser_service import route_stats
+    from parser_service.parsing import route_stats
 
     page_routes = [
         {"page_index": 0, "route": "vlm-fallback-docling", "reason": "boom"},
@@ -322,7 +322,7 @@ def test_route_counts_sum_to_page_count_invariant() -> None:
     This is the guard against a route-vocabulary mismatch silently reporting
     zeros/wrong splits without failing.
     """
-    from parser_service import route_stats
+    from parser_service.parsing import route_stats
 
     # A drifted route ("vlm_p0" — the OLD element-ID-prefix style) is not in the
     # known vocabulary, so it is counted nowhere and the sum must not match.
@@ -336,7 +336,7 @@ def test_route_counts_sum_to_page_count_invariant() -> None:
 
 def test_route_record_empty_page_routes_invariant_holds() -> None:
     """Zero page_routes is consistent (0 == 0) and rolls up to docling-kept."""
-    from parser_service import route_stats
+    from parser_service.parsing import route_stats
 
     rec = route_stats.route_record([], doc_id="empty")
     assert rec["pages"] == 0

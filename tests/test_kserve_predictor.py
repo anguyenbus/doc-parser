@@ -1,5 +1,5 @@
 """
-test_kserve_predictor.py — the KServe custom predictor (``parser_service.kserve_predictor``).
+test_kserve_predictor.py — the KServe custom predictor (``parser_service.service.predictor``).
 
 The model is driven directly and through KServe's own REST app, so the status
 codes the remote executor relies on (200, 400, 409, 429, 500, 503) are checked
@@ -43,16 +43,17 @@ from fastapi import HTTPException  # noqa: E402
 from kserve.errors import InvalidInput  # noqa: E402
 from prometheus_client import REGISTRY  # noqa: E402
 
-from parser_service import page_pipeline, page_worker  # noqa: E402
-from parser_service.kserve_predictor import PageParserModel, parse_instance  # noqa: E402
+from parser_service import page_pipeline  # noqa: E402
 from parser_service.page_pipeline import KSERVE_MODEL_NAME, work_id_for  # noqa: E402
-from parser_service.page_worker import (  # noqa: E402
+from parser_service.service import worker as page_worker  # noqa: E402
+from parser_service.service.predictor import PageParserModel, parse_instance  # noqa: E402
+from parser_service.service.worker import (  # noqa: E402
     ParseWorker,
     Reply,
     Request,
     WorkerNotReady,
 )
-from parser_service.store import LocalStore  # noqa: E402
+from parser_service.storage.store import LocalStore  # noqa: E402
 
 WORK_ID = work_id_for(THREE_PAGE)
 HOLD_ENV = "TEST_KSERVE_HOLD_WARMUP"
@@ -510,9 +511,9 @@ import asyncio, json, sys
 from pathlib import Path
 
 from parser_service import page_pipeline
-from parser_service.kserve_predictor import PageParserModel
+from parser_service.service.predictor import PageParserModel
 from parser_service.page_pipeline import KSERVE_MODEL_NAME, work_id_for
-from parser_service.store import LocalStore
+from parser_service.storage.store import LocalStore
 
 source, root = Path(sys.argv[1]), Path(sys.argv[2])
 store = LocalStore(root)

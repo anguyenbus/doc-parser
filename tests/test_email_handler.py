@@ -31,11 +31,12 @@ import pytest
 from PIL import Image
 from test_page_pipeline_store import MemoryStore
 
-from parser_service import markdown_pipeline, page_pipeline
-from parser_service.page_worker import ParseWorker, parse_request
-from parser_service.publish import PublishRequest
-from parser_service.store import LocalStore
-from parser_service.unit_handlers import parse_unit
+from parser_service import page_pipeline
+from parser_service.delivery.publish import PublishRequest
+from parser_service.formats.handlers import parse_unit
+from parser_service.parsing import document as markdown_pipeline
+from parser_service.service.worker import ParseWorker, parse_request
+from parser_service.storage.store import LocalStore
 
 MSG_FIXTURE = Path(__file__).parent / "fixtures" / "email_plain_and_html.msg"
 

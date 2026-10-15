@@ -22,9 +22,9 @@ import os
 from collections.abc import Mapping
 from dataclasses import dataclass
 
-from parser_service.sniff import KINDS
-from parser_service.store import location_kind
-from parser_service.unit_handlers import has_handler
+from parser_service.formats.handlers import has_handler
+from parser_service.formats.sniff import KINDS
+from parser_service.storage.store import location_kind
 
 logger = logging.getLogger(__name__)
 

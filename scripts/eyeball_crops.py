@@ -29,7 +29,7 @@ logger = logging.getLogger(__name__)
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
-from parser_service.render import render_page, render_region  # noqa: E402
+from parser_service.parsing.render import render_page, render_region  # noqa: E402
 
 
 def main() -> None:

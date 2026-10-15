@@ -1,5 +1,5 @@
 """
-test_guards.py — ``parser_service.guards``: DOCX index numbers, element counts and the
+test_guards.py — ``parser_service.formats.guards``: DOCX index numbers, element counts and the
 DOCX cost guard (spec D7), run by the page pipeline before the parser (spec D4 step 4).
 
 Fixtures are built at test time with python-docx and ``zipfile`` in ``tmp_path``; the
@@ -30,16 +30,17 @@ from xml.etree import ElementTree
 import docx
 import pytest
 
-from parser_service import page_pipeline, settings, unit_handlers
-from parser_service.guards import (
+from parser_service import page_pipeline, settings
+from parser_service.formats import handlers as unit_handlers
+from parser_service.formats.guards import (
     ELEMENT_START,
     DocxLimits,
     check_docx,
     count_elements,
     docx_stats,
 )
-from parser_service.page_worker import Reply, Request
-from parser_service.store import LocalStore
+from parser_service.service.worker import Reply, Request
+from parser_service.storage.store import LocalStore
 
 _W = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"
 _ROWS, _COLS, _PARAGRAPHS = 4, 3, 7
@@ -456,7 +457,7 @@ def test_guard_rejection_never_starts_docling(
     # The guard alone, in a fresh interpreter: no Docling (or torch) is imported.
     script = (
         "import sys\n"
-        "from parser_service.guards import check_docx, DocxLimits\n"
+        "from parser_service.formats.guards import check_docx, DocxLimits\n"
         "limits = DocxLimits(300, 200, 100, 10000, 50000, 100000)\n"
         "assert check_docx(sys.argv[1], limits)[0] == 'zip_bomb'\n"
         "assert check_docx(sys.argv[2], limits) is None\n"

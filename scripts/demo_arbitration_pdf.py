@@ -27,8 +27,8 @@ _SRC = _ROOT / "src"
 if _SRC.is_dir() and str(_SRC) not in sys.path:
     sys.path.insert(0, str(_SRC))
 
-import parser_service.markdown_pipeline as mp  # noqa: E402
-from parser_service.quality_gate import Decision  # noqa: E402
+import parser_service.parsing.document as mp  # noqa: E402
+from parser_service.parsing.quality_gate import Decision  # noqa: E402
 
 # Deliberately garbled "engine" output — short alnum tokens that fail the quality
 # proxy (garbled_token_ratio high, dict_hit_rate ~0). This simulates a bad VLM/

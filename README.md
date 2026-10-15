@@ -44,7 +44,7 @@ writes `route_stats.csv` + `failures.json` and prints a cost summary. Knobs:
 `--budget-usd`.
 
 ```python
-from parser_service.markdown_pipeline import parse_to_markdown
+from parser_service.parsing.document import parse_to_markdown
 
 result = parse_to_markdown(Path("report.pdf"))
 result["markdown"]      # the RAG-ready Markdown string (the product)
@@ -63,7 +63,7 @@ doc ─► Docling parse ─► per page ─► quality gate ─┬─ confident
       ─► concatenate pages in order ─► document.md  (+ page_routes, confidence, call_counts)
 ```
 
-- **Quality gate** ([quality_gate.py](src/parser_service/quality_gate.py)), per page:
+- **Quality gate** ([quality_gate.py](src/parser_service/parsing/quality_gate.py)), per page:
   Docling confidence (POOR/FAIR → escalate), coverage (under-extraction → escalate),
   and text heuristics (garble/repeat). Numeric-aware so financial pages aren't flagged.
 - **Format routing:** PDF → per-page gate; image → gated one-page path; DOCX/XLSX/HTML →

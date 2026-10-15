@@ -9,7 +9,7 @@ Run ONLY these tests (task 4.3):
 
 from __future__ import annotations
 
-from parser_service.route_stats import route_record, summarize
+from parser_service.parsing.route_stats import route_record, summarize
 
 
 def _route(route: str, reason: str | None = None) -> dict[str, object]:

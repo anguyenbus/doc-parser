@@ -30,7 +30,7 @@ from parser_service.page_pipeline import (
     strip_page_markers,
     work_dir_for,
 )
-from parser_service.page_worker import Reply, Request
+from parser_service.service.worker import Reply, Request
 
 FIXTURES = Path(__file__).parent / "fixtures"
 THREE_PAGE = FIXTURES / "three_page_digital.pdf"
@@ -278,7 +278,7 @@ def test_real_pool_matches_whole_file_page_markdown(tmp_path: Path) -> None:
     """Real Docling in a 2-worker pool: every page gets a record, and each page's
     markdown equals the same page from a whole-file run. Escalation is off, so a
     page the gate promotes is ``degraded`` and the comparison uses the page files."""
-    from parser_service.markdown_pipeline import (
+    from parser_service.parsing.document import (
         _document_converter,
         _elements_by_page,
         _render_page_markdown,
@@ -312,7 +312,7 @@ def _attempts(tmp_path: Path, page_number: int) -> str:
 
 def _store_timeout_record(tmp_path: Path, page_number: int, deadline: int) -> dict[str, Any]:
     """Split the fixture and store a ``timeout`` record for one page, as the service would."""
-    from parser_service.store import LocalStore
+    from parser_service.storage.store import LocalStore
 
     work_dir = work_dir_for(THREE_PAGE, tmp_path)
     work_dir.mkdir(parents=True)
@@ -472,7 +472,8 @@ def _enable_test_kind(
     Until Groups 4-6 land, no non-PDF kind has a handler in the image, so routing is
     exercised with this one (the local executor parses in this process).
     """
-    from parser_service import settings, unit_handlers
+    from parser_service import settings
+    from parser_service.formats import handlers as unit_handlers
 
     calls: list[tuple[str, int]] = []
 
@@ -496,8 +497,8 @@ def _work_keys(root: Path) -> list[str]:
 
 
 def test_config_hash_changes_with_handler_version(monkeypatch: pytest.MonkeyPatch) -> None:
-    from parser_service import unit_handlers
-    from parser_service.sniff import KINDS
+    from parser_service.formats import handlers as unit_handlers
+    from parser_service.formats.sniff import KINDS
 
     configs = {kind: page_pipeline.pipeline_config(kind) for kind in KINDS}
     hashes = {kind: page_pipeline.config_hash(config) for kind, config in configs.items()}
@@ -593,7 +594,7 @@ def test_routing_uses_manifest_kind_not_extension(
 ) -> None:
     """A DOCX named .pdf is stored as source.docx with manifest kind docx, and both
     executors are asked for docx (spec D1, D2)."""
-    from parser_service.store import LocalStore
+    from parser_service.storage.store import LocalStore
 
     calls = _enable_test_kind(monkeypatch, "docx")
     renamed = tmp_path / "in" / "report.pdf"
@@ -662,7 +663,7 @@ def test_manifest_without_kind_resumes_as_pdf(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A manifest written before kinds existed reads as pdf/page and resumes."""
-    from parser_service.store import LocalStore
+    from parser_service.storage.store import LocalStore
 
     work_dir = work_dir_for(THREE_PAGE, tmp_path)
     manifest = split_pdf(THREE_PAGE, work_dir)
@@ -695,7 +696,7 @@ def test_intake_rejection_writes_status_and_one_failed_event(
     ``failed`` event, not duplicated by a re-run; the driver exits 2."""
     from test_scripts_rewiring import _load_script
 
-    from parser_service.publish import PublishRequest, version_for
+    from parser_service.delivery.publish import PublishRequest, version_for
 
     monkeypatch.setenv("PARSER_ENABLED_KINDS", "pdf")  # the other kinds switched off
     root = tmp_path / "store"

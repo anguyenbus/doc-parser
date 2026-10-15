@@ -74,14 +74,14 @@ def validate_against_wheel() -> Validator:
 
 
 def _patch_vlm(monkeypatch: pytest.MonkeyPatch, fn: Callable[..., Any]) -> None:
-    from parser_service import markdown_pipeline
+    from parser_service.parsing import document as markdown_pipeline
 
     monkeypatch.setattr(markdown_pipeline, "call_vlm", fn)
 
 
 def _force_keep(monkeypatch: pytest.MonkeyPatch) -> None:
-    from parser_service import markdown_pipeline
-    from parser_service.quality_gate import Decision
+    from parser_service.parsing import document as markdown_pipeline
+    from parser_service.parsing.quality_gate import Decision
 
     monkeypatch.setattr(
         markdown_pipeline,
@@ -100,7 +100,7 @@ def test_pdf_roundtrip_to_schema_valid_prediction(
 ) -> None:
     """The full eval path: parse a PDF to markdown, wrap it, and the wrapped
     prediction is schema-1.0.0-valid with the markdown carried verbatim."""
-    from parser_service.markdown_pipeline import parse_to_markdown, wrap_md_as_prediction
+    from parser_service.parsing.document import parse_to_markdown, wrap_md_as_prediction
 
     _force_keep(monkeypatch)
     _patch_vlm(monkeypatch, lambda *a, **k: {"error": "VLM not expected on kept pages"})
@@ -137,9 +137,9 @@ def test_multipage_mixes_all_three_routes_in_one_run(
     if not THREE_PAGE.exists():
         pytest.skip("three_page_digital.pdf missing; run make_three_page_digital.py")
 
-    from parser_service import markdown_pipeline
-    from parser_service.markdown_pipeline import wrap_md_as_prediction
-    from parser_service.quality_gate import Decision
+    from parser_service.parsing import document as markdown_pipeline
+    from parser_service.parsing.document import wrap_md_as_prediction
+    from parser_service.parsing.quality_gate import Decision
 
     def _gate(page_no: int, *a: Any, **k: Any) -> Decision:
         if page_no == 0:
@@ -197,8 +197,8 @@ def test_office_html_whole_doc_roundtrip(
     if not fixture.exists():
         pytest.skip(f"{fixture.name} fixture missing")
 
-    from parser_service import markdown_pipeline
-    from parser_service.markdown_pipeline import parse_to_markdown, wrap_md_as_prediction
+    from parser_service.parsing import document as markdown_pipeline
+    from parser_service.parsing.document import parse_to_markdown, wrap_md_as_prediction
 
     # If the gate or VLM ran for a structured format it would be a bug.
     monkeypatch.setattr(
@@ -237,8 +237,8 @@ def test_image_kept_stays_docling_no_vlm(monkeypatch: pytest.MonkeyPatch) -> Non
     if not IMAGE.exists():
         pytest.skip("screenshot.png fixture missing")
 
-    from parser_service import markdown_pipeline
-    from parser_service.quality_gate import Decision
+    from parser_service.parsing import document as markdown_pipeline
+    from parser_service.parsing.quality_gate import Decision
 
     monkeypatch.setattr(
         markdown_pipeline,
@@ -274,8 +274,8 @@ def test_image_promoted_goes_to_vlm_on_raw_bytes(
     if not IMAGE.exists():
         pytest.skip("screenshot.png fixture missing")
 
-    from parser_service import markdown_pipeline
-    from parser_service.quality_gate import Decision
+    from parser_service.parsing import document as markdown_pipeline
+    from parser_service.parsing.quality_gate import Decision
 
     monkeypatch.setattr(
         markdown_pipeline,

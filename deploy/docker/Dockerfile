@@ -45,8 +45,8 @@ COPY tests/fixtures/scanned.pdf /tmp/warm/scanned.pdf
 COPY tests/fixtures/screenshot.png /tmp/warm/screenshot.png
 RUN python -c "\
 from pathlib import Path; \
-from parser_service.page_worker import WARMUP_PDF; \
-from parser_service.markdown_pipeline import parse_to_markdown; \
+from parser_service.service.worker import WARMUP_PDF; \
+from parser_service.parsing.document import parse_to_markdown; \
 [parse_to_markdown(Path(p), escalate=False) for p in (WARMUP_PDF, '/tmp/warm/scanned.pdf', '/tmp/warm/screenshot.png')]" \
  && python -c "\
 import pathlib, rapidocr; \
@@ -61,4 +61,4 @@ COPY scripts/parse_pages.py scripts/parse_pages.py
 RUN useradd --uid 10001 --no-create-home parser
 USER 10001
 EXPOSE 8080
-ENTRYPOINT ["python", "-m", "parser_service.kserve_predictor"]
+ENTRYPOINT ["python", "-m", "parser_service.service.predictor"]

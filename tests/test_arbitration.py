@@ -37,14 +37,14 @@ def _patch_vlm(monkeypatch: pytest.MonkeyPatch, response: Any) -> None:
     def _mock(image_bytes: bytes, mode: str) -> Any:
         return response
 
-    monkeypatch.setattr("parser_service.markdown_pipeline.call_vlm", _mock)
+    monkeypatch.setattr("parser_service.parsing.document.call_vlm", _mock)
 
 
 def _patch_textract(monkeypatch: pytest.MonkeyPatch, response: Any) -> None:
     def _mock(image_bytes: bytes) -> Any:
         return response
 
-    monkeypatch.setattr("parser_service.markdown_pipeline.analyze_page", _mock)
+    monkeypatch.setattr("parser_service.parsing.document.analyze_page", _mock)
 
 
 def _patch_engine(monkeypatch: pytest.MonkeyPatch, is_textract: bool, response: Any) -> None:
@@ -58,8 +58,8 @@ def _patch_engine(monkeypatch: pytest.MonkeyPatch, is_textract: bool, response: 
 
 def _force_promote(monkeypatch: pytest.MonkeyPatch, reason: str, layer: int) -> None:
     """Force the gate to promote every page with a fixed reason/layer."""
-    from parser_service import markdown_pipeline
-    from parser_service.quality_gate import Decision
+    from parser_service.parsing import document as markdown_pipeline
+    from parser_service.parsing.quality_gate import Decision
 
     monkeypatch.setattr(
         markdown_pipeline,
@@ -76,8 +76,8 @@ def _patch_quality(
     Engine markdown (carries ENGINE_SENTINEL) is graded by ``engine_passes``;
     all other text (Docling) by ``docling_passes``.
     """
-    from parser_service import markdown_pipeline
-    from parser_service.quality_gate import QualitySignals
+    from parser_service.parsing import document as markdown_pipeline
+    from parser_service.parsing.quality_gate import QualitySignals
 
     def _mock(text: str) -> QualitySignals:
         if ENGINE_SENTINEL in text:
@@ -223,7 +223,7 @@ def test_docling_fallback_none_noop(monkeypatch: pytest.MonkeyPatch) -> None:
     Exercised directly against ``_vlm_page_markdown`` because the whole-document
     path only passes ``docling_fallback=None`` on scan/image-only pages.
     """
-    from parser_service import markdown_pipeline
+    from parser_service.parsing import document as markdown_pipeline
 
     monkeypatch.setenv("PARSER_ESCALATION_ARBITRATION", "1")
     monkeypatch.delenv("PARSER_ESCALATION_ENGINE", raising=False)
@@ -269,7 +269,7 @@ def test_flag_off_byte_identical(
     ok_route: str,
     rejected_route: str,
 ) -> None:
-    from parser_service import markdown_pipeline
+    from parser_service.parsing import document as markdown_pipeline
 
     monkeypatch.delenv("PARSER_ESCALATION_ARBITRATION", raising=False)
     _force_promote(monkeypatch, "docling_low_grade=POOR", layer=1)
@@ -304,6 +304,6 @@ def test_flag_off_byte_identical(
 
 
 def markdown_pipeline_result() -> dict[str, Any]:
-    from parser_service import markdown_pipeline
+    from parser_service.parsing import document as markdown_pipeline
 
     return markdown_pipeline.parse_to_markdown(DIGITAL)

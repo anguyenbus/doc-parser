@@ -9,8 +9,7 @@ Run ONLY these tests (task 2.5):
 
 from __future__ import annotations
 
-from parser_service.confidence import LOW_CONFIDENCE_THRESHOLD, page_confidence
-
+from parser_service.parsing.confidence import LOW_CONFIDENCE_THRESHOLD, page_confidence
 
 # ---------------------------------------------------------------------------
 # Tier mapping (spec table).

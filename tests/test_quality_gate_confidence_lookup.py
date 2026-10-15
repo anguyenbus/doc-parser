@@ -19,7 +19,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from parser_service.quality_gate import _layer1_decision
+from parser_service.parsing.quality_gate import _layer1_decision
 
 FIXTURES = Path(__file__).parent / "fixtures"
 THREE_PAGE = FIXTURES / "three_page_digital.pdf"
@@ -70,7 +70,7 @@ def test_missing_entry_does_not_promote() -> None:
 
 def test_docling_keys_confidence_pages_from_one() -> None:
     """Guard: the lookup above assumes 1-based keys unless a key 0 is present."""
-    from parser_service.markdown_pipeline import _document_converter
+    from parser_service.parsing.document import _document_converter
 
     result = _document_converter().convert(str(THREE_PAGE))
 

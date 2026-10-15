@@ -44,10 +44,11 @@ from docx.oxml.ns import qn
 from markdown_it import MarkdownIt
 from PIL import Image
 
-from parser_service import markdown_pipeline, page_pipeline
-from parser_service.guards import check_docx
-from parser_service.markdown_pipeline import _separate_lists_from_tables, parse_to_markdown
-from parser_service.unit_handlers import HANDLER_VERSIONS, parse_unit
+from parser_service import page_pipeline
+from parser_service.formats.guards import check_docx
+from parser_service.formats.handlers import HANDLER_VERSIONS, parse_unit
+from parser_service.parsing import document as markdown_pipeline
+from parser_service.parsing.document import _separate_lists_from_tables, parse_to_markdown
 
 GOLDEN_DIR = Path(__file__).parent / "fixtures" / "golden"
 _W_NS = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
@@ -274,7 +275,7 @@ def test_tables_render_as_tables_not_inside_list_items(tmp_path: Path) -> None:
 
 _ENTITY_CHILD = """
 import resource, sys, time
-from parser_service.unit_handlers import parse_unit
+from parser_service.formats.handlers import parse_unit
 parse_unit("docx", sys.argv[1], 1, False)  # warm the converter: import and model load
 before = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
 started = time.perf_counter()

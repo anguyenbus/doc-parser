@@ -48,7 +48,7 @@ class _ConvertSpy:
 
 def _install_spy(monkeypatch: pytest.MonkeyPatch) -> _ConvertSpy:
     """Monkeypatch ``_document_converter`` to return a single shared spy."""
-    from parser_service import markdown_pipeline
+    from parser_service.parsing import document as markdown_pipeline
 
     spy = _ConvertSpy()
     monkeypatch.setattr(markdown_pipeline, "_document_converter", lambda: spy)
@@ -57,9 +57,8 @@ def _install_spy(monkeypatch: pytest.MonkeyPatch) -> _ConvertSpy:
 
 def _mock_vlm(monkeypatch: pytest.MonkeyPatch) -> dict[str, int]:
     """Mock the escalation seam so each page returns distinct VLM markdown."""
-    from parser_service import markdown_pipeline
-
-    from parser_service.vlm_client import _increment_vlm_call_count
+    from parser_service.parsing import document as markdown_pipeline
+    from parser_service.parsing.engines.vlm import _increment_vlm_call_count
 
     calls = {"n": 0}
 
@@ -86,7 +85,7 @@ def test_all_scanned_skips_convert(monkeypatch: pytest.MonkeyPatch) -> None:
     spy = _install_spy(monkeypatch)
     _mock_vlm(monkeypatch)
 
-    from parser_service.markdown_pipeline import parse_to_markdown
+    from parser_service.parsing.document import parse_to_markdown
 
     result = parse_to_markdown(SCANNED)
 
@@ -108,7 +107,7 @@ def test_fastpath_routes_carry_additive_keys(monkeypatch: pytest.MonkeyPatch) ->
     _install_spy(monkeypatch)
     _mock_vlm(monkeypatch)
 
-    from parser_service.markdown_pipeline import parse_to_markdown
+    from parser_service.parsing.document import parse_to_markdown
 
     result = parse_to_markdown(SCANNED)
 
@@ -126,7 +125,7 @@ def test_fastpath_no_docling_fallback(monkeypatch: pytest.MonkeyPatch) -> None:
     which requires a fallback string)."""
     monkeypatch.setenv("PARSER_SCAN_FASTPATH", "1")
     _install_spy(monkeypatch)
-    from parser_service import markdown_pipeline
+    from parser_service.parsing import document as markdown_pipeline
 
     monkeypatch.setattr(
         markdown_pipeline, "call_vlm", lambda *a, **k: {"error": "boom"}
@@ -154,7 +153,7 @@ def test_mixed_doc_runs_convert(monkeypatch: pytest.MonkeyPatch) -> None:
     spy = _install_spy(monkeypatch)
     _mock_vlm(monkeypatch)
 
-    from parser_service.markdown_pipeline import parse_to_markdown
+    from parser_service.parsing.document import parse_to_markdown
 
     result = parse_to_markdown(MIXED)
 
@@ -176,7 +175,7 @@ def test_flag_off_still_converts_scanned(monkeypatch: pytest.MonkeyPatch) -> Non
     spy = _install_spy(monkeypatch)
     _mock_vlm(monkeypatch)
 
-    from parser_service.markdown_pipeline import parse_to_markdown
+    from parser_service.parsing.document import parse_to_markdown
 
     result = parse_to_markdown(SCANNED)
 
@@ -193,7 +192,7 @@ def test_flag_off_byte_identical_page_routes(monkeypatch: pytest.MonkeyPatch) ->
     _install_spy(monkeypatch)
     _mock_vlm(monkeypatch)
 
-    from parser_service.markdown_pipeline import parse_to_markdown
+    from parser_service.parsing.document import parse_to_markdown
 
     result = parse_to_markdown(SCANNED)
 

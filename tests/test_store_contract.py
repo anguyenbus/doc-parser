@@ -1,5 +1,5 @@
 """
-test_store_contract.py — the store interface (``parser_service.store``) and the local store.
+test_store_contract.py — the store interface (``parser_service.storage.store``) and the local store.
 
 ``CONTRACT_CASES`` is one store-agnostic list of cases, each taking an empty store.
 It runs here against ``LocalStore`` on a real temporary directory, and is reused by
@@ -20,7 +20,7 @@ from pathlib import Path
 
 import pytest
 
-from parser_service.store import (
+from parser_service.storage.store import (
     _TMP_MARKER,
     LocalStore,
     Store,

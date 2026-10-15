@@ -47,8 +47,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from parser_service.publish import check_id
-from parser_service.store import Store, StoreNotFoundError
+from parser_service.delivery.publish import check_id
+from parser_service.storage.store import Store, StoreNotFoundError
 
 UNIT_PAGE = "page"
 UNIT_DOCUMENT = "document"

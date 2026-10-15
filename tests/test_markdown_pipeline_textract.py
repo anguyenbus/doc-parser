@@ -32,8 +32,8 @@ DIGITAL = FIXTURES / "digital_simple.pdf"
 
 def _force_promote(monkeypatch: pytest.MonkeyPatch) -> None:
     """Force the gate to promote every page (the only pages an engine touches)."""
-    from parser_service import markdown_pipeline
-    from parser_service.quality_gate import Decision
+    from parser_service.parsing import document as markdown_pipeline
+    from parser_service.parsing.quality_gate import Decision
 
     monkeypatch.setattr(
         markdown_pipeline,
@@ -48,7 +48,7 @@ def _patch_textract(monkeypatch: pytest.MonkeyPatch, response: Any) -> None:
     def _mock(image_bytes: bytes) -> Any:
         return response
 
-    monkeypatch.setattr("parser_service.markdown_pipeline.analyze_page", _mock)
+    monkeypatch.setattr("parser_service.parsing.document.analyze_page", _mock)
 
 
 def _patch_vlm(monkeypatch: pytest.MonkeyPatch, response: Any) -> None:
@@ -57,7 +57,7 @@ def _patch_vlm(monkeypatch: pytest.MonkeyPatch, response: Any) -> None:
     def _mock(image_bytes: bytes, mode: str) -> Any:
         return response
 
-    monkeypatch.setattr("parser_service.markdown_pipeline.call_vlm", _mock)
+    monkeypatch.setattr("parser_service.parsing.document.call_vlm", _mock)
 
 
 # ---------------------------------------------------------------------------
@@ -67,7 +67,7 @@ def _patch_vlm(monkeypatch: pytest.MonkeyPatch, response: Any) -> None:
 
 def test_default_engine_uses_vlm_not_textract(monkeypatch: pytest.MonkeyPatch) -> None:
     """With PARSER_ESCALATION_ENGINE unset, a promoted page calls the VLM, not Textract."""
-    from parser_service import markdown_pipeline
+    from parser_service.parsing import document as markdown_pipeline
 
     monkeypatch.delenv("PARSER_ESCALATION_ENGINE", raising=False)
     _force_promote(monkeypatch)
@@ -90,7 +90,7 @@ def test_default_engine_uses_vlm_not_textract(monkeypatch: pytest.MonkeyPatch) -
 
 def test_textract_engine_routes_to_analyze_page(monkeypatch: pytest.MonkeyPatch) -> None:
     """engine=textract sends promoted pages through analyze_page and the shared renderer."""
-    from parser_service import markdown_pipeline
+    from parser_service.parsing import document as markdown_pipeline
 
     monkeypatch.setenv("PARSER_ESCALATION_ENGINE", "textract")
     _force_promote(monkeypatch)
@@ -130,7 +130,7 @@ def test_textract_garbage_falls_back_to_docling(
     monkeypatch: pytest.MonkeyPatch, bad_response: Any
 ) -> None:
     """All four Textract-garbage shapes keep the page's Docling slice, route textract-fallback-docling."""
-    from parser_service import markdown_pipeline
+    from parser_service.parsing import document as markdown_pipeline
 
     monkeypatch.setenv("PARSER_ESCALATION_ENGINE", "textract")
     _force_promote(monkeypatch)
@@ -154,7 +154,7 @@ def test_textract_quality_signal_recorded_but_never_flips_route(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """_measure_text_quality is recorded on the textract route and does not change it."""
-    from parser_service import markdown_pipeline
+    from parser_service.parsing import document as markdown_pipeline
 
     monkeypatch.setenv("PARSER_ESCALATION_ENGINE", "textract")
     _force_promote(monkeypatch)
@@ -183,8 +183,8 @@ def test_textract_counter_not_incremented_on_vlm_default(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """The vlm default path makes no Textract calls (counter stays at 0)."""
-    from parser_service import markdown_pipeline
-    from parser_service.textract_client import get_textract_call_count
+    from parser_service.parsing import document as markdown_pipeline
+    from parser_service.parsing.engines.textract import get_textract_call_count
 
     monkeypatch.delenv("PARSER_ESCALATION_ENGINE", raising=False)
     _force_promote(monkeypatch)
@@ -205,8 +205,8 @@ def test_textract_end_to_end_mixed_keep_and_promote(
 ) -> None:
     """engine=textract: a promoted page routes ``textract`` while a kept page stays
     ``docling-kept`` in the same run (the integration point 3.1 does not cover)."""
-    from parser_service import markdown_pipeline
-    from parser_service.quality_gate import Decision
+    from parser_service.parsing import document as markdown_pipeline
+    from parser_service.parsing.quality_gate import Decision
 
     monkeypatch.setenv("PARSER_ESCALATION_ENGINE", "textract")
 

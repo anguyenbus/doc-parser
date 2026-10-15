@@ -19,7 +19,7 @@ from typing import Any
 
 import pytest
 
-from parser_service.confidence import (
+from parser_service.parsing.confidence import (
     LOW_CONFIDENCE_THRESHOLD,
     document_confidence,
     page_confidence,
@@ -103,14 +103,14 @@ def test_document_within_min_max_page_band() -> None:
 
 def _patch_vlm(monkeypatch: pytest.MonkeyPatch, response: Any) -> None:
     monkeypatch.setattr(
-        "parser_service.markdown_pipeline.call_vlm",
+        "parser_service.parsing.document.call_vlm",
         lambda image_bytes, mode: response,
     )
 
 
 def _force_keep(monkeypatch: pytest.MonkeyPatch) -> None:
-    from parser_service import markdown_pipeline
-    from parser_service.quality_gate import Decision
+    from parser_service.parsing import document as markdown_pipeline
+    from parser_service.parsing.quality_gate import Decision
 
     monkeypatch.setattr(
         markdown_pipeline, "evaluate_page", lambda *a, **k: Decision("keep", None, None)
@@ -118,8 +118,8 @@ def _force_keep(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def _force_promote(monkeypatch: pytest.MonkeyPatch, reason: str, layer: int) -> None:
-    from parser_service import markdown_pipeline
-    from parser_service.quality_gate import Decision
+    from parser_service.parsing import document as markdown_pipeline
+    from parser_service.parsing.quality_gate import Decision
 
     monkeypatch.setattr(
         markdown_pipeline,
@@ -132,7 +132,7 @@ def test_return_shape_has_confidence_block(monkeypatch: pytest.MonkeyPatch) -> N
     _force_keep(monkeypatch)
     _patch_vlm(monkeypatch, {"error": "unused"})
 
-    from parser_service.markdown_pipeline import parse_to_markdown
+    from parser_service.parsing.document import parse_to_markdown
 
     result = parse_to_markdown(DIGITAL)
     assert {"markdown", "page_routes", "warnings", "confidence"} <= set(result)
@@ -152,7 +152,7 @@ def test_all_kept_document_is_docling_tier(monkeypatch: pytest.MonkeyPatch) -> N
     _force_keep(monkeypatch)
     _patch_vlm(monkeypatch, {"error": "unused"})
 
-    from parser_service.markdown_pipeline import parse_to_markdown
+    from parser_service.parsing.document import parse_to_markdown
 
     result = parse_to_markdown(DIGITAL)
     assert result["confidence"]["document"] == pytest.approx(0.95)
@@ -166,7 +166,7 @@ def test_all_kept_document_is_docling_tier(monkeypatch: pytest.MonkeyPatch) -> N
 def test_low_confidence_page_warning_emitted(monkeypatch: pytest.MonkeyPatch) -> None:
     # Force every page through the error/empty fallback (score 0.15) by rendering
     # all pages empty and failing the engine.
-    from parser_service import markdown_pipeline
+    from parser_service.parsing import document as markdown_pipeline
 
     monkeypatch.setattr(markdown_pipeline, "_render_page_markdown", lambda *a, **k: "")
     _patch_vlm(monkeypatch, {"error": "boom"})
@@ -196,7 +196,7 @@ def test_fallback_docling_page_is_flagged(monkeypatch: pytest.MonkeyPatch) -> No
     _force_promote(monkeypatch, reason="docling_low_grade=POOR", layer=1)
     _patch_vlm(monkeypatch, {"error": "engine down"})
 
-    from parser_service.markdown_pipeline import parse_to_markdown
+    from parser_service.parsing.document import parse_to_markdown
 
     result = parse_to_markdown(DIGITAL)
     assert all(p["confidence"] == 0.50 for p in result["confidence"]["pages"])
@@ -208,7 +208,7 @@ def test_no_low_confidence_warning_when_all_pass(monkeypatch: pytest.MonkeyPatch
     _force_keep(monkeypatch)  # all docling-kept → 0.95, none below threshold
     _patch_vlm(monkeypatch, {"error": "unused"})
 
-    from parser_service.markdown_pipeline import parse_to_markdown
+    from parser_service.parsing.document import parse_to_markdown
 
     result = parse_to_markdown(DIGITAL)
     assert all(
@@ -240,7 +240,7 @@ def test_byte_identical_additive_only(monkeypatch: pytest.MonkeyPatch) -> None:
         {"elements": [{"type": "paragraph", "text": _ENGINE_TEXT}]},
     )
 
-    from parser_service.markdown_pipeline import parse_to_markdown
+    from parser_service.parsing.document import parse_to_markdown
 
     result = parse_to_markdown(DIGITAL)
 

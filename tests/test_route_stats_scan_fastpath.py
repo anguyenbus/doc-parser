@@ -16,7 +16,7 @@ Run ONLY these + existing route_stats tests (task 3.3):
 
 from __future__ import annotations
 
-from parser_service.route_stats import route_record, summarize
+from parser_service.parsing.route_stats import route_record, summarize
 
 
 def _fastpath_routes() -> list[dict[str, object]]:

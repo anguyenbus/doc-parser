@@ -1,5 +1,5 @@
 """
-test_publish.py — the ``published/`` hand-off (``parser_service.publish``).
+test_publish.py — the ``published/`` hand-off (``parser_service.delivery.publish``).
 
 Driven through ``parse_pdf_pages_in_store(..., publish=...)`` on ``MemoryStore``,
 which records every write in order, so "written last" and "never rewritten" are
@@ -19,9 +19,9 @@ import pytest
 from test_page_pipeline import THREE_PAGE, _install_fake, _result
 from test_page_pipeline_store import WORK_ID, MemoryStore, _fail_page_2_until
 
-from parser_service import publish
+from parser_service.delivery import publish
+from parser_service.delivery.publish import PublishRequest, check_id, slugify
 from parser_service.page_pipeline import file_id_for, parse_pdf_pages_in_store
-from parser_service.publish import PublishRequest, check_id, slugify
 
 FILE_ID = file_id_for(THREE_PAGE)
 DOC = "three-page"
@@ -210,7 +210,7 @@ def _single_unit(
     """Enable ``kind`` with a test handler returning ``text`` and record fields ``extra``."""
     from test_page_pipeline import _enable_test_kind
 
-    from parser_service import unit_handlers
+    from parser_service.formats import handlers as unit_handlers
 
     _enable_test_kind(monkeypatch, kind)
 

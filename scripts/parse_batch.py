@@ -57,11 +57,11 @@ from parser_service.io_layer import (  # noqa: E402
     write_json,
     write_text,
 )
-from parser_service.markdown_pipeline import (  # noqa: E402
+from parser_service.parsing.document import (  # noqa: E402
     parse_to_markdown,
     wrap_md_as_prediction,
 )
-from parser_service.route_stats import (  # noqa: E402
+from parser_service.parsing.route_stats import (  # noqa: E402
     error_record,
     route_record,
     summarize,
@@ -468,7 +468,7 @@ async def run_batch(
         import boto3  # noqa: PLC0415
 
         from parser_service.io_layer import S3IO  # noqa: PLC0415
-        from parser_service.route_stats import FIELDNAMES  # noqa: PLC0415
+        from parser_service.parsing.route_stats import FIELDNAMES  # noqa: PLC0415
 
         buf = io.StringIO()
         writer = csv.DictWriter(buf, fieldnames=FIELDNAMES)

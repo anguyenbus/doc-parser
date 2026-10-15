@@ -24,7 +24,7 @@ import os
 import threading
 from typing import Any
 
-from parser_service.retry import is_transient, retry_call
+from parser_service.parsing.engines.retry import is_transient, retry_call
 
 logger = logging.getLogger(__name__)
 

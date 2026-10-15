@@ -51,7 +51,7 @@ original_page.confidence: keep re_page` (`agentic.py`). It never trusts an
 escalation blindly.
 
 **Our gap (confirmed by reading the code):**
-`src/parser_service/markdown_pipeline.py:447-458` (`_vlm_page_markdown`). We
+`src/parser_service/parsing/document.py:447-458` (`_vlm_page_markdown`). We
 **already compute** `signals = _measure_text_quality(engine_md)`, record it, and
 then `return engine_md` **unconditionally**. The Docling output is right there in
 scope as `docling_fallback`, used **only** when the engine produces *structurally*

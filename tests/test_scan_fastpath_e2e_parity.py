@@ -35,8 +35,8 @@ PLANNING = (
 
 def _mock_engine(monkeypatch: pytest.MonkeyPatch) -> None:
     """Deterministic per-page VLM markdown so ON/OFF produce identical output."""
-    from parser_service import markdown_pipeline
-    from parser_service.vlm_client import _increment_vlm_call_count
+    from parser_service.parsing import document as markdown_pipeline
+    from parser_service.parsing.engines.vlm import _increment_vlm_call_count
 
     calls = {"n": 0}
 
@@ -51,7 +51,7 @@ def _mock_engine(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_fastpath_on_off_identical_markdown(monkeypatch: pytest.MonkeyPatch) -> None:
     """Fast-path ON vs OFF on scanned.pdf → identical escalation markdown; only
     the per-page ``reason`` differs. Also records cold/warm wall-clock."""
-    from parser_service.markdown_pipeline import parse_to_markdown
+    from parser_service.parsing.document import parse_to_markdown
 
     # OFF (cold): Docling converts (and finds nothing) → every page escalates via
     # the normal no_docling_content path.

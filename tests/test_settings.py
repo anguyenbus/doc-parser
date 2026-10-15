@@ -309,8 +309,8 @@ def test_enabled_kinds_are_known_and_have_a_handler_in_this_image(
     """PARSER_ENABLED_KINDS ships with every handled kind; a kind whose handler has
     not shipped is refused, so it cannot be turned on before its code exists."""
     from parser_service import settings as settings_module
-    from parser_service import unit_handlers
-    from parser_service.sniff import KINDS
+    from parser_service.formats import handlers as unit_handlers
+    from parser_service.formats.sniff import KINDS
 
     kwargs: dict[str, object] = {"store_location": "/w", "escalate": False}
     assert load_settings(**kwargs, environ={}).enabled_kinds == KINDS  # type: ignore[arg-type]

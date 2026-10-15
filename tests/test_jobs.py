@@ -1,5 +1,5 @@
 """
-test_jobs.py — inbox jobs (``parser_service.jobs``) and ``parse_pages.py --job``.
+test_jobs.py — inbox jobs (``parser_service.delivery.jobs``) and ``parse_pages.py --job``.
 
 Run ONLY these tests:
     uv run pytest tests/test_jobs.py
@@ -17,7 +17,7 @@ from test_page_pipeline import THREE_PAGE, XLSX, _install_fake, _result
 from test_page_pipeline_store import MemoryStore
 from test_parse_pages_script import _main, script  # noqa: F401  (fixture)
 
-from parser_service.jobs import (
+from parser_service.delivery.jobs import (
     JobDoc,
     job_status_key,
     parse_job,

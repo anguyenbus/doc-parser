@@ -25,10 +25,10 @@ import pytest
 from test_page_pipeline import THREE_PAGE, XLSX, _enable_test_kind, _install_fake, _result
 
 from parser_service import observability, page_pipeline
-from parser_service.page_worker import Reply, Request
-from parser_service.publish import PublishRequest
-from parser_service.sniff import KINDS
-from parser_service.store import LocalStore
+from parser_service.delivery.publish import PublishRequest
+from parser_service.formats.sniff import KINDS
+from parser_service.service.worker import Reply, Request
+from parser_service.storage.store import LocalStore
 
 prometheus_client = pytest.importorskip("prometheus_client")
 
@@ -239,7 +239,7 @@ def test_logs_carry_no_document_text(
 ) -> None:
     from email import message_from_bytes, policy
 
-    from parser_service import unit_handlers
+    from parser_service.formats import handlers as unit_handlers
 
     # A PDF whose page text holds the marker (the parse is faked: no Docling).
     _install_fake(monkeypatch, lambda n: _result(f"page {n} says {MARKER}"))

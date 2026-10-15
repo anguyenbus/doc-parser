@@ -21,14 +21,14 @@ import json
 from pathlib import Path
 from typing import Any
 
-from parser_service.markdown import render_markdown
-from parser_service.textract_client import (
+from parser_service.parsing.engines.textract import (
     _blocks_to_elements,
     _column_reordered_blocks,
     _detect_column_bands,
     _ordered_layout_blocks,
     _reading_order_score,
 )
+from parser_service.parsing.markdown import render_markdown
 
 FIXTURES = Path(__file__).parent / "fixtures"
 TWO_COL = FIXTURES / "textract_two_column_blocks.json"

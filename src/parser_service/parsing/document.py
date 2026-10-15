@@ -53,12 +53,6 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from parser_service.confidence import (
-    LOW_CONFIDENCE_THRESHOLD,
-    document_confidence,
-    page_confidence,
-)
-from parser_service.markdown import render_markdown
 from parser_service.parser_service import (
     PARSER_VERSION,
     SCHEMA_VERSION,
@@ -69,18 +63,24 @@ from parser_service.parser_service import (
     _empty_output,
     _input_size_error,
 )
-from parser_service.quality_gate import _measure_text_quality, evaluate_page
-from parser_service.render import classify_for_fastpath, render_page, text_layer_tokens
-from parser_service.textract_client import (
+from parser_service.parsing.confidence import (
+    LOW_CONFIDENCE_THRESHOLD,
+    document_confidence,
+    page_confidence,
+)
+from parser_service.parsing.engines.textract import (
     analyze_page,
     get_textract_call_count,
     reset_textract_call_count,
 )
-from parser_service.vlm_client import (
+from parser_service.parsing.engines.vlm import (
     call_vlm,
     get_vlm_call_count,
     reset_vlm_call_count,
 )
+from parser_service.parsing.markdown import render_markdown
+from parser_service.parsing.quality_gate import _measure_text_quality, evaluate_page
+from parser_service.parsing.render import classify_for_fastpath, render_page, text_layer_tokens
 
 logger = logging.getLogger(__name__)
 
@@ -297,7 +297,7 @@ def parse_to_markdown(file_path: Path, escalate: bool = True) -> dict[str, Any]:
     # Advisory confidence (read-only over the fully-populated page_routes). This
     # NEVER gates anything — it does not touch markdown, page_routes, or any
     # promote/keep decision. It is a transparent routing-derived heuristic, not a
-    # gold-calibrated probability (see parser_service.confidence).
+    # gold-calibrated probability (see parser_service.parsing.confidence).
     page_confidences = [
         {"page_index": r["page_index"], "confidence": page_confidence(r)}
         for r in page_routes

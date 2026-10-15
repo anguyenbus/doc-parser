@@ -7,7 +7,7 @@ document was dropped from grading.
 
 from __future__ import annotations
 
-from parser_service.route_stats import route_record, summarize
+from parser_service.parsing.route_stats import route_record, summarize
 
 
 def _routes(*routes: str) -> list[dict[str, object]]:

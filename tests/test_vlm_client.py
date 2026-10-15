@@ -17,7 +17,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from parser_service.vlm_client import (
+from parser_service.parsing.engines.vlm import (
     _build_bedrock_request,
     _safe_parse,
     call_vlm,

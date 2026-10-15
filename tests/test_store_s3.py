@@ -1,5 +1,5 @@
 """
-test_store_s3.py — the S3 store (``parser_service.store.S3Store``) through botocore's Stubber.
+test_store_s3.py — the S3 store (``parser_service.storage.store.S3Store``) through botocore's Stubber.
 
 Offline: no network and no AWS call. Stubber replays a scripted queue and holds no
 state, so each case scripts the calls it expects, with the request parameters
@@ -25,8 +25,8 @@ from botocore.response import StreamingBody
 from botocore.stub import Stubber
 
 from parser_service import io_layer
-from parser_service import store as store_module
-from parser_service.store import S3Store, StoreDeleteError, StoreNotFoundError, open_store
+from parser_service.storage import store as store_module
+from parser_service.storage.store import S3Store, StoreDeleteError, StoreNotFoundError, open_store
 
 REGION = "ap-southeast-2"
 BUCKET = "bucket"
@@ -92,7 +92,7 @@ def test_write_if_absent_maps_exists_conflict_and_other_errors(
     s3: tuple[S3Store, Stubber], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     store, stubber = s3
-    monkeypatch.setattr("parser_service.store.time.sleep", lambda seconds: None)
+    monkeypatch.setattr("parser_service.storage.store.time.sleep", lambda seconds: None)
     params = {
         "Bucket": BUCKET,
         "Key": "parser/work/x/results/0001.json",
@@ -267,7 +267,7 @@ def test_local_file_scope_removes_its_directory_in_every_outcome(
 
     stubber.add_client_error("get_object", "NoSuchKey", "no such key", 404)
     with pytest.MonkeyPatch.context() as patch:
-        patch.setattr("parser_service.store.tempfile.TemporaryDirectory", recording)
+        patch.setattr("parser_service.storage.store.tempfile.TemporaryDirectory", recording)
         with pytest.raises(StoreNotFoundError), store.local_file("work/x/pages/0001.pdf"):
             pytest.fail("the scope must not be entered")
     assert len(made) == 1 and not Path(made[0]).exists()

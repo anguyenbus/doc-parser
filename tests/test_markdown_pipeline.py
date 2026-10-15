@@ -46,7 +46,7 @@ def _patch_vlm(monkeypatch: pytest.MonkeyPatch, response: Any) -> None:
     def _mock(image_bytes: bytes, mode: str) -> Any:
         return response
 
-    monkeypatch.setattr("parser_service.markdown_pipeline.call_vlm", _mock)
+    monkeypatch.setattr("parser_service.parsing.document.call_vlm", _mock)
 
 
 def _force_keep(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -57,8 +57,8 @@ def _force_keep(monkeypatch: pytest.MonkeyPatch) -> None:
     the keep path is exercised by stubbing the decision — the routing/slicing
     logic under test is independent of which page the gate happens to promote.
     """
-    from parser_service import markdown_pipeline
-    from parser_service.quality_gate import Decision
+    from parser_service.parsing import document as markdown_pipeline
+    from parser_service.parsing.quality_gate import Decision
 
     monkeypatch.setattr(
         markdown_pipeline,
@@ -79,7 +79,7 @@ def test_keep_pages_use_docling_slices(monkeypatch: pytest.MonkeyPatch) -> None:
     # If the VLM were called here it would be a bug; make it loudly wrong.
     _patch_vlm(monkeypatch, {"error": "VLM should not be called on a kept page"})
 
-    from parser_service.markdown_pipeline import parse_to_markdown
+    from parser_service.parsing.document import parse_to_markdown
 
     result = parse_to_markdown(DIGITAL)
 
@@ -114,8 +114,8 @@ def test_keep_pages_use_docling_slices(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_promoted_page_uses_vlm_markdown(monkeypatch: pytest.MonkeyPatch) -> None:
     """A page the gate promotes is rendered + sent to the (mocked) VLM, whose
     markdown overwrites that page's Docling slice."""
-    from parser_service import markdown_pipeline
-    from parser_service.quality_gate import Decision
+    from parser_service.parsing import document as markdown_pipeline
+    from parser_service.parsing.quality_gate import Decision
 
     # Force every page to promote.
     monkeypatch.setattr(
@@ -147,8 +147,8 @@ def test_promoted_page_uses_vlm_markdown(monkeypatch: pytest.MonkeyPatch) -> Non
 def test_vlm_error_falls_back_to_docling(monkeypatch: pytest.MonkeyPatch) -> None:
     """When the promoted-page VLM returns an error, the page falls back to its
     Docling slice and is routed ``vlm-fallback-docling``."""
-    from parser_service import markdown_pipeline
-    from parser_service.quality_gate import Decision
+    from parser_service.parsing import document as markdown_pipeline
+    from parser_service.parsing.quality_gate import Decision
 
     monkeypatch.setattr(
         markdown_pipeline,
@@ -179,8 +179,8 @@ def test_vlm_garbage_falls_back_to_docling(
     monkeypatch: pytest.MonkeyPatch, bad_response: Any
 ) -> None:
     """All four VLM-garbage shapes fall back to the page's Docling slice."""
-    from parser_service import markdown_pipeline
-    from parser_service.quality_gate import Decision
+    from parser_service.parsing import document as markdown_pipeline
+    from parser_service.parsing.quality_gate import Decision
 
     monkeypatch.setattr(
         markdown_pipeline,
@@ -203,7 +203,7 @@ def test_vlm_garbage_falls_back_to_docling(
 
 def test_docling_failure_never_raises(monkeypatch: pytest.MonkeyPatch) -> None:
     """A Docling conversion failure is captured in warnings[], not raised."""
-    from parser_service import markdown_pipeline
+    from parser_service.parsing import document as markdown_pipeline
 
     class _Boom:
         def convert(self, *_a: Any, **_k: Any) -> Any:
@@ -223,7 +223,7 @@ def test_docling_failure_never_raises(monkeypatch: pytest.MonkeyPatch) -> None:
 
 def test_unsupported_type_never_raises(tmp_path: Path) -> None:
     """An unsupported file type returns empty markdown + a warning, no raise."""
-    from parser_service.markdown_pipeline import parse_to_markdown
+    from parser_service.parsing.document import parse_to_markdown
 
     p = tmp_path / "thing.xyz"
     p.write_bytes(b"not a real document")
@@ -244,8 +244,8 @@ def test_pages_joined_with_double_newline_no_markers(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Two pages join with exactly ``\\n\\n`` and no inline page markers."""
-    from parser_service import markdown_pipeline
-    from parser_service.quality_gate import Decision
+    from parser_service.parsing import document as markdown_pipeline
+    from parser_service.parsing.quality_gate import Decision
 
     # Promote both pages and feed deterministic, distinct VLM content so we can
     # assert the exact seam between them.
@@ -288,7 +288,7 @@ def test_image_only_page_does_not_misalign_slices(
 
     Page 0 is forced ``keep`` so its Docling text is deterministic; page 1 has no
     Docling content and bypasses the gate straight to the VLM."""
-    from parser_service import markdown_pipeline
+    from parser_service.parsing import document as markdown_pipeline
 
     _force_keep(monkeypatch)
 
@@ -318,7 +318,7 @@ def test_image_only_page_does_not_misalign_slices(
 def test_docx_whole_doc_one_page_no_gate(monkeypatch: pytest.MonkeyPatch) -> None:
     """DOCX takes the whole-doc export path: one logical page, gate skipped,
     VLM never called."""
-    from parser_service import markdown_pipeline
+    from parser_service.parsing import document as markdown_pipeline
 
     _patch_vlm(monkeypatch, {"error": "VLM must not run for DOCX"})
 

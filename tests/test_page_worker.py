@@ -28,13 +28,13 @@ import pytest
 
 from parser_service import page_pipeline
 from parser_service.page_pipeline import split_pdf, work_dir_for, work_id_for
-from parser_service.page_worker import (
+from parser_service.service.worker import (
     ParseWorker,
     Reply,
     WorkerDied,
     WorkerTimeout,
 )
-from parser_service.store import LocalStore
+from parser_service.storage.store import LocalStore
 
 FIXTURES = Path(__file__).parent / "fixtures"
 THREE_PAGE = FIXTURES / "three_page_digital.pdf"

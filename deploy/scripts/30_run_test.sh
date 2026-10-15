@@ -145,7 +145,7 @@ case $TEST in
       log "SIGKILL of every page-service process on $node: $on_node"
       echo "$(date -u +%FT%TZ) SIGKILL on $node: $on_node" | tee "$OUT/killed.txt"
       kubectl debug "node/$node" -q --profile=sysadmin --image=busybox:1.36 -- \
-        pkill -9 -f parser_service.kserve_predictor
+        pkill -9 -f parser_service.service.predictor
     else
       victims=$(kubectl -n "$NAMESPACE" get pods -l serving.kserve.io/inferenceservice=page-parser \
         --field-selector=status.phase=Running -o name | head -2)

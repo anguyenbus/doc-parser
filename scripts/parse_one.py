@@ -33,7 +33,7 @@ logging.basicConfig(
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
 from parser_service import parse  # noqa: E402
-from parser_service.markdown_pipeline import parse_to_markdown  # noqa: E402
+from parser_service.parsing.document import parse_to_markdown  # noqa: E402
 
 
 def main() -> None:

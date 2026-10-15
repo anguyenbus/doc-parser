@@ -100,8 +100,8 @@ def test_promoted_middle_page_lands_between_neighbors(
     """
     _require_three_page_fixture()
 
-    from parser_service import markdown_pipeline
-    from parser_service.quality_gate import Decision
+    from parser_service.parsing import document as markdown_pipeline
+    from parser_service.parsing.quality_gate import Decision
 
     # Deterministic gate: promote ONLY the middle page (page_no == 1), keep the
     # rest. We monkeypatch the gate's RETURN VALUE (not the production
@@ -170,8 +170,8 @@ def test_per_page_assembly_seam_no_content_crosses_page_boundary(
     """
     _require_three_page_fixture()
 
-    from parser_service import markdown_pipeline
-    from parser_service.quality_gate import Decision
+    from parser_service.parsing import document as markdown_pipeline
+    from parser_service.parsing.quality_gate import Decision
 
     # Keep every page → exercise the real per-page render_markdown assembly path.
     monkeypatch.setattr(
@@ -252,8 +252,8 @@ def test_per_page_assembly_seam_two_page_digital_simple(
     rendered independently by ``render_markdown`` and joined with ``\\n\\n``):
     page 1 has 'page one' and not 'page two', and vice versa.
     """
-    from parser_service import markdown_pipeline
-    from parser_service.quality_gate import Decision
+    from parser_service.parsing import document as markdown_pipeline
+    from parser_service.parsing.quality_gate import Decision
 
     monkeypatch.setattr(
         markdown_pipeline,

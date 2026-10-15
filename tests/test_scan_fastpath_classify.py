@@ -22,7 +22,7 @@ from pathlib import Path
 
 import pytest
 
-from parser_service.render import classify_for_fastpath, page_has_images
+from parser_service.parsing.render import classify_for_fastpath, page_has_images
 
 FIXTURES = Path(__file__).parent / "fixtures"
 SCANNED = FIXTURES / "scanned.pdf"
@@ -83,7 +83,7 @@ def test_empty_page_no_images_does_not_qualify(monkeypatch: pytest.MonkeyPatch) 
 
     Simulated by forcing the has-images probe False for scanned.pdf: with images
     gone, its zero-token pages no longer qualify and the doc is not fast-pathed."""
-    from parser_service import render
+    from parser_service.parsing import render
 
     monkeypatch.setattr(render, "page_has_images", lambda _page: False)
 
@@ -97,7 +97,7 @@ def test_classify_is_pure_no_docling_import(monkeypatch: pytest.MonkeyPatch) -> 
     """The classifier must not touch Docling — it uses only ``text_layer_tokens``
     and the pypdf has-images probe. Poison ``_document_converter`` so any Docling
     call would blow up; the classifier must still succeed."""
-    from parser_service import markdown_pipeline
+    from parser_service.parsing import document as markdown_pipeline
 
     def _boom() -> object:
         raise AssertionError("classify_for_fastpath must not construct Docling")

@@ -15,8 +15,8 @@ driver (Indexed Job, 1 pod per PDF)                page-parser InferenceService 
 ```
 
 - The driver is `scripts/parse_pages.py --executor kserve`.
-- The page service is `parser_service.kserve_predictor`. It parses in one
-  long-lived worker process per pod (`parser_service.page_worker`); Docling loads
+- The page service is `parser_service.service.predictor`. It parses in one
+  long-lived worker process per pod (`parser_service.service.worker`); Docling loads
   only there.
   - A page with no result after `PARSER_DEADLINE_PDF_PAGE_S` gets its worker
     killed and one final `failed` record with `reason_code` `timeout` (200).
@@ -241,7 +241,7 @@ releases change a hash:
 
 - sub-step 3 (the PDF config gains `kind` and `handler_version`; the PDF hash
   changes once);
-- any `HANDLER_VERSIONS` bump in `parser_service/unit_handlers.py` (that kind's
+- any `HANDLER_VERSIONS` bump in `parser_service/formats/handlers.py` (that kind's
   hash only);
 - a new parser or Docling version;
 - for PDF only, a change of `PARSER_ESCALATION_ENGINE`, `BEDROCK_VLM_MODEL`,
@@ -261,7 +261,7 @@ complete is parsed again when it is resubmitted.
 
 Sub-step 3 adds `kind`, `unit`, `flags` and `handler_version` to `document.json`
 and every publish event, and `email` to `document.json` for `eml` and `msg`.
-`SCHEMA_VERSION` stays 1 (`parser_service/publish.py`).
+`SCHEMA_VERSION` stays 1 (`parser_service/delivery/publish.py`).
 
 Before that release publishes to real consumers, someone must answer the open
 question in the spec: do consumers ignore unknown fields? If they do not, the bump

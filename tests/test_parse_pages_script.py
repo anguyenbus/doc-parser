@@ -28,7 +28,7 @@ from test_scripts_rewiring import _load_script
 
 from parser_service import io_layer
 from parser_service.page_pipeline import file_id_for, work_id_for
-from parser_service.store import S3Store
+from parser_service.storage.store import S3Store
 
 REGION = "ap-southeast-2"
 FILE_ID = file_id_for(THREE_PAGE)

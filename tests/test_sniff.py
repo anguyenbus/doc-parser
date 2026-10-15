@@ -1,5 +1,5 @@
 """
-test_sniff.py — ``parser_service.sniff``: the D1 table, the text rule and the
+test_sniff.py — ``parser_service.formats.sniff``: the D1 table, the text rule and the
 ``.pdf`` exception.
 
 Every fixture is bytes built here: ZIPs with ``zipfile``, an OLE2 header plus
@@ -19,7 +19,7 @@ from email.message import EmailMessage
 import docx
 import pytest
 
-from parser_service.sniff import SNIFF_BYTES, Sniff, sniff
+from parser_service.formats.sniff import SNIFF_BYTES, Sniff, sniff
 
 _CONTENT_TYPES = (
     '<?xml version="1.0"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/'

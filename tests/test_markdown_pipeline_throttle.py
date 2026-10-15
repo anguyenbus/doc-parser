@@ -23,8 +23,8 @@ DIGITAL = FIXTURES / "digital_simple.pdf"
 
 
 def _force_promote(monkeypatch: pytest.MonkeyPatch) -> None:
-    from parser_service import markdown_pipeline
-    from parser_service.quality_gate import Decision
+    from parser_service.parsing import document as markdown_pipeline
+    from parser_service.parsing.quality_gate import Decision
 
     monkeypatch.setattr(
         markdown_pipeline,
@@ -35,13 +35,13 @@ def _force_promote(monkeypatch: pytest.MonkeyPatch) -> None:
 
 def _patch_textract(monkeypatch: pytest.MonkeyPatch, response: Any) -> None:
     monkeypatch.setattr(
-        "parser_service.markdown_pipeline.analyze_page", lambda image_bytes: response
+        "parser_service.parsing.document.analyze_page", lambda image_bytes: response
     )
 
 
 def _patch_vlm(monkeypatch: pytest.MonkeyPatch, response: Any) -> None:
     monkeypatch.setattr(
-        "parser_service.markdown_pipeline.call_vlm",
+        "parser_service.parsing.document.call_vlm",
         lambda image_bytes, mode: response,
     )
 
@@ -52,7 +52,7 @@ def _patch_vlm(monkeypatch: pytest.MonkeyPatch, response: Any) -> None:
 
 
 def test_vlm_throttle_records_throttled_reason(monkeypatch: pytest.MonkeyPatch) -> None:
-    from parser_service import markdown_pipeline
+    from parser_service.parsing import document as markdown_pipeline
 
     monkeypatch.delenv("PARSER_ESCALATION_ENGINE", raising=False)
     _force_promote(monkeypatch)
@@ -67,7 +67,7 @@ def test_vlm_throttle_records_throttled_reason(monkeypatch: pytest.MonkeyPatch) 
 
 
 def test_textract_throttle_records_throttled_reason(monkeypatch: pytest.MonkeyPatch) -> None:
-    from parser_service import markdown_pipeline
+    from parser_service.parsing import document as markdown_pipeline
 
     monkeypatch.setenv("PARSER_ESCALATION_ENGINE", "textract")
     _force_promote(monkeypatch)
@@ -90,7 +90,7 @@ def test_textract_throttle_records_throttled_reason(monkeypatch: pytest.MonkeyPa
 
 
 def test_vlm_plain_error_keeps_gate_reason(monkeypatch: pytest.MonkeyPatch) -> None:
-    from parser_service import markdown_pipeline
+    from parser_service.parsing import document as markdown_pipeline
 
     monkeypatch.delenv("PARSER_ESCALATION_ENGINE", raising=False)
     _force_promote(monkeypatch)
@@ -106,7 +106,7 @@ def test_vlm_plain_error_keeps_gate_reason(monkeypatch: pytest.MonkeyPatch) -> N
 
 
 def test_textract_plain_error_keeps_gate_reason(monkeypatch: pytest.MonkeyPatch) -> None:
-    from parser_service import markdown_pipeline
+    from parser_service.parsing import document as markdown_pipeline
 
     monkeypatch.setenv("PARSER_ESCALATION_ENGINE", "textract")
     _force_promote(monkeypatch)

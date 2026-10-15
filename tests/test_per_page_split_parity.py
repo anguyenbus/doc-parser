@@ -76,8 +76,8 @@ def converted(measure: Any, tmp_path_factory: pytest.TempPathFactory) -> dict[st
     """Whole-file and one-page conversions from ONE real converter (built once)."""
     _require_three_page_fixture()
 
-    from parser_service.markdown_pipeline import _document_converter
-    from parser_service.render import text_layer_tokens
+    from parser_service.parsing.document import _document_converter
+    from parser_service.parsing.render import text_layer_tokens
 
     converter = _document_converter()
     split = measure.split_pdf(THREE_PAGE, tmp_path_factory.mktemp("one_page"))

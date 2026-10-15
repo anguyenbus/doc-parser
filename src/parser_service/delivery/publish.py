@@ -47,7 +47,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any
 
-from parser_service.store import Store, StoreNotFoundError
+from parser_service.storage.store import Store, StoreNotFoundError
 
 # Stays 1 while the new fields (kind, unit, flags, handler_version, email) are
 # additive; becomes 2 if consumers turn out to reject unknown fields (an open

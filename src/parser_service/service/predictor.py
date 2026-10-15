@@ -38,7 +38,7 @@ response only summarises it, so a repeated request is answered from the store.
   ``worker_restart`` are logged as one JSON object per line (spec D9).
 
 Run (the container entrypoint):
-    uv run python -m parser_service.kserve_predictor
+    uv run python -m parser_service.service.predictor
 """
 
 from __future__ import annotations
@@ -73,14 +73,14 @@ from parser_service.page_pipeline import (
     deadline_for,
     process_page_request,
 )
-from parser_service.page_worker import (
+from parser_service.service.worker import (
     ParseWorker,
     WorkerDied,
     WorkerNotReady,
     WorkerStartError,
 )
 from parser_service.settings import load_settings
-from parser_service.store import Store, open_store
+from parser_service.storage.store import Store, open_store
 
 logger = logging.getLogger(__name__)
 

@@ -17,7 +17,7 @@ Usage:
     uv run python scripts/parse_pages.py --input-list <list.txt | s3://bucket/list.txt> \
         [--index N]   # default: $JOB_COMPLETION_INDEX
 
-    # One document of an inbox job (job.json; see parser_service/jobs.py), published:
+    # One document of an inbox job (job.json; see parser_service/delivery/jobs.py), published:
     uv run python scripts/parse_pages.py --job s3://bucket/parser/inbox/<system>/<job>/job.json \
         [--index N] [--publish-partial]
 
@@ -32,7 +32,7 @@ directory or s3://bucket[/prefix]), or --work-dir, which overrides it. Under it:
                                    bytes under any name share them)
     out/<file id>/                 output.md + output.json when complete; status.json
     published/v1/                  with --job or --publish: the versioned hand-off
-                                   (see parser_service/publish.py)
+                                   (see parser_service/delivery/publish.py)
     ops/jobs/<job id>/             with --job: per-document outcomes and the job status
 
 Pages are parsed by worker processes here (--executor local, the default) or by
@@ -80,7 +80,7 @@ logging.basicConfig(
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
 from parser_service import io_layer  # noqa: E402
-from parser_service.jobs import (  # noqa: E402
+from parser_service.delivery.jobs import (  # noqa: E402
     ACTION_DELETE,
     DOC_DELETED,
     Job,
@@ -90,6 +90,7 @@ from parser_service.jobs import (  # noqa: E402
     record_doc,
     resolve_file,
 )
+from parser_service.delivery.publish import PublishRequest, publish_deletion, slugify  # noqa: E402
 from parser_service.observability import truncate  # noqa: E402
 from parser_service.page_pipeline import (  # noqa: E402
     FILE_COMPLETE,
@@ -97,9 +98,8 @@ from parser_service.page_pipeline import (  # noqa: E402
     RemotePageError,
     parse_pdf_pages_in_store,
 )
-from parser_service.publish import PublishRequest, publish_deletion, slugify  # noqa: E402
 from parser_service.settings import SettingsError, load_settings  # noqa: E402
-from parser_service.store import open_store  # noqa: E402
+from parser_service.storage.store import open_store  # noqa: E402
 
 
 def _fetch_s3_input(uri: str, region: str | None, directory: Path) -> tuple[Path, str | None]:

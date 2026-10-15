@@ -32,12 +32,12 @@ def _patch_vlm(monkeypatch: pytest.MonkeyPatch, response: Any) -> None:
     def _mock(image_bytes: bytes, mode: str) -> Any:
         return response
 
-    monkeypatch.setattr("parser_service.markdown_pipeline.call_vlm", _mock)
+    monkeypatch.setattr("parser_service.parsing.document.call_vlm", _mock)
 
 
 def _force_keep(monkeypatch: pytest.MonkeyPatch) -> None:
-    from parser_service import markdown_pipeline
-    from parser_service.quality_gate import Decision
+    from parser_service.parsing import document as markdown_pipeline
+    from parser_service.parsing.quality_gate import Decision
 
     monkeypatch.setattr(
         markdown_pipeline,
@@ -47,8 +47,8 @@ def _force_keep(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def _force_promote(monkeypatch: pytest.MonkeyPatch, reason: str = "forced", layer: int = 1) -> None:
-    from parser_service import markdown_pipeline
-    from parser_service.quality_gate import Decision
+    from parser_service.parsing import document as markdown_pipeline
+    from parser_service.parsing.quality_gate import Decision
 
     monkeypatch.setattr(
         markdown_pipeline,
@@ -66,7 +66,7 @@ def test_docling_kept_records_carry_n_chars(monkeypatch: pytest.MonkeyPatch) -> 
     _force_keep(monkeypatch)
     _patch_vlm(monkeypatch, {"error": "should not be called"})
 
-    from parser_service.markdown_pipeline import parse_to_markdown
+    from parser_service.parsing.document import parse_to_markdown
 
     result = parse_to_markdown(DIGITAL)
     routes = result["page_routes"]
@@ -92,7 +92,7 @@ def test_engine_success_records_carry_n_chars(monkeypatch: pytest.MonkeyPatch) -
         {"elements": [{"type": "paragraph", "text": "VLM_REPLACEMENT_TEXT"}]},
     )
 
-    from parser_service.markdown_pipeline import parse_to_markdown
+    from parser_service.parsing.document import parse_to_markdown
 
     result = parse_to_markdown(DIGITAL)
     routes = result["page_routes"]
@@ -124,7 +124,7 @@ def test_fallback_records_carry_n_chars(
     _force_promote(monkeypatch, layer=2)
     _patch_vlm(monkeypatch, bad_response)
 
-    from parser_service.markdown_pipeline import parse_to_markdown
+    from parser_service.parsing.document import parse_to_markdown
 
     result = parse_to_markdown(DIGITAL)
     routes = result["page_routes"]
@@ -143,7 +143,7 @@ def test_fallback_records_carry_n_chars(
 
 
 def test_empty_page_fallback_n_chars_is_zero(monkeypatch: pytest.MonkeyPatch) -> None:
-    from parser_service import markdown_pipeline
+    from parser_service.parsing import document as markdown_pipeline
 
     # Force the "no docling content" promote path by rendering every page empty.
     monkeypatch.setattr(markdown_pipeline, "_render_page_markdown", lambda *a, **k: "")
@@ -164,7 +164,7 @@ def test_empty_page_fallback_n_chars_is_zero(monkeypatch: pytest.MonkeyPatch) ->
 
 
 def test_arbitration_records_carry_n_chars(monkeypatch: pytest.MonkeyPatch) -> None:
-    from parser_service import markdown_pipeline
+    from parser_service.parsing import document as markdown_pipeline
 
     monkeypatch.setenv("PARSER_ESCALATION_ARBITRATION", "1")
     _force_promote(monkeypatch, reason="forced", layer=1)
@@ -197,7 +197,7 @@ def test_image_and_wholedoc_docling_kept_carry_n_chars(
     _force_keep(monkeypatch)
     _patch_vlm(monkeypatch, {"error": "should not be called"})
 
-    from parser_service.markdown_pipeline import parse_to_markdown
+    from parser_service.parsing.document import parse_to_markdown
 
     for fixture in (IMAGE, DOCX):
         result = parse_to_markdown(fixture)
@@ -218,7 +218,7 @@ def test_n_chars_is_additive_only(monkeypatch: pytest.MonkeyPatch) -> None:
     _force_keep(monkeypatch)
     _patch_vlm(monkeypatch, {"error": "should not be called"})
 
-    from parser_service.markdown_pipeline import parse_to_markdown
+    from parser_service.parsing.document import parse_to_markdown
 
     result = parse_to_markdown(DIGITAL)
     for r in result["page_routes"]:

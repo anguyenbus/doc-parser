@@ -3,7 +3,7 @@
 Emits a 0-1 confidence per parsed page and a content-weighted document score,
 derived ENTIRELY from signals ``parse_to_markdown`` already computes on each
 ``page_routes`` record (the page ``route``, the quality-gate signal booleans, and
-the arbitration outcome). 
+the arbitration outcome).
 
 IMPORTANT — advisory heuristic, NOT a calibrated probability. This score is a
 transparent, hand-set mapping from routing outcomes to a number. It is NOT
@@ -21,7 +21,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from parser_service.route_stats import (
+from parser_service.parsing.route_stats import (
     ROUTE_DOCLING_KEPT,
     ROUTE_TEXTRACT,
     ROUTE_TEXTRACT_FALLBACK,

@@ -45,7 +45,7 @@ import pytest
 
 from parser_service import io_layer
 from parser_service.page_pipeline import file_id_for, work_id_for
-from parser_service.store import Store, StoreNotFoundError, open_store
+from parser_service.storage.store import Store, StoreNotFoundError, open_store
 
 pytestmark = pytest.mark.live
 
